@@ -1,0 +1,42 @@
+{
+  "name": "GoElev8.AI Client Portal",
+  "short_name": "GoElev8",
+  "description": "Your AI performance dashboard — leads, CRM, and smart recommendations.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#080a0f",
+  "theme_color": "#080a0f",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Funnel Submissions",
+      "short_name": "Leads",
+      "description": "View your latest leads",
+      "url": "/?view=funnel",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "CRM Contacts",
+      "short_name": "CRM",
+      "description": "View your contact pipeline",
+      "url": "/?view=crm",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
