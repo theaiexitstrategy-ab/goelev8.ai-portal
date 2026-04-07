@@ -108,6 +108,15 @@ The `onboard-client.mjs` script handles **everything** end-to-end: Stripe custom
 
 ### Recommended: isolated Twilio subaccount (auto-purchase a number)
 
+**Toll-free** (recommended for outbound marketing/support — better deliverability, no A2P 10DLC registration):
+```bash
+node scripts/onboard-client.mjs \
+  --name "Acme Co" --slug acme \
+  --email owner@acme.com --password "Acme123!!" \
+  --subaccount --toll-free
+```
+
+**Local number** in a specific area code:
 ```bash
 node scripts/onboard-client.mjs \
   --name "Acme Co" --slug acme \

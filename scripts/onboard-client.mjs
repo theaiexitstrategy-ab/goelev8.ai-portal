@@ -71,6 +71,7 @@ const cfg = preset ? PRESETS[preset] : {
   users: [arg('email')].filter(Boolean),
   subaccount: !!arg('subaccount'),
   area_code: arg('area-code'),
+  toll_free: !!arg('toll-free'),
   transfer_number: arg('transfer-number')
 };
 if (!cfg?.name || !cfg.slug) {
@@ -134,11 +135,14 @@ if (cfg.subaccount) {
       console.log('  ✓ Webhooks configured');
     }
   } else {
-    // Search for an available local US number and buy it under the subaccount.
+    // Search for an available number and buy it under the subaccount.
     const search = { limit: 1, smsEnabled: true };
     if (cfg.area_code && cfg.area_code !== true) search.areaCode = cfg.area_code;
-    console.log(`  → Searching available US local numbers${search.areaCode ? ' in ' + search.areaCode : ''}…`);
-    const available = await subClient.availablePhoneNumbers('US').local.list(search);
+    const pool = cfg.toll_free
+      ? subClient.availablePhoneNumbers('US').tollFree
+      : subClient.availablePhoneNumbers('US').local;
+    console.log(`  → Searching available US ${cfg.toll_free ? 'toll-free' : 'local'} numbers${search.areaCode ? ' in ' + search.areaCode : ''}…`);
+    const available = await pool.list(search);
     if (!available[0]) {
       console.error('  ✗ No numbers available with those criteria');
       process.exit(1);
