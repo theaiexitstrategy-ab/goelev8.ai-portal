@@ -122,8 +122,22 @@ async function loadMe() {
 // SHELL
 // ============================================================
 function shell(content) {
+  const closeNav = () => document.body.classList.remove('nav-open');
   const navBtn = (id, label) =>
-    el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; render(); } }, label);
+    el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; closeNav(); render(); } }, label);
+
+  const mobileHeader = el('div', { class: 'mobile-header' },
+    el('button', {
+      class: 'nav-toggle',
+      'aria-label': 'Menu',
+      onclick: () => document.body.classList.toggle('nav-open')
+    }, el('span', {}), el('span', {}), el('span', {})),
+    el('div', { class: 'mobile-brand' },
+      el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
+      el('span', {}, 'GoElev8.AI')
+    )
+  );
+  const navBackdrop = el('div', { class: 'nav-backdrop', onclick: closeNav });
 
   const adminSection = state.isAdmin
     ? el('div', { class: 'admin-section' },
@@ -171,7 +185,8 @@ function shell(content) {
       adminSection,
       el('button', { class: 'signout', onclick: logout }, 'Sign out')
     ),
-    el('main', { class: 'main' }, banner, content)
+    navBackdrop,
+    el('main', { class: 'main' }, mobileHeader, banner, content)
   );
 }
 
