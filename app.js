@@ -77,12 +77,18 @@ function renderLogin() {
       }
     }
   },
-    el('h1', {}, 'GoElev8.ai Portal'),
-    el('p', {}, 'Sign in to your client dashboard'),
+    el('div', { class: 'login-brand' },
+      el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
+      el('div', {},
+        el('h1', {}, 'Welcome back'),
+        el('p', { style: 'margin:2px 0 0' }, 'Sign in to GoElev8.AI')
+      )
+    ),
     errBox,
     el('div', { class: 'field' }, el('label', {}, 'Email'), emailInput),
     el('div', { class: 'field' }, el('label', {}, 'Password'), pwInput),
-    el('button', { class: 'btn', type: 'submit', style: 'width:100%; margin-top:8px' }, 'Sign in')
+    el('button', { class: 'btn', type: 'submit' }, 'Sign in →'),
+    el('div', { class: 'footer' }, 'Powered by GoElev8 AI Infrastructure')
   );
   box.appendChild(form);
   return el('div', { class: 'login' }, box);
@@ -103,7 +109,10 @@ function shell(content) {
 
   return el('div', { class: 'app' },
     el('aside', { class: 'sidebar' },
-      el('div', { class: 'brand' }, 'GoElev8.ai', el('small', {}, 'Client Portal')),
+      el('div', { class: 'brand' },
+        el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
+        el('div', { class: 'name' }, 'GoElev8.AI', el('small', {}, 'Client Portal'))
+      ),
       el('div', { class: 'client-pill' },
         el('div', { class: 'name' }, state.client?.name || ''),
         el('div', { class: 'num' }, state.client?.twilio_phone_number || 'No number assigned')
@@ -157,17 +166,18 @@ async function viewOverview() {
     { id: 'pro',     label: 'Pro',     price: '$100', credits: 2000, rate: '$0.05/SMS' }
   ];
   for (const p of PACKS) {
-    const btn = el('button', { class: 'btn', style: 'margin-top:10px; width:100%',
+    const btn = el('button', { class: 'btn',
       onclick: async () => {
         try {
           const r = await api('/api/portal/credits?action=checkout', { method: 'POST', body: { pack: p.id } });
           window.location.href = r.url;
         } catch (e) { toast(e.message, true); }
-      }}, `Buy ${p.label}`);
-    const c = el('div', { class: 'card' },
-      el('div', { class: 'label' }, p.label),
-      el('div', { class: 'value' }, p.price),
-      el('div', { class: 'sub' }, `${p.credits} credits · ${p.rate}`),
+      }}, `Buy ${p.label} →`);
+    const c = el('div', { class: 'pack-card' + (p.id === 'growth' ? ' featured' : '') },
+      el('div', { class: 'pack-label' }, p.label),
+      el('div', { class: 'pack-price' }, p.price),
+      el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`),
+      el('div', { class: 'pack-rate' }, p.rate),
       btn
     );
     packsRow.appendChild(c);
@@ -480,17 +490,17 @@ async function viewBilling() {
   tp.appendChild(el('h2', {}, 'Buy more credits'));
   const packsRow = el('div', { class: 'cards' });
   for (const p of Object.values(b.packs)) {
-    packsRow.appendChild(el('div', { class: 'card' },
-      el('div', { class: 'label' }, p.label),
-      el('div', { class: 'value' }, '$' + (p.priceCents / 100)),
-      el('div', { class: 'sub' }, `${p.credits} credits`),
-      el('button', { class: 'btn', style: 'width:100%; margin-top:10px',
+    packsRow.appendChild(el('div', { class: 'pack-card' + (p.id === 'growth' ? ' featured' : '') },
+      el('div', { class: 'pack-label' }, p.label),
+      el('div', { class: 'pack-price' }, '$' + (p.priceCents / 100)),
+      el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`),
+      el('button', { class: 'btn',
         onclick: async () => {
           try {
             const r = await api('/api/portal/credits?action=checkout', { method: 'POST', body: { pack: p.id } });
             window.location.href = r.url;
           } catch (e) { toast(e.message, true); }
-        }}, `Buy ${p.label}`)
+        }}, `Buy ${p.label} →`)
     ));
   }
   tp.appendChild(packsRow);
