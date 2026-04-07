@@ -10,7 +10,7 @@
     "onboard": "node scripts/onboard-client.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": "22.x"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
