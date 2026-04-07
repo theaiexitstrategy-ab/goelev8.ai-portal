@@ -1,5 +1,6 @@
-// Consolidated CRM endpoint: contacts + bookings.
-// ?action=contacts | bookings
+// © 2026 GoElev8.ai | Aaron Bryant. All rights reserved.
+// Consolidated CRM endpoint: contacts + bookings + leads + vapi_calls.
+// ?action=contacts | bookings | leads | calls
 // Replaces the legacy /api/portal/contacts and /api/portal/bookings routes
 // to stay under the Vercel 12-function cap while we add /api/admin.
 
@@ -82,6 +83,58 @@ async function handleBookings(req, res, ctx) {
   return res.status(405).json({ error: 'method_not_allowed' });
 }
 
+async function handleLeads(req, res, ctx) {
+  const { sb, clientId } = ctx;
+  if (req.method === 'GET') {
+    const url = new URL(req.url, 'http://x');
+    const status = url.searchParams.get('status');
+    let q = sb.from('leads').select('*').eq('client_id', clientId)
+      .order('created_at', { ascending: false }).limit(500);
+    if (status) q = q.eq('status', status);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(200).json({ leads: data });
+  }
+  if (req.method === 'POST') {
+    const body = await readJson(req);
+    const { name, phone, email, source, status, notes } = body;
+    if (!name) return res.status(400).json({ error: 'name_required' });
+    const { data, error } = await sb.from('leads').insert({
+      client_id: clientId, name, phone, email, source: source || 'manual',
+      status: status || 'New', notes
+    }).select().single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ lead: data });
+  }
+  if (req.method === 'PATCH') {
+    const body = await readJson(req);
+    const { id, ...patch } = body;
+    if (!id) return res.status(400).json({ error: 'id_required' });
+    delete patch.client_id; delete patch.created_at;
+    const { data, error } = await sb.from('leads').update(patch).eq('id', id).select().single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(200).json({ lead: data });
+  }
+  if (req.method === 'DELETE') {
+    const { id } = await readJson(req);
+    if (!id) return res.status(400).json({ error: 'id_required' });
+    const { error } = await sb.from('leads').delete().eq('id', id);
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(200).json({ ok: true });
+  }
+  return res.status(405).json({ error: 'method_not_allowed' });
+}
+
+async function handleCalls(req, res, ctx) {
+  const { sb, clientId } = ctx;
+  if (req.method !== 'GET') return res.status(405).json({ error: 'method_not_allowed' });
+  const { data, error } = await sb.from('vapi_calls')
+    .select('*').eq('client_id', clientId)
+    .order('created_at', { ascending: false }).limit(200);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(200).json({ calls: data });
+}
+
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST', 'PATCH', 'DELETE'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
@@ -89,5 +142,7 @@ export default async function handler(req, res) {
   const action = url.searchParams.get('action');
   if (action === 'contacts') return handleContacts(req, res, ctx);
   if (action === 'bookings') return handleBookings(req, res, ctx);
+  if (action === 'leads')    return handleLeads(req, res, ctx);
+  if (action === 'calls')    return handleCalls(req, res, ctx);
   return res.status(400).json({ error: 'unknown_action' });
 }
