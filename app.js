@@ -876,9 +876,11 @@ async function viewAdmin() {
   wrap.appendChild(tablePanel);
 
   let allClients = [];
+  const onClientsLoaded = [];
   const refresh = async () => {
     const r = await api('/api/admin?action=list-clients');
     allClients = r.clients || [];
+    for (const fn of onClientsLoaded) { try { fn(allClients); } catch {} }
     tableHost.innerHTML = '';
     if (!allClients.length) {
       tableHost.appendChild(el('div', { class: 'muted' }, 'No clients yet.'));
@@ -895,8 +897,20 @@ async function viewAdmin() {
         el('th', {}, 'Actions')
       )),
       el('tbody', {}, ...allClients.map((c) => {
-        const adjustInput = el('input', { type: 'number', value: '20', style: 'width:70px' });
+        const amountInput = el('input', { type: 'number', min: '1', value: '20', style: 'width:70px' });
         const noteInput   = el('input', { type: 'text', placeholder: 'note (optional)', style: 'width:140px' });
+        const adjust = async (sign) => {
+          const raw = parseInt(amountInput.value, 10);
+          if (!Number.isFinite(raw) || raw <= 0) { toast('Enter a positive amount', true); return; }
+          const delta = sign * Math.abs(raw);
+          try {
+            const r = await api('/api/admin?action=set-credits', {
+              method: 'POST', body: { client_id: c.id, delta, note: noteInput.value }
+            });
+            toast(`${c.name}: ${r.client.credit_balance} credits`);
+            await refresh();
+          } catch (e) { toast(e.message, true); }
+        };
         return el('tr', {},
           el('td', {}, el('strong', {}, c.name || '—')),
           el('td', {}, el('code', {}, c.slug)),
@@ -910,17 +924,9 @@ async function viewAdmin() {
             el('button', { class: 'btn sm', onclick: () => {
               setImpersonation(c.id); render();
             }}, 'View as'),
-            adjustInput, noteInput,
-            el('button', { class: 'btn sm', onclick: async () => {
-              try {
-                const delta = parseInt(adjustInput.value, 10);
-                const r = await api('/api/admin?action=set-credits', {
-                  method: 'POST', body: { client_id: c.id, delta, note: noteInput.value }
-                });
-                toast(`${c.name}: ${r.client.credit_balance} credits`);
-                await refresh();
-              } catch (e) { toast(e.message, true); }
-            }}, '± credits'),
+            amountInput, noteInput,
+            el('button', { class: 'btn sm btn-success', onclick: () => adjust(+1) }, '+ Add'),
+            el('button', { class: 'btn sm btn-warn',    onclick: () => adjust(-1) }, '− Remove'),
             el('button', { class: 'btn sm ' + (c.billing_paused ? 'btn-success' : 'btn-warn'), onclick: async () => {
               try {
                 await api('/api/admin?action=billing-pause', {
@@ -942,21 +948,29 @@ async function viewAdmin() {
   const sendPanel = el('div', { class: 'panel' });
   sendPanel.appendChild(el('h2', {}, 'Send free SMS as any client'));
   sendPanel.appendChild(el('p', { class: 'muted' }, 'Bypasses credits and Stripe billing. Logged with credits_charged = 0.'));
-  const clientSel = el('select', {});
+  const clientSel = el('select', {}, el('option', { value: '' }, 'Loading clients…'));
   const toIn      = el('input', { type: 'tel', placeholder: '+15551234567' });
   const bodyIn    = el('textarea', { rows: 3, placeholder: 'Message…' });
-  const fillSel = () => {
+  const fillSel = (clients) => {
     clientSel.innerHTML = '';
-    for (const c of allClients) {
-      const o = el('option', { value: c.id }, `${c.name} (${c.slug})`);
-      clientSel.appendChild(o);
+    if (!clients.length) {
+      clientSel.appendChild(el('option', { value: '' }, 'No clients'));
+      return;
+    }
+    clientSel.appendChild(el('option', { value: '' }, '— Pick a client —'));
+    for (const c of clients) {
+      clientSel.appendChild(el('option', { value: c.id }, `${c.name} (${c.slug})`));
     }
   };
-  setTimeout(fillSel, 600); // after refresh
+  // Hook into refresh — fires now if data already loaded, or whenever refresh resolves.
+  onClientsLoaded.push(fillSel);
+  if (allClients.length) fillSel(allClients);
   sendPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'Client'), clientSel));
   sendPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'To'), toIn));
   sendPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'Body'), bodyIn));
   sendPanel.appendChild(el('button', { class: 'btn', onclick: async () => {
+    if (!clientSel.value) { toast('Pick a client first', true); return; }
+    if (!toIn.value || !bodyIn.value) { toast('Enter a destination and message', true); return; }
     try {
       const r = await api('/api/admin?action=send-as-client', {
         method: 'POST',
