@@ -119,6 +119,7 @@ function shell(content) {
       ),
       el('div', { class: 'nav' },
         navBtn('overview', 'Overview'),
+        navBtn('activity', 'Activity'),
         navBtn('messages', 'Messages'),
         navBtn('contacts', 'Contacts'),
         navBtn('bookings', 'Bookings'),
@@ -651,10 +652,82 @@ function viewSettings() {
 }
 
 // ============================================================
+// ACTIVITY (cross-project events from The-AI-Exit-Strategy)
+// ============================================================
+let activityPoll = null;
+async function viewActivity() {
+  if (activityPoll) { clearInterval(activityPoll); activityPoll = null; }
+
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Activity'),
+    el('div', { class: 'muted' }, 'Live form submissions, leads & bookings from your sites')
+  ));
+
+  const list = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(list);
+
+  const fmt = (ts) => {
+    const d = new Date(ts); const now = Date.now();
+    const diff = Math.floor((now - d.getTime()) / 1000);
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return d.toLocaleString();
+  };
+
+  const renderRows = (events) => {
+    list.innerHTML = '';
+    if (!events.length) {
+      list.appendChild(el('div', { class: 'muted', style: 'padding:24px;text-align:center' },
+        'No activity yet. Webhook events from your client sites will appear here.'));
+      return;
+    }
+    const table = el('div', { class: 'event-list' });
+    for (const ev of events) {
+      const meta = [ev.source, ev.source_path].filter(Boolean).join('');
+      const who = ev.contact_name || ev.contact_email || ev.contact_phone || '—';
+      const row = el('div', { class: 'event-row' },
+        el('div', { class: 'event-type' }, ev.event_type),
+        el('div', { class: 'event-body' },
+          el('div', { class: 'event-title' }, ev.title || who),
+          el('div', { class: 'event-meta muted' }, meta + (who && (ev.title) ? ' · ' + who : ''))
+        ),
+        el('div', { class: 'event-time muted' }, fmt(ev.occurred_at))
+      );
+      row.addEventListener('click', () => {
+        const pre = el('pre', { class: 'event-payload' }, JSON.stringify(ev.payload, null, 2));
+        if (row.nextSibling && row.nextSibling.classList?.contains('event-payload')) {
+          row.nextSibling.remove();
+        } else {
+          row.after(pre);
+        }
+      });
+      table.appendChild(row);
+    }
+    list.appendChild(table);
+  };
+
+  const load = async () => {
+    try {
+      const r = await api('/api/events?action=list&limit=100');
+      renderRows(r.events || []);
+    } catch (e) {
+      list.innerHTML = '';
+      list.appendChild(el('div', { class: 'err' }, 'Failed to load: ' + e.message));
+    }
+  };
+  await load();
+  activityPoll = setInterval(load, 5000);
+  return wrap;
+}
+
+// ============================================================
 // ROUTER / RENDER
 // ============================================================
 async function render() {
   const root = $('#app');
+  if (activityPoll && state.view !== 'activity') { clearInterval(activityPoll); activityPoll = null; }
   root.innerHTML = '';
   if (!state.token) { root.appendChild(renderLogin()); return; }
   if (!state.client) {
@@ -664,6 +737,7 @@ async function render() {
   try {
     switch (state.view) {
       case 'overview':  view = await viewOverview(); break;
+      case 'activity':  view = await viewActivity(); break;
       case 'contacts':  view = await viewContacts(); break;
       case 'bookings':  view = await viewBookings(); break;
       case 'messages':  view = await viewMessages(); break;

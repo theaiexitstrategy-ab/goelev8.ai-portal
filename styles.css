@@ -888,3 +888,49 @@ tbody tr:last-child td { border-bottom: none; }
   .chat-layout { grid-template-columns: 1fr; height: auto; }
   h1 { font-size: 22px; }
 }
+
+/* ============================================================
+   Activity / event feed
+   ============================================================ */
+.event-list { display: flex; flex-direction: column; }
+.event-row {
+  display: grid;
+  grid-template-columns: 140px 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.event-row:last-child { border-bottom: none; }
+.event-row:hover { background: var(--surface-hover); }
+.event-type {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--brand-3);
+  background: rgba(99,102,241,0.12);
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-align: center;
+  border: 1px solid rgba(139,92,246,0.25);
+  width: fit-content;
+}
+.event-title { font-weight: 600; font-size: 14px; color: var(--text); }
+.event-meta { font-size: 12px; margin-top: 2px; }
+.event-time { font-size: 12px; font-family: var(--font-mono); white-space: nowrap; }
+.event-payload {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0 16px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
