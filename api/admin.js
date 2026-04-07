@@ -65,18 +65,22 @@ async function setCredits(req, res, ctx) {
   if (!client_id || !Number.isFinite(n) || n === 0) {
     return res.status(400).json({ error: 'client_id_and_nonzero_delta_required' });
   }
-  const fn = n > 0 ? 'add_credits' : 'consume_credits';
-  const { error: rpcErr } = await supabaseAdmin.rpc(fn, {
-    p_client_id: client_id, p_amount: Math.abs(n)
-  });
-  if (rpcErr) return res.status(400).json({ error: rpcErr.message });
+  // Direct update so admin removals can go below current balance without
+  // tripping consume_credits' insufficient_credits check. Clamp at 0.
+  const { data: cur, error: curErr } = await supabaseAdmin
+    .from('clients').select('id, credit_balance').eq('id', client_id).single();
+  if (curErr || !cur) return res.status(404).json({ error: 'client_not_found' });
+  const newBal = Math.max(0, (cur.credit_balance || 0) + n);
+  const appliedDelta = newBal - (cur.credit_balance || 0);
+  const { data: client, error: upErr } = await supabaseAdmin
+    .from('clients').update({ credit_balance: newBal })
+    .eq('id', client_id).select('id, credit_balance').single();
+  if (upErr) return res.status(400).json({ error: upErr.message });
   await supabaseAdmin.from('credit_ledger').insert({
-    client_id, delta: n, reason,
+    client_id, delta: appliedDelta, reason,
     ref_id: 'admin:' + ctx.user.email + (note ? ' — ' + note.slice(0, 200) : '')
   });
-  const { data: client } = await supabaseAdmin
-    .from('clients').select('id, credit_balance').eq('id', client_id).single();
-  return res.status(200).json({ ok: true, client });
+  return res.status(200).json({ ok: true, client, applied_delta: appliedDelta });
 }
 
 async function sendAsClient(req, res, ctx) {
