@@ -78,7 +78,7 @@ function renderLogin() {
     }
   },
     el('div', { class: 'login-brand' },
-      el('div', { class: 'logo' }, el('img', { src: '/logo.svg', alt: '' })),
+      el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
       el('div', {},
         el('h1', {}, 'Welcome back'),
         el('p', { style: 'margin:2px 0 0' }, 'Sign in to GoElev8.AI')
@@ -110,7 +110,7 @@ function shell(content) {
   return el('div', { class: 'app' },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
-        el('div', { class: 'logo' }, el('img', { src: '/logo.svg', alt: '' })),
+        el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
         el('div', { class: 'name' }, 'GoElev8.AI', el('small', {}, 'Client Portal'))
       ),
       el('div', { class: 'client-pill' },
