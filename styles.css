@@ -161,12 +161,20 @@ h2 { font-size: 17px; font-weight: 600; }
   position: relative;
   overflow: hidden;
 }
+.brand .logo img {
+  width: 70%;
+  height: 70%;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+}
 .brand .logo::after {
   content: '';
   position: absolute;
   inset: 0;
   background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.25) 50%, transparent 60%);
   animation: shine 6s ease-in-out infinite;
+  pointer-events: none;
 }
 @keyframes shine {
   0%, 100% { transform: translateX(-100%); }
@@ -664,12 +672,20 @@ tbody tr:last-child td { border-bottom: none; }
   overflow: hidden;
   flex-shrink: 0;
 }
+.login .login-brand .logo img {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4));
+}
 .login .login-brand .logo::after {
   content: '';
   position: absolute;
   inset: 0;
   background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.3) 50%, transparent 60%);
   animation: shine 5s ease-in-out infinite;
+  pointer-events: none;
 }
 .login h1 {
   font-size: 22px;
