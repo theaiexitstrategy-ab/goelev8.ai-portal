@@ -64,7 +64,7 @@ function renderLogin() {
       e.preventDefault();
       errBox.innerHTML = '';
       try {
-        const r = await api('/api/auth/login', {
+        const r = await api('/api/auth?action=login', {
           method: 'POST',
           body: { email: emailInput.value, password: pwInput.value }
         });
@@ -160,7 +160,7 @@ async function viewOverview() {
     const btn = el('button', { class: 'btn', style: 'margin-top:10px; width:100%',
       onclick: async () => {
         try {
-          const r = await api('/api/portal/credits/checkout', { method: 'POST', body: { pack: p.id } });
+          const r = await api('/api/portal/credits?action=checkout', { method: 'POST', body: { pack: p.id } });
           window.location.href = r.url;
         } catch (e) { toast(e.message, true); }
       }}, `Buy ${p.label}`);
@@ -487,7 +487,7 @@ async function viewBilling() {
       el('button', { class: 'btn', style: 'width:100%; margin-top:10px',
         onclick: async () => {
           try {
-            const r = await api('/api/portal/credits/checkout', { method: 'POST', body: { pack: p.id } });
+            const r = await api('/api/portal/credits?action=checkout', { method: 'POST', body: { pack: p.id } });
             window.location.href = r.url;
           } catch (e) { toast(e.message, true); }
         }}, `Buy ${p.label}`)
@@ -512,7 +512,7 @@ async function viewBilling() {
   ar.appendChild(el('div', { class: 'field' }, el('label', {}, 'Pack to buy'), packSel));
   ar.appendChild(el('button', { class: 'btn', onclick: async () => {
     try {
-      await api('/api/portal/credits/auto-reload', { method: 'POST', body: {
+      await api('/api/portal/credits?action=auto-reload', { method: 'POST', body: {
         enabled: enabled.checked,
         threshold: parseInt(threshold.value, 10),
         pack: packSel.value
@@ -551,14 +551,14 @@ async function viewConnect() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Accept Payments (Stripe Connect)')));
 
-  const status = await api('/api/portal/connect/status');
+  const status = await api('/api/portal/connect?action=status');
   const panel = el('div', { class: 'panel' });
 
   if (!status.connected || !status.charges_enabled) {
     panel.appendChild(el('p', {}, 'Connect your Stripe account to start accepting payments from your customers. GoElev8 takes a 2.9% platform fee on each transaction.'));
     panel.appendChild(el('button', { class: 'btn', onclick: async () => {
       try {
-        const r = await api('/api/portal/connect/start', { method: 'POST' });
+        const r = await api('/api/portal/connect?action=start', { method: 'POST' });
         window.location.href = r.url;
       } catch (e) { toast(e.message, true); }
     }}, status.connected ? 'Continue Stripe onboarding' : 'Connect Stripe'));
@@ -577,7 +577,7 @@ async function viewConnect() {
     panel.appendChild(el('div', { class: 'field' }, el('label', {}, 'Customer email (optional)'), email));
     panel.appendChild(el('button', { class: 'btn', onclick: async () => {
       try {
-        const r = await api('/api/portal/connect/payment-link', { method: 'POST', body: {
+        const r = await api('/api/portal/connect?action=payment-link', { method: 'POST', body: {
           amount_cents: Math.round(parseFloat(amt.value) * 100),
           description: desc.value, customer_email: email.value || null
         }});
@@ -631,7 +631,7 @@ function viewSettings() {
   pw.appendChild(el('div', { class: 'field' }, el('label', {}, 'New password'), np));
   pw.appendChild(el('button', { class: 'btn', onclick: async () => {
     try {
-      await api('/api/auth/change-password', { method: 'POST', body: { new_password: np.value } });
+      await api('/api/auth?action=change-password', { method: 'POST', body: { new_password: np.value } });
       np.value = ''; toast('Password updated');
     } catch (e) { toast(e.message, true); }
   }}, 'Update password'));

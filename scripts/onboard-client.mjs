@@ -127,9 +127,9 @@ if (cfg.subaccount) {
     const subList = await subClient.incomingPhoneNumbers.list({ phoneNumber, limit: 5 });
     if (subList[0]) {
       await subClient.incomingPhoneNumbers(subList[0].sid).update({
-        smsUrl: `${base}/api/twilio/inbound`,
+        smsUrl: `${base}/api/twilio?action=inbound`,
         smsMethod: 'POST',
-        statusCallback: `${base}/api/twilio/status`,
+        statusCallback: `${base}/api/twilio?action=status`,
         statusCallbackMethod: 'POST'
       });
       console.log('  ✓ Webhooks configured');
@@ -149,9 +149,9 @@ if (cfg.subaccount) {
     }
     const purchased = await subClient.incomingPhoneNumbers.create({
       phoneNumber: available[0].phoneNumber,
-      smsUrl: `${base}/api/twilio/inbound`,
+      smsUrl: `${base}/api/twilio?action=inbound`,
       smsMethod: 'POST',
-      statusCallback: `${base}/api/twilio/status`,
+      statusCallback: `${base}/api/twilio?action=status`,
       statusCallbackMethod: 'POST'
     });
     phoneNumber = purchased.phoneNumber;
@@ -165,9 +165,9 @@ if (cfg.subaccount) {
     });
     if (list[0]) {
       await parentTwilio.incomingPhoneNumbers(list[0].sid).update({
-        smsUrl: `${base}/api/twilio/inbound`,
+        smsUrl: `${base}/api/twilio?action=inbound`,
         smsMethod: 'POST',
-        statusCallback: `${base}/api/twilio/status`,
+        statusCallback: `${base}/api/twilio?action=status`,
         statusCallbackMethod: 'POST'
       });
       console.log(`  ✓ Webhooks configured on parent-account number ${cfg.twilio_phone_number}`);

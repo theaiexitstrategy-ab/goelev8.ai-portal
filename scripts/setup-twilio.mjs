@@ -19,9 +19,9 @@ for (const target of NUMBERS) {
     continue;
   }
   await twilio.incomingPhoneNumbers(num.sid).update({
-    smsUrl: `${base}/api/twilio/inbound`,
+    smsUrl: `${base}/api/twilio?action=inbound`,
     smsMethod: 'POST',
-    statusCallback: `${base}/api/twilio/status`,
+    statusCallback: `${base}/api/twilio?action=status`,
     statusCallbackMethod: 'POST'
   });
   console.log(`✓ ${target} → webhooks updated`);

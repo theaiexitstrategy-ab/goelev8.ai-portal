@@ -61,7 +61,7 @@ export default async function handler(req, res) {
       from: client.twilio_phone_number,
       to: destNumber,
       body: text,
-      statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio/status`
+      statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
     });
   } catch (err) {
     // Refund credits on hard failure
@@ -93,7 +93,7 @@ export default async function handler(req, res) {
   if (client.auto_reload_enabled && newBal < client.auto_reload_threshold) {
     // Fire-and-forget — handled by stripe credits API
     try {
-      await fetch(`${process.env.PORTAL_BASE_URL}/api/portal/credits/auto-reload-trigger`, {
+      await fetch(`${process.env.PORTAL_BASE_URL}/api/portal/credits?action=auto-reload-trigger`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-internal': process.env.SUPABASE_SERVICE_ROLE_KEY },
         body: JSON.stringify({ client_id: clientId })
