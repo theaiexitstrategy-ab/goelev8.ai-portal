@@ -197,11 +197,14 @@ if (existing) {
   console.log('  ✓ Updated existing client row');
 } else {
   const { data: c, error } = await sb.from('clients')
-    .insert({ ...clientPayload, credit_balance: 0 })
+    .insert({ ...clientPayload, credit_balance: 20 })
     .select().single();
   if (error) { console.error(error); process.exit(1); }
   clientId = c.id;
-  console.log('  ✓ Client row:', clientId);
+  console.log('  ✓ Client row:', clientId, '(seeded with 20 free trial credits)');
+  await sb.from('credit_ledger').insert({
+    client_id: clientId, delta: 20, reason: 'trial_grant', ref_id: 'free_trial_20'
+  });
 }
 
 // =====================================================================
