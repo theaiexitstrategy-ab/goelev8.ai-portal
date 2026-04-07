@@ -21,7 +21,14 @@ export default async function handler(req, res) {
     return res.status(200).json({
       user: { id: ctx.user.id, email: ctx.user.email },
       isAdmin: !!ctx.isAdmin,
-      client
+      client,
+      // Public Supabase config exposed so the browser can open a Realtime
+      // connection for live lead/booking/call notifications. Anon key is
+      // safe in the browser; RLS still enforces tenant isolation.
+      supabase: {
+        url: process.env.SUPABASE_URL || null,
+        anon_key: process.env.SUPABASE_ANON_KEY || null
+      }
     });
   }
 

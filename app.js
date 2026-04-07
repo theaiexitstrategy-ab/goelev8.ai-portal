@@ -1,3 +1,4 @@
+// © 2026 GoElev8.ai | Aaron Bryant. All rights reserved.
 // GoElev8.ai Portal — vanilla JS SPA
 // State + router + views.
 
@@ -23,7 +24,7 @@ const state = {
   client: null,
   isAdmin: false,
   impersonating: localStorage.getItem('ge8_impersonate') || null,
-  view: 'overview'
+  view: 'dashboard'
 };
 
 function toast(msg, isError = false) {
@@ -157,7 +158,20 @@ function shell(content) {
         el('button', { class: 'link', onclick: () => { setImpersonation(null); render(); } }, 'Exit'))
     : null;
 
-  return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') },
+  // Bottom nav for mobile (iPhone/iPad). Only shows when a client context exists.
+  const bottomNav = state.client
+    ? el('nav', { class: 'bottom-nav' },
+        ['dashboard', 'leads', 'bookings', 'calls', 'settings'].map((id) => {
+          const labels = { dashboard: 'Home', leads: 'Leads', bookings: 'Book', calls: 'Calls', settings: 'More' };
+          return el('button', {
+            class: 'bnav-btn' + (state.view === id ? ' active' : ''),
+            onclick: () => { state.view = id; closeNav(); render(); }
+          }, el('span', { class: 'bnav-dot' }), el('span', { class: 'bnav-label' }, labels[id]));
+        })
+      )
+    : null;
+
+  return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') + (state.client ? ' has-bottom-nav' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
         el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
@@ -172,11 +186,14 @@ function shell(content) {
         : null,
       state.client
         ? el('div', { class: 'nav' },
+            navBtn('dashboard', 'Dashboard'),
+            navBtn('leads', 'Leads'),
+            navBtn('bookings', 'Bookings'),
+            navBtn('calls', 'Vapi Calls'),
             navBtn('overview', 'Overview'),
             navBtn('activity', 'Activity'),
             navBtn('messages', 'Messages'),
             navBtn('contacts', 'Contacts'),
-            navBtn('bookings', 'Bookings'),
             navBtn('billing', 'Credits & Billing'),
             navBtn('connect', 'Payments (Connect)'),
             navBtn('settings', 'Settings')
@@ -186,7 +203,8 @@ function shell(content) {
       el('button', { class: 'signout', onclick: logout }, 'Sign out')
     ),
     navBackdrop,
-    el('main', { class: 'main' }, mobileHeader, banner, content)
+    el('main', { class: 'main' }, mobileHeader, banner, content),
+    bottomNav
   );
 }
 
@@ -1035,6 +1053,234 @@ async function viewAdmin() {
 }
 
 // ============================================================
+// DASHBOARD (mobile-first overview of leads / bookings / calls)
+// ============================================================
+function statusBadge(status) {
+  const s = (status || '').toLowerCase();
+  let cls = 'badge';
+  if (['confirmed', 'completed', 'booked', 'active'].includes(s)) cls += ' green';
+  else if (['new', 'scheduled', 'pending', 'contacted'].includes(s)) cls += ' yellow';
+  else if (['cancelled', 'lost', 'voicemail', 'not interested'].includes(s)) cls += ' red';
+  return el('span', { class: cls }, status || '—');
+}
+
+function skeleton(rows = 3) {
+  const wrap = el('div', { class: 'skeleton-wrap' });
+  for (let i = 0; i < rows; i++) wrap.appendChild(el('div', { class: 'skel-row' }));
+  return wrap;
+}
+
+function emptyState(msg) {
+  return el('div', { class: 'empty-state' },
+    el('div', { class: 'empty-icon' }, '✨'),
+    el('div', { class: 'empty-msg' }, msg)
+  );
+}
+
+function startOfMonthISO() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
+}
+
+async function viewDashboard() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Dashboard'),
+    el('div', { class: 'muted' }, state.client?.name || '')
+  ));
+
+  const cards = el('div', { class: 'cards' });
+  wrap.appendChild(cards);
+  cards.appendChild(skeleton(1));
+
+  const feedPanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Recent activity'),
+    skeleton(5)
+  );
+  wrap.appendChild(feedPanel);
+
+  try {
+    const [leadsR, bookingsR, callsR] = await Promise.all([
+      api('/api/portal/crm?action=leads').catch(() => ({ leads: [] })),
+      api('/api/portal/crm?action=bookings').catch(() => ({ bookings: [] })),
+      api('/api/portal/crm?action=calls').catch(() => ({ calls: [] }))
+    ]);
+    const monthStart = new Date(startOfMonthISO()).getTime();
+    const inMonth = (ts) => new Date(ts).getTime() >= monthStart;
+    const leadsMonth = (leadsR.leads || []).filter(l => inMonth(l.created_at)).length;
+    const bookingsMonth = (bookingsR.bookings || []).filter(b => inMonth(b.created_at || b.starts_at)).length;
+    const callsMonth = (callsR.calls || []).filter(c => inMonth(c.created_at)).length;
+
+    cards.innerHTML = '';
+    cards.appendChild(card('Leads (this month)', leadsMonth, 'New prospects', 'accent'));
+    cards.appendChild(card('Bookings (this month)', bookingsMonth, 'Confirmed + scheduled'));
+    cards.appendChild(card('Vapi Calls (this month)', callsMonth, 'AI voice answers'));
+
+    // Recent activity feed: last 5 events across all 3 sources
+    const events = [
+      ...(leadsR.leads || []).map(l => ({ ts: l.created_at, type: 'lead', label: `New lead: ${l.name}`, sub: l.source || '' })),
+      ...(bookingsR.bookings || []).map(b => ({ ts: b.created_at || b.starts_at, type: 'booking', label: `Booking · ${b.service || 'appt'}`, sub: new Date(b.starts_at).toLocaleString() })),
+      ...(callsR.calls || []).map(c => ({ ts: c.created_at, type: 'call', label: `Call · ${c.outcome || 'received'}`, sub: c.caller_phone || '' }))
+    ].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 5);
+
+    feedPanel.innerHTML = '';
+    feedPanel.appendChild(el('h2', {}, 'Recent activity'));
+    if (!events.length) {
+      feedPanel.appendChild(emptyState('No activity yet — your first lead, booking, or call will land here.'));
+    } else {
+      const list = el('div', { class: 'feed' });
+      for (const e of events) {
+        list.appendChild(el('div', { class: 'feed-row' },
+          el('div', { class: 'feed-type ' + e.type }, e.type),
+          el('div', { class: 'feed-body' },
+            el('div', { class: 'feed-label' }, e.label),
+            el('div', { class: 'feed-sub muted' }, e.sub)
+          ),
+          el('div', { class: 'feed-time muted' }, new Date(e.ts).toLocaleDateString())
+        ));
+      }
+      feedPanel.appendChild(list);
+    }
+  } catch (e) {
+    cards.innerHTML = '';
+    cards.appendChild(el('div', { class: 'err' }, e.message));
+  }
+
+  return wrap;
+}
+
+// ============================================================
+// LEADS
+// ============================================================
+async function viewLeads() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Leads'),
+    el('div', { class: 'muted' }, 'Pipeline tracker')
+  ));
+
+  const filterBar = el('div', { class: 'filter-bar' });
+  const STATUSES = ['All', 'New', 'Contacted', 'Booked', 'Lost'];
+  let activeFilter = state.leadsFilter || 'All';
+  const panel = el('div', { class: 'panel' });
+
+  const renderList = async () => {
+    panel.innerHTML = '';
+    panel.appendChild(skeleton(4));
+    try {
+      const qs = activeFilter === 'All' ? '' : `&status=${encodeURIComponent(activeFilter)}`;
+      const r = await api('/api/portal/crm?action=leads' + qs);
+      panel.innerHTML = '';
+      if (!r.leads.length) {
+        panel.appendChild(emptyState('No leads yet. They appear here as soon as Vapi or your web forms send them in.'));
+        return;
+      }
+      const list = el('div', { class: 'lead-list' });
+      for (const l of r.leads) {
+        const row = el('div', { class: 'lead-row' },
+          el('div', { class: 'lead-main' },
+            el('div', { class: 'lead-name' }, l.name),
+            el('div', { class: 'lead-meta muted' },
+              [l.phone, l.email, l.source].filter(Boolean).join(' · ')
+            )
+          ),
+          el('div', { class: 'lead-side' },
+            statusBadge(l.status),
+            el('div', { class: 'lead-time muted' }, new Date(l.created_at).toLocaleDateString())
+          )
+        );
+        row.addEventListener('click', () => {
+          const existing = row.nextSibling;
+          if (existing && existing.classList?.contains('lead-detail')) { existing.remove(); return; }
+          const detail = el('div', { class: 'lead-detail' },
+            el('div', {}, el('strong', {}, 'Phone: '), l.phone || '—'),
+            el('div', {}, el('strong', {}, 'Email: '), l.email || '—'),
+            el('div', {}, el('strong', {}, 'Source: '), l.source || '—'),
+            el('div', {}, el('strong', {}, 'Created: '), new Date(l.created_at).toLocaleString()),
+            l.notes ? el('div', { class: 'muted', style: 'margin-top:6px' }, l.notes) : null
+          );
+          row.after(detail);
+        });
+        list.appendChild(row);
+      }
+      panel.appendChild(list);
+    } catch (e) {
+      panel.innerHTML = '';
+      panel.appendChild(el('div', { class: 'err' }, e.message));
+    }
+  };
+
+  for (const s of STATUSES) {
+    const b = el('button', {
+      class: 'chip' + (s === activeFilter ? ' active' : ''),
+      onclick: () => {
+        activeFilter = s; state.leadsFilter = s;
+        for (const c of filterBar.querySelectorAll('.chip')) c.classList.remove('active');
+        b.classList.add('active');
+        renderList();
+      }
+    }, s);
+    filterBar.appendChild(b);
+  }
+  wrap.appendChild(filterBar);
+  wrap.appendChild(panel);
+  renderList();
+  return wrap;
+}
+
+// ============================================================
+// VAPI CALLS
+// ============================================================
+async function viewCalls() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Vapi Calls'),
+    el('div', { class: 'muted' }, 'AI voice answer log')
+  ));
+  const panel = el('div', { class: 'panel' });
+  panel.appendChild(skeleton(5));
+  wrap.appendChild(panel);
+
+  try {
+    const r = await api('/api/portal/crm?action=calls');
+    panel.innerHTML = '';
+    if (!r.calls.length) {
+      panel.appendChild(emptyState('No calls yet. Once Vapi handles a call it will show up here with the transcript.'));
+      return wrap;
+    }
+    const list = el('div', { class: 'call-list' });
+    for (const c of r.calls) {
+      const mins = Math.floor((c.duration_seconds || 0) / 60);
+      const secs = (c.duration_seconds || 0) % 60;
+      const dur = `${mins}:${String(secs).padStart(2, '0')}`;
+      const row = el('div', { class: 'call-row' },
+        el('div', { class: 'call-main' },
+          el('div', { class: 'call-phone' }, c.caller_phone || 'Unknown caller'),
+          el('div', { class: 'call-meta muted' },
+            new Date(c.created_at).toLocaleString() + ' · ' + dur
+          )
+        ),
+        el('div', { class: 'call-side' }, statusBadge(c.outcome))
+      );
+      row.addEventListener('click', () => {
+        const next = row.nextSibling;
+        if (next && next.classList?.contains('call-transcript')) { next.remove(); return; }
+        const t = el('div', { class: 'call-transcript' },
+          c.transcript || el('span', { class: 'muted' }, 'No transcript captured.')
+        );
+        row.after(t);
+      });
+      list.appendChild(row);
+    }
+    panel.appendChild(list);
+  } catch (e) {
+    panel.innerHTML = '';
+    panel.appendChild(el('div', { class: 'err' }, e.message));
+  }
+  return wrap;
+}
+
+// ============================================================
 // ROUTER / RENDER
 // ============================================================
 async function render() {
@@ -1057,6 +1303,9 @@ async function render() {
   try {
     switch (state.view) {
       case 'admin':     view = await viewAdmin(); break;
+      case 'dashboard': view = await viewDashboard(); break;
+      case 'leads':     view = await viewLeads(); break;
+      case 'calls':     view = await viewCalls(); break;
       case 'overview':  view = await viewOverview(); break;
       case 'activity':  view = await viewActivity(); break;
       case 'contacts':  view = await viewContacts(); break;
@@ -1085,3 +1334,117 @@ if (params.get('connect') === 'done') {
 }
 
 render();
+
+// ============================================================
+// PWA: service worker, install prompt, realtime notifications
+// ============================================================
+
+// Register service worker (production only — avoids local-dev cache pain).
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js').catch((err) => {
+      console.warn('SW register failed', err);
+    });
+  });
+}
+
+// "Add to Home Screen" install prompt
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (localStorage.getItem('ge8_install_dismissed')) return;
+  const banner = el('div', { class: 'install-banner' },
+    el('span', {}, 'Install GoElev8 for one-tap access'),
+    el('button', { class: 'btn sm', onclick: async () => {
+      banner.remove();
+      if (!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+    }}, 'Install'),
+    el('button', { class: 'btn sm ghost', onclick: () => {
+      localStorage.setItem('ge8_install_dismissed', '1');
+      banner.remove();
+    }}, 'Not now')
+  );
+  document.body.appendChild(banner);
+});
+
+// Live notifications via Supabase Realtime: subscribes to INSERTs on leads
+// + bookings for the current client and shows a system notification + toast.
+let realtimeChannel = null;
+let supabaseBrowser = null;
+
+async function ensureSupabaseBrowser() {
+  if (supabaseBrowser) return supabaseBrowser;
+  const r = await api('/api/portal/me').catch(() => null);
+  const url = r?.supabase?.url, anon = r?.supabase?.anon_key;
+  if (!url || !anon) return null;
+  const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
+  supabaseBrowser = createClient(url, anon, {
+    global: { headers: { Authorization: `Bearer ${state.token}` } },
+    realtime: { params: { eventsPerSecond: 5 } }
+  });
+  return supabaseBrowser;
+}
+
+async function notify(title, body) {
+  toast(`${title} — ${body}`);
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    try { await Notification.requestPermission(); } catch {}
+  }
+  if (Notification.permission !== 'granted') return;
+  const reg = await navigator.serviceWorker?.getRegistration?.();
+  const opts = { body, icon: '/icon-192.png', badge: '/icon-192.png' };
+  if (reg) reg.showNotification(title, opts);
+  else new Notification(title, opts);
+}
+
+async function startRealtime() {
+  if (realtimeChannel || !state.client?.id) return;
+  const sb = await ensureSupabaseBrowser();
+  if (!sb) return;
+  const clientId = state.client.id;
+  realtimeChannel = sb.channel('portal-' + clientId)
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'leads', filter: `client_id=eq.${clientId}` },
+      (payload) => {
+        const l = payload.new || {};
+        notify('New lead', `${l.name || 'Someone'} just came in${l.source ? ' via ' + l.source : ''}`);
+      })
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'bookings', filter: `client_id=eq.${clientId}` },
+      (payload) => {
+        const b = payload.new || {};
+        const when = b.starts_at ? new Date(b.starts_at).toLocaleString() : 'soon';
+        notify('New booking', `Confirmed for ${when}`);
+      })
+    .subscribe();
+}
+
+function stopRealtime() {
+  if (realtimeChannel && supabaseBrowser) {
+    supabaseBrowser.removeChannel(realtimeChannel);
+    realtimeChannel = null;
+  }
+}
+
+// Patch auth lifecycle to start/stop the realtime subscription. We rebind
+// the existing top-level functions so all callers go through the patched
+// versions without needing to refactor every call site.
+const _origLoadMe = loadMe;
+loadMe = async function patchedLoadMe() {  // eslint-disable-line no-func-assign
+  await _origLoadMe();
+  if (state.client?.id) startRealtime();
+};
+const _origLogout = logout;
+logout = function patchedLogout() {  // eslint-disable-line no-func-assign
+  stopRealtime();
+  _origLogout();
+};
+
+// If the user is already signed in on first load, kick off realtime once
+// the initial render finishes hydrating state.client.
+setTimeout(() => { if (state.client?.id) startRealtime(); }, 1500);
