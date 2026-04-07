@@ -1,40 +1,65 @@
 #!/usr/bin/env node
-// Creates a tenant: clients row, Supabase auth users, client_users links, Stripe Customer.
+// Onboard a tenant end-to-end:
+//   1. Create Stripe customer
+//   2. (optional) Create Twilio subaccount + buy a phone number under it
+//      and point its inbound + status webhooks at the portal
+//   3. Insert clients row + Supabase auth users + client_users links
 //
 // Usage:
+//   # Existing presets (parent-account numbers, no subaccount)
 //   node scripts/onboard-client.mjs --preset flex-facility
 //   node scripts/onboard-client.mjs --preset islay-studios
+//
+//   # New tenant with isolated Twilio subaccount + auto-purchased number
+//   node scripts/onboard-client.mjs \
+//     --name "Acme Co" --slug acme \
+//     --email owner@acme.com --password "Acme123!!" \
+//     --subaccount --area-code 415
+//
+//   # New tenant, manually specify a number you already own (will be
+//   # transferred from the parent account into the new subaccount):
+//   node scripts/onboard-client.mjs \
+//     --name "Acme Co" --slug acme --email owner@acme.com \
+//     --password "Acme123!!" --subaccount --transfer-number +14155551234
+//
+//   # New tenant on parent account (legacy mode):
 //   node scripts/onboard-client.mjs --name "Acme Co" --slug acme \
-//        --phone +18001234567 --email owner@acme.com --password "Acme123!!"
+//     --email owner@acme.com --password "Acme123!!" --phone +14155551234
+
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import Stripe from 'stripe';
+import Twilio from 'twilio';
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false }
 });
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
+const parentTwilio = Twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const base = process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai';
 
 const PRESETS = {
   'flex-facility': {
-    name: 'The Flex Facility',
-    slug: 'flex-facility',
+    name: 'The Flex Facility', slug: 'flex-facility',
     twilio_phone_number: '+18775153539',
     password: 'Flex123!!!',
-    users: ['ab@theflexfacility.com', 'kenny@theflexfacility.com']
+    users: ['ab@theflexfacility.com', 'kenny@theflexfacility.com'],
+    subaccount: false
   },
   'islay-studios': {
-    name: 'iSlay Studios',
-    slug: 'islay-studios',
+    name: 'iSlay Studios', slug: 'islay-studios',
     twilio_phone_number: '+18332787529',
     password: 'iSlay123!!!',
-    users: ['ab@islaystudiosllc.com', 'nate@islaystudiosllc.com']
+    users: ['ab@islaystudiosllc.com', 'nate@islaystudiosllc.com'],
+    subaccount: false
   }
 };
 
 function arg(name) {
   const i = process.argv.indexOf('--' + name);
-  return i >= 0 ? process.argv[i + 1] : null;
+  if (i < 0) return null;
+  const next = process.argv[i + 1];
+  return (!next || next.startsWith('--')) ? true : next;
 }
 
 const preset = arg('preset');
@@ -43,16 +68,21 @@ const cfg = preset ? PRESETS[preset] : {
   slug: arg('slug'),
   twilio_phone_number: arg('phone'),
   password: arg('password'),
-  users: [arg('email')].filter(Boolean)
+  users: [arg('email')].filter(Boolean),
+  subaccount: !!arg('subaccount'),
+  area_code: arg('area-code'),
+  transfer_number: arg('transfer-number')
 };
 if (!cfg?.name || !cfg.slug) {
-  console.error('Missing required fields. Use --preset or --name/--slug/--phone/--email/--password');
+  console.error('Missing required fields. Use --preset or --name/--slug/--email/--password');
   process.exit(1);
 }
 
 console.log(`→ Onboarding ${cfg.name}`);
 
+// =====================================================================
 // 1. Stripe customer
+// =====================================================================
 const customer = await stripe.customers.create({
   name: cfg.name,
   email: cfg.users[0],
@@ -60,36 +90,122 @@ const customer = await stripe.customers.create({
 });
 console.log('  ✓ Stripe customer:', customer.id);
 
-// 2. Client row
+// =====================================================================
+// 2. Twilio: subaccount + number (when --subaccount flag is set)
+// =====================================================================
+let subAcctSid = null;
+let subAcctToken = null;
+let phoneNumber = cfg.twilio_phone_number || null;
+
+if (cfg.subaccount) {
+  console.log('  → Creating Twilio subaccount…');
+  const sub = await parentTwilio.api.v2010.accounts.create({
+    friendlyName: `GoElev8 — ${cfg.name}`
+  });
+  subAcctSid = sub.sid;
+  subAcctToken = sub.authToken;
+  console.log('  ✓ Subaccount:', subAcctSid);
+
+  const subClient = Twilio(subAcctSid, subAcctToken);
+
+  if (cfg.transfer_number) {
+    // Transfer an existing parent-account number into the subaccount.
+    const list = await parentTwilio.incomingPhoneNumbers.list({
+      phoneNumber: cfg.transfer_number, limit: 5
+    });
+    const num = list[0];
+    if (!num) {
+      console.error(`  ✗ ${cfg.transfer_number} not found in parent account`);
+      process.exit(1);
+    }
+    await parentTwilio.incomingPhoneNumbers(num.sid).update({ accountSid: subAcctSid });
+    phoneNumber = cfg.transfer_number;
+    console.log(`  ✓ Transferred ${phoneNumber} to subaccount`);
+
+    // Re-fetch under the subaccount and configure webhooks
+    const subList = await subClient.incomingPhoneNumbers.list({ phoneNumber, limit: 5 });
+    if (subList[0]) {
+      await subClient.incomingPhoneNumbers(subList[0].sid).update({
+        smsUrl: `${base}/api/twilio/inbound`,
+        smsMethod: 'POST',
+        statusCallback: `${base}/api/twilio/status`,
+        statusCallbackMethod: 'POST'
+      });
+      console.log('  ✓ Webhooks configured');
+    }
+  } else {
+    // Search for an available local US number and buy it under the subaccount.
+    const search = { limit: 1, smsEnabled: true };
+    if (cfg.area_code && cfg.area_code !== true) search.areaCode = cfg.area_code;
+    console.log(`  → Searching available US local numbers${search.areaCode ? ' in ' + search.areaCode : ''}…`);
+    const available = await subClient.availablePhoneNumbers('US').local.list(search);
+    if (!available[0]) {
+      console.error('  ✗ No numbers available with those criteria');
+      process.exit(1);
+    }
+    const purchased = await subClient.incomingPhoneNumbers.create({
+      phoneNumber: available[0].phoneNumber,
+      smsUrl: `${base}/api/twilio/inbound`,
+      smsMethod: 'POST',
+      statusCallback: `${base}/api/twilio/status`,
+      statusCallbackMethod: 'POST'
+    });
+    phoneNumber = purchased.phoneNumber;
+    console.log('  ✓ Purchased + configured:', phoneNumber);
+  }
+} else if (cfg.twilio_phone_number) {
+  // Parent account number — make sure webhooks are pointed at the portal
+  try {
+    const list = await parentTwilio.incomingPhoneNumbers.list({
+      phoneNumber: cfg.twilio_phone_number, limit: 5
+    });
+    if (list[0]) {
+      await parentTwilio.incomingPhoneNumbers(list[0].sid).update({
+        smsUrl: `${base}/api/twilio/inbound`,
+        smsMethod: 'POST',
+        statusCallback: `${base}/api/twilio/status`,
+        statusCallbackMethod: 'POST'
+      });
+      console.log(`  ✓ Webhooks configured on parent-account number ${cfg.twilio_phone_number}`);
+    }
+  } catch (e) {
+    console.warn('  ! Could not auto-configure webhooks:', e.message);
+  }
+}
+
+// =====================================================================
+// 3. clients row
+// =====================================================================
+const clientPayload = {
+  name: cfg.name,
+  slug: cfg.slug,
+  twilio_phone_number: phoneNumber,
+  twilio_subaccount_sid: subAcctSid,
+  twilio_auth_token: subAcctToken,
+  stripe_customer_id: customer.id
+};
+
 const { data: existing } = await sb.from('clients').select('id').eq('slug', cfg.slug).maybeSingle();
 let clientId;
 if (existing) {
   clientId = existing.id;
-  await sb.from('clients').update({
-    name: cfg.name,
-    twilio_phone_number: cfg.twilio_phone_number,
-    stripe_customer_id: customer.id
-  }).eq('id', clientId);
+  await sb.from('clients').update(clientPayload).eq('id', clientId);
   console.log('  ✓ Updated existing client row');
 } else {
-  const { data: c, error } = await sb.from('clients').insert({
-    name: cfg.name,
-    slug: cfg.slug,
-    twilio_phone_number: cfg.twilio_phone_number,
-    stripe_customer_id: customer.id,
-    credit_balance: 0
-  }).select().single();
+  const { data: c, error } = await sb.from('clients')
+    .insert({ ...clientPayload, credit_balance: 0 })
+    .select().single();
   if (error) { console.error(error); process.exit(1); }
   clientId = c.id;
   console.log('  ✓ Client row:', clientId);
 }
 
-// 3. Auth users + links
+// =====================================================================
+// 4. Supabase auth users + client_users links
+// =====================================================================
 for (const email of cfg.users) {
   const { data: created, error } = await sb.auth.admin.createUser({
-    email,
-    password: cfg.password,
-    email_confirm: true
+    email, password: cfg.password, email_confirm: true
   });
   let userId;
   if (error && /already/i.test(error.message)) {
@@ -112,5 +228,7 @@ for (const email of cfg.users) {
 }
 
 console.log(`\n🎉 ${cfg.name} ready`);
-console.log(`   Login: ${cfg.users[0]}`);
+console.log(`   Login:    ${cfg.users[0]}`);
 console.log(`   Password: ${cfg.password}`);
+console.log(`   Number:   ${phoneNumber || '(none)'}`);
+if (subAcctSid) console.log(`   Twilio subaccount: ${subAcctSid}`);

@@ -16,8 +16,9 @@ Use the new values in Step 2.
 1. Go to https://supabase.com/dashboard → your GoElev8 project → **SQL Editor**
 2. Open `supabase/migrations/0001_init.sql` from this repo
 3. Paste it into the SQL editor and click **Run**
+4. Then do the same with `supabase/migrations/0002_twilio_subaccounts.sql`
 
-This creates all tables, RLS policies, helper functions, and triggers.
+This creates all tables, RLS policies, helper functions, and triggers, plus the per-client Twilio subaccount auth-token column.
 
 ## Step 2 — Add environment variables
 
@@ -103,14 +104,50 @@ Test flow:
 
 ## Onboarding new clients
 
+The `onboard-client.mjs` script handles **everything** end-to-end: Stripe customer, Twilio subaccount, phone number purchase, webhook wiring, Supabase auth users, and `client_users` mapping.
+
+### Recommended: isolated Twilio subaccount (auto-purchase a number)
+
 ```bash
 node scripts/onboard-client.mjs \
   --name "Acme Co" --slug acme \
-  --phone +18001234567 \
-  --email owner@acme.com \
-  --password "TempPass123!"
+  --email owner@acme.com --password "Acme123!!" \
+  --subaccount --area-code 415
 ```
 
-Then point a Twilio number's webhooks at the portal (re-run `setup-twilio.mjs` after editing the `NUMBERS` array, or set them manually in the Twilio console: SMS URL → `https://portal.goelev8.ai/api/twilio/inbound`).
+What this does:
+1. Creates a Stripe customer
+2. Creates a **Twilio subaccount** under your master account (isolated billing, isolated suspension, isolated number ownership)
+3. Searches for an available US local number in the requested area code and **purchases it under the new subaccount** (charged to your Twilio balance)
+4. Configures the new number's inbound (`/api/twilio/inbound`) and status callback (`/api/twilio/status`) webhooks
+5. Stores the subaccount SID + auth token on the `clients` row so the messaging API automatically routes that tenant's outbound SMS through their own subaccount credentials
+6. Creates the Supabase auth user(s) with the password you specified
+7. Links the user(s) to the new client via `client_users`
 
-For future tenants, switch to **Twilio subaccounts** for proper isolation (recommended pattern).
+### Variant: subaccount but transfer an existing number
+
+```bash
+node scripts/onboard-client.mjs \
+  --name "Acme Co" --slug acme \
+  --email owner@acme.com --password "Acme123!!" \
+  --subaccount --transfer-number +14155551234
+```
+
+This moves a number you already own (currently in the parent account) into the new subaccount and re-points its webhooks.
+
+### Legacy: parent-account number (no subaccount)
+
+```bash
+node scripts/onboard-client.mjs \
+  --name "Acme Co" --slug acme \
+  --email owner@acme.com --password "Acme123!!" \
+  --phone +14155551234
+```
+
+(This is what the `flex-facility` and `islay-studios` presets use.)
+
+### Multi-user clients
+
+The `--email` flag accepts one address. To add additional users to the same client afterward, run the script again with the same `--slug` and a new `--email` — it will detect the existing client row and just attach the new user.
+
+Or use the JS API directly (Supabase admin → `auth.admin.createUser` → insert `client_users` row pointing at the existing `client_id`).

@@ -1,6 +1,6 @@
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilio, estimateSegments } from '../../lib/twilio.js';
+import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -53,10 +53,11 @@ export default async function handler(req, res) {
     .rpc('consume_credits', { p_client_id: clientId, p_amount: segments });
   if (dErr) return res.status(402).json({ error: 'insufficient_credits' });
 
-  // Send via Twilio
+  // Send via Twilio (per-tenant subaccount if configured)
+  const tw = twilioForClient(client);
   let twilioMsg;
   try {
-    twilioMsg = await twilio.messages.create({
+    twilioMsg = await tw.messages.create({
       from: client.twilio_phone_number,
       to: destNumber,
       body: text,
