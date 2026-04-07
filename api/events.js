@@ -22,7 +22,8 @@
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { requireUser, methodGuard } from '../lib/auth.js';
+import { requireUser, methodGuard, readJson } from '../lib/auth.js';
+import { sendWelcomeForEvent } from '../lib/welcome.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -115,14 +116,34 @@ async function handleIngest(req, res) {
     occurred_at: body.occurred_at ? new Date(body.occurred_at).toISOString() : new Date().toISOString()
   };
 
+  // Idempotent insert: ignoreDuplicates so a re-fired webhook doesn't
+  // re-trigger the welcome SMS. If external_id is null we can't dedupe,
+  // so we always insert a new row.
   const { data, error } = await supabaseAdmin
     .from('client_events')
-    .upsert(row, { onConflict: 'client_id,source,external_id', ignoreDuplicates: false })
+    .upsert(row, { onConflict: 'client_id,source,external_id', ignoreDuplicates: true })
     .select('id')
     .maybeSingle();
 
   if (error) return res.status(500).json({ error: error.message });
-  return res.status(200).json({ ok: true, id: data?.id || null });
+
+  const isNew = !!data?.id;
+  let welcome = { sent: false, reason: 'duplicate_event' };
+
+  if (isNew) {
+    // Load full client (need balance, twilio creds, template) and try welcome.
+    const { data: client } = await supabaseAdmin
+      .from('clients')
+      .select('*')
+      .eq('id', clientId)
+      .single();
+    if (client) {
+      try { welcome = await sendWelcomeForEvent({ client, event: row }); }
+      catch (e) { welcome = { sent: false, reason: 'exception: ' + (e.message || e) }; }
+    }
+  }
+
+  return res.status(200).json({ ok: true, id: data?.id || null, is_new: isNew, welcome });
 }
 
 async function handleList(req, res) {

@@ -636,6 +636,84 @@ function viewSettings() {
   panel.appendChild(el('p', {}, `Client: ${state.client?.name || ''}`));
   wrap.appendChild(panel);
 
+  // ----- Welcome SMS -----
+  const wsms = el('div', { class: 'panel' });
+  wsms.appendChild(el('h2', {}, 'Welcome SMS'));
+  wsms.appendChild(el('p', { class: 'muted' },
+    'Automatically text new leads the moment a webhook event arrives from your client sites. ' +
+    'A welcome SMS only fires when the event includes a phone number and you have credits.'));
+
+  const enabled = el('input', { type: 'checkbox' });
+  enabled.checked = !!state.client?.welcome_sms_enabled;
+  const enabledRow = el('label', { class: 'toggle-row' },
+    enabled,
+    el('span', {}, 'Send a welcome SMS automatically on new events')
+  );
+  wsms.appendChild(enabledRow);
+
+  const tplLabel = el('label', { class: 'field-label' }, 'Message template');
+  const tpl = el('textarea', {
+    rows: 5, maxlength: 1600,
+    placeholder: 'Hi {{first_name}}, thanks for reaching out to {{client_name}}!'
+  });
+  tpl.value = state.client?.welcome_sms_template || '';
+  wsms.appendChild(tplLabel);
+  wsms.appendChild(tpl);
+
+  wsms.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin-top:6px' },
+    'Variables: ',
+    el('code', {}, '{{first_name}}'), ' ',
+    el('code', {}, '{{name}}'), ' ',
+    el('code', {}, '{{client_name}}'), ' ',
+    el('code', {}, '{{source}}'), ' ',
+    el('code', {}, '{{source_path}}')
+  ));
+
+  const previewLabel = el('div', { class: 'field-label', style: 'margin-top:14px' }, 'Preview');
+  const preview = el('div', { class: 'sms-preview' });
+  wsms.appendChild(previewLabel);
+  wsms.appendChild(preview);
+
+  const renderPreview = () => {
+    const sample = {
+      first_name: 'Jane',
+      name: 'Jane Doe',
+      client_name: state.client?.name || 'Your Business',
+      source: 'theflexfacility.com',
+      source_path: '/fit'
+    };
+    const out = (tpl.value || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => sample[k] ?? '');
+    const segs = Math.max(1, Math.ceil((out.length || 1) / 160));
+    preview.textContent = out || '(empty)';
+    segCount.textContent = `${out.length} chars · ${segs} segment${segs === 1 ? '' : 's'} · ${segs} credit${segs === 1 ? '' : 's'} per send`;
+  };
+  const segCount = el('div', { class: 'muted', style: 'font-size:12px;margin-top:6px' });
+  wsms.appendChild(segCount);
+  tpl.addEventListener('input', renderPreview);
+  renderPreview();
+
+  const saveBtn = el('button', { class: 'btn', style: 'margin-top:14px' }, 'Save welcome SMS');
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    try {
+      const r = await api('/api/portal/me', {
+        method: 'PATCH',
+        body: {
+          welcome_sms_enabled: enabled.checked,
+          welcome_sms_template: tpl.value
+        }
+      });
+      state.client = r.client;
+      toast('Welcome SMS saved');
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+  wsms.appendChild(saveBtn);
+  wrap.appendChild(wsms);
+
   const pw = el('div', { class: 'panel' });
   pw.appendChild(el('h2', {}, 'Change password'));
   const np = el('input', { type: 'password', placeholder: 'New password (min 8 chars)' });
