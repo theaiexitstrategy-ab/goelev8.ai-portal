@@ -2,26 +2,32 @@ import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 
 const CLIENT_FIELDS =
-  'id, name, slug, twilio_phone_number, credit_balance, ' +
+  'id, name, slug, twilio_phone_number, credit_balance, billing_paused, ' +
   'auto_reload_enabled, auto_reload_threshold, auto_reload_pack, ' +
   'stripe_connected_account_id, welcome_sms_enabled, welcome_sms_template';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'PATCH'])) return;
-  const ctx = await requireUser(req, res); if (!ctx) return;
+  // Admins are allowed in without a client_id (they may not be impersonating yet).
+  const ctx = await requireUser(req, res, { requireClient: false }); if (!ctx) return;
 
   if (req.method === 'GET') {
-    const { data: client } = await supabaseAdmin
-      .from('clients')
-      .select(CLIENT_FIELDS)
-      .eq('id', ctx.clientId).single();
+    let client = null;
+    if (ctx.clientId) {
+      const { data } = await supabaseAdmin
+        .from('clients').select(CLIENT_FIELDS).eq('id', ctx.clientId).single();
+      client = data;
+    }
     return res.status(200).json({
       user: { id: ctx.user.id, email: ctx.user.email },
+      isAdmin: !!ctx.isAdmin,
       client
     });
   }
 
-  // PATCH: only allow whitelisted fields the client owner can self-serve.
+  // PATCH: client owner self-serve fields. Admins editing via impersonation
+  // also flow through here, which is fine.
+  if (!ctx.clientId) return res.status(400).json({ error: 'no_client_context' });
   const body = await readJson(req);
   const patch = {};
   if (typeof body.welcome_sms_enabled === 'boolean') patch.welcome_sms_enabled = body.welcome_sms_enabled;

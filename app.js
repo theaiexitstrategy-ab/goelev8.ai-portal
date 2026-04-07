@@ -21,6 +21,8 @@ const state = {
   token: localStorage.getItem('ge8_token') || null,
   user: null,
   client: null,
+  isAdmin: false,
+  impersonating: localStorage.getItem('ge8_impersonate') || null,
   view: 'overview'
 };
 
@@ -33,6 +35,7 @@ function toast(msg, isError = false) {
 async function api(path, opts = {}) {
   const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
   if (state.token) headers.authorization = `Bearer ${state.token}`;
+  if (state.isAdmin && state.impersonating) headers['x-admin-as-client'] = state.impersonating;
   const res = await fetch(path, {
     ...opts,
     headers,
@@ -46,8 +49,22 @@ async function api(path, opts = {}) {
 
 function logout() {
   localStorage.removeItem('ge8_token');
+  localStorage.removeItem('ge8_impersonate');
   state.token = null; state.user = null; state.client = null;
+  state.isAdmin = false; state.impersonating = null;
   render();
+}
+
+function setImpersonation(clientId) {
+  if (clientId) {
+    state.impersonating = clientId;
+    localStorage.setItem('ge8_impersonate', clientId);
+  } else {
+    state.impersonating = null;
+    localStorage.removeItem('ge8_impersonate');
+  }
+  state.client = null;
+  state.view = 'overview';
 }
 
 // ============================================================
@@ -98,6 +115,7 @@ async function loadMe() {
   const r = await api('/api/portal/me');
   state.user = r.user;
   state.client = r.client;
+  state.isAdmin = !!r.isAdmin;
 }
 
 // ============================================================
@@ -107,29 +125,53 @@ function shell(content) {
   const navBtn = (id, label) =>
     el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; render(); } }, label);
 
-  return el('div', { class: 'app' },
+  const adminSection = state.isAdmin
+    ? el('div', { class: 'admin-section' },
+        el('div', { class: 'admin-label' }, 'ADMIN'),
+        navBtn('admin', 'Master Admin'),
+        state.impersonating
+          ? el('button', { class: 'btn-stop-impersonate', onclick: () => { setImpersonation(null); render(); } },
+              '× Stop impersonating')
+          : null
+      )
+    : null;
+
+  const banner = state.isAdmin && state.impersonating
+    ? el('div', { class: 'impersonation-banner' },
+        el('span', {}, 'Viewing as '),
+        el('strong', {}, state.client?.name || '…'),
+        el('button', { class: 'link', onclick: () => { setImpersonation(null); render(); } }, 'Exit'))
+    : null;
+
+  return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
         el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
-        el('div', { class: 'name' }, 'GoElev8.AI', el('small', {}, 'Client Portal'))
+        el('div', { class: 'name' }, 'GoElev8.AI',
+          el('small', {}, state.isAdmin ? 'Master Admin' : 'Client Portal'))
       ),
-      el('div', { class: 'client-pill' },
-        el('div', { class: 'name' }, state.client?.name || ''),
-        el('div', { class: 'num' }, state.client?.twilio_phone_number || 'No number assigned')
-      ),
-      el('div', { class: 'nav' },
-        navBtn('overview', 'Overview'),
-        navBtn('activity', 'Activity'),
-        navBtn('messages', 'Messages'),
-        navBtn('contacts', 'Contacts'),
-        navBtn('bookings', 'Bookings'),
-        navBtn('billing', 'Credits & Billing'),
-        navBtn('connect', 'Payments (Connect)'),
-        navBtn('settings', 'Settings')
-      ),
+      state.client
+        ? el('div', { class: 'client-pill' },
+            el('div', { class: 'name' }, state.client?.name || ''),
+            el('div', { class: 'num' }, state.client?.twilio_phone_number || 'No number assigned')
+          )
+        : null,
+      state.client
+        ? el('div', { class: 'nav' },
+            navBtn('overview', 'Overview'),
+            navBtn('activity', 'Activity'),
+            navBtn('messages', 'Messages'),
+            navBtn('contacts', 'Contacts'),
+            navBtn('bookings', 'Bookings'),
+            navBtn('billing', 'Credits & Billing'),
+            navBtn('connect', 'Payments (Connect)'),
+            navBtn('settings', 'Settings')
+          )
+        : null,
+      adminSection,
       el('button', { class: 'signout', onclick: logout }, 'Sign out')
     ),
-    el('main', { class: 'main' }, content)
+    el('main', { class: 'main' }, banner, content)
   );
 }
 
@@ -150,9 +192,9 @@ async function viewOverview() {
     const b = await api('/api/portal/billing');
     cards.appendChild(card('Sent This Month', b.sent_this_month, 'Outbound SMS'));
     const [{ data: contacts }, bookings] = [{ data: null }, null];
-    const c = await api('/api/portal/contacts');
+    const c = await api('/api/portal/crm?action=contacts');
     cards.appendChild(card('Contacts', c.contacts.length, 'Total in CRM'));
-    const bk = await api('/api/portal/bookings');
+    const bk = await api('/api/portal/crm?action=bookings');
     cards.appendChild(card('Bookings', bk.bookings.length, 'Scheduled'));
   } catch (e) {}
 
@@ -211,7 +253,7 @@ async function viewContacts() {
   panel.appendChild(el('p', { class: 'muted' }, 'Loading...'));
 
   try {
-    const r = await api('/api/portal/contacts');
+    const r = await api('/api/portal/crm?action=contacts');
     panel.innerHTML = '';
     if (!r.contacts.length) {
       panel.appendChild(el('p', { class: 'muted' }, 'No contacts yet. Add your first one above.'));
@@ -234,7 +276,7 @@ async function viewContacts() {
             ' ',
             el('button', { class: 'btn sm danger', onclick: async () => {
               if (!confirm('Delete contact?')) return;
-              await api('/api/portal/contacts', { method: 'DELETE', body: { id: c.id } });
+              await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
               render();
             }}, 'Delete')
           )
@@ -261,7 +303,7 @@ function openContactModal(initial = null) {
         tags: tags.value.split(',').map(s => s.trim()).filter(Boolean),
         notes: notes.value || null
       };
-      await api('/api/portal/contacts', { method: 'POST', body });
+      await api('/api/portal/crm?action=contacts', { method: 'POST', body });
       close(); render();
     } catch (e) { toast(e.message, true); }
   };
@@ -293,7 +335,7 @@ async function viewBookings() {
   const panel = el('div', { class: 'panel' });
   wrap.appendChild(panel);
   try {
-    const r = await api('/api/portal/bookings');
+    const r = await api('/api/portal/crm?action=bookings');
     if (!r.bookings.length) {
       panel.appendChild(el('p', { class: 'muted' }, 'No bookings yet.'));
       return wrap;
@@ -311,7 +353,7 @@ async function viewBookings() {
           el('td', {}, el('span', { class: 'badge' }, b.status)),
           el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
             if (!confirm('Delete booking?')) return;
-            await api('/api/portal/bookings', { method: 'DELETE', body: { id: b.id } });
+            await api('/api/portal/crm?action=bookings', { method: 'DELETE', body: { id: b.id } });
             render();
           }}, 'Delete'))
         )
@@ -322,7 +364,7 @@ async function viewBookings() {
 }
 
 async function openBookingModal() {
-  const c = await api('/api/portal/contacts');
+  const c = await api('/api/portal/crm?action=contacts');
   const contactSel = el('select', {},
     el('option', { value: '' }, '— none —'),
     ...c.contacts.map(ct => el('option', { value: ct.id }, `${ct.name} (${ct.phone})`))
@@ -336,7 +378,7 @@ async function openBookingModal() {
   const close = () => bg.remove();
   const save = async () => {
     try {
-      await api('/api/portal/bookings', { method: 'POST', body: {
+      await api('/api/portal/crm?action=bookings', { method: 'POST', body: {
         contact_id: contactSel.value || null, service: service.value,
         starts_at: new Date(startsAt.value).toISOString(),
         status: status.value, notes: notes.value
@@ -376,7 +418,7 @@ async function viewMessages() {
   layout.appendChild(pane);
 
   const [contactsR, msgsR] = await Promise.all([
-    api('/api/portal/contacts'),
+    api('/api/portal/crm?action=contacts'),
     api('/api/portal/messages')
   ]);
   const contacts = contactsR.contacts;
@@ -801,6 +843,169 @@ async function viewActivity() {
 }
 
 // ============================================================
+// MASTER ADMIN VIEW
+// ============================================================
+async function viewAdmin() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Master Admin'),
+    el('div', { class: 'muted' }, 'Cross-tenant operations · only visible to platform admins')));
+
+  // ----- Analytics cards -----
+  const cards = el('div', { class: 'cards' });
+  wrap.appendChild(cards);
+  cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading…')));
+  try {
+    const a = await api('/api/admin?action=analytics');
+    cards.innerHTML = '';
+    const card = (label, value, sub) => el('div', { class: 'card' },
+      el('div', { class: 'card-label' }, label),
+      el('div', { class: 'card-value' }, String(value)),
+      sub ? el('div', { class: 'card-sub muted' }, sub) : null);
+    cards.appendChild(card('Total clients', a.total_clients, `${a.new_clients_30d} new in 30d`));
+    cards.appendChild(card('Active 7d', a.active_clients_7d, 'sent SMS in last 7 days'));
+    cards.appendChild(card('SMS this month', a.sms_this_month, 'outbound across all clients'));
+    cards.appendChild(card('Purchases this month', a.purchases_this_month, 'credit pack buys'));
+  } catch (e) { cards.innerHTML = ''; cards.appendChild(el('div', { class: 'err' }, e.message)); }
+
+  // ----- Clients table -----
+  const tablePanel = el('div', { class: 'panel' });
+  tablePanel.appendChild(el('h2', {}, 'All clients'));
+  const tableHost = el('div', {}, el('div', { class: 'muted' }, 'Loading…'));
+  tablePanel.appendChild(tableHost);
+  wrap.appendChild(tablePanel);
+
+  let allClients = [];
+  const refresh = async () => {
+    const r = await api('/api/admin?action=list-clients');
+    allClients = r.clients || [];
+    tableHost.innerHTML = '';
+    if (!allClients.length) {
+      tableHost.appendChild(el('div', { class: 'muted' }, 'No clients yet.'));
+      return;
+    }
+    const table = el('table', { class: 'admin-table' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Client'),
+        el('th', {}, 'Slug'),
+        el('th', {}, 'Twilio'),
+        el('th', {}, 'Credits'),
+        el('th', {}, 'Sent 30d'),
+        el('th', {}, 'Status'),
+        el('th', {}, 'Actions')
+      )),
+      el('tbody', {}, ...allClients.map((c) => {
+        const adjustInput = el('input', { type: 'number', value: '20', style: 'width:70px' });
+        const noteInput   = el('input', { type: 'text', placeholder: 'note (optional)', style: 'width:140px' });
+        return el('tr', {},
+          el('td', {}, el('strong', {}, c.name || '—')),
+          el('td', {}, el('code', {}, c.slug)),
+          el('td', { class: 'muted mono' }, c.twilio_phone_number || '—'),
+          el('td', {}, String(c.credit_balance ?? 0)),
+          el('td', { class: 'muted' }, String(c.sent_30d || 0)),
+          el('td', {}, c.billing_paused
+              ? el('span', { class: 'pill warn' }, 'PAUSED')
+              : el('span', { class: 'pill ok' }, 'active')),
+          el('td', { class: 'actions' },
+            el('button', { class: 'btn sm', onclick: () => {
+              setImpersonation(c.id); render();
+            }}, 'View as'),
+            adjustInput, noteInput,
+            el('button', { class: 'btn sm', onclick: async () => {
+              try {
+                const delta = parseInt(adjustInput.value, 10);
+                const r = await api('/api/admin?action=set-credits', {
+                  method: 'POST', body: { client_id: c.id, delta, note: noteInput.value }
+                });
+                toast(`${c.name}: ${r.client.credit_balance} credits`);
+                await refresh();
+              } catch (e) { toast(e.message, true); }
+            }}, '± credits'),
+            el('button', { class: 'btn sm ' + (c.billing_paused ? 'btn-success' : 'btn-warn'), onclick: async () => {
+              try {
+                await api('/api/admin?action=billing-pause', {
+                  method: 'POST', body: { client_id: c.id, paused: !c.billing_paused }
+                });
+                toast(c.billing_paused ? 'Billing resumed' : 'Billing paused');
+                await refresh();
+              } catch (e) { toast(e.message, true); }
+            }}, c.billing_paused ? 'Resume billing' : 'Pause billing')
+          )
+        );
+      }))
+    );
+    tableHost.appendChild(table);
+  };
+  refresh().catch((e) => { tableHost.innerHTML = ''; tableHost.appendChild(el('div', { class: 'err' }, e.message)); });
+
+  // ----- Send free SMS as any client -----
+  const sendPanel = el('div', { class: 'panel' });
+  sendPanel.appendChild(el('h2', {}, 'Send free SMS as any client'));
+  sendPanel.appendChild(el('p', { class: 'muted' }, 'Bypasses credits and Stripe billing. Logged with credits_charged = 0.'));
+  const clientSel = el('select', {});
+  const toIn      = el('input', { type: 'tel', placeholder: '+15551234567' });
+  const bodyIn    = el('textarea', { rows: 3, placeholder: 'Message…' });
+  const fillSel = () => {
+    clientSel.innerHTML = '';
+    for (const c of allClients) {
+      const o = el('option', { value: c.id }, `${c.name} (${c.slug})`);
+      clientSel.appendChild(o);
+    }
+  };
+  setTimeout(fillSel, 600); // after refresh
+  sendPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'Client'), clientSel));
+  sendPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'To'), toIn));
+  sendPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'Body'), bodyIn));
+  sendPanel.appendChild(el('button', { class: 'btn', onclick: async () => {
+    try {
+      const r = await api('/api/admin?action=send-as-client', {
+        method: 'POST',
+        body: { client_id: clientSel.value, to: toIn.value, body: bodyIn.value }
+      });
+      toast('Sent · sid ' + r.sid + ' (free)');
+      bodyIn.value = '';
+    } catch (e) { toast(e.message, true); }
+  }}, 'Send free SMS'));
+  wrap.appendChild(sendPanel);
+
+  // ----- Create new client -----
+  const createPanel = el('div', { class: 'panel' });
+  createPanel.appendChild(el('h2', {}, 'Onboard new client'));
+  const fSlug = el('input', { placeholder: 'acme-fitness' });
+  const fName = el('input', { placeholder: 'Acme Fitness' });
+  const fNum  = el('input', { placeholder: '+18005550123 (optional)' });
+  const fEmail = el('input', { type: 'email', placeholder: 'owner@acmefitness.com' });
+  const fPw    = el('input', { type: 'text', placeholder: 'Initial password' });
+  createPanel.appendChild(el('div', { class: 'grid-2' },
+    el('div', { class: 'field' }, el('label', {}, 'Slug'), fSlug),
+    el('div', { class: 'field' }, el('label', {}, 'Name'), fName),
+    el('div', { class: 'field' }, el('label', {}, 'Twilio number'), fNum),
+    el('div', { class: 'field' }, el('label', {}, 'Owner email'), fEmail),
+    el('div', { class: 'field' }, el('label', {}, 'Owner password'), fPw)
+  ));
+  createPanel.appendChild(el('button', { class: 'btn', onclick: async () => {
+    try {
+      await api('/api/admin?action=create-client', {
+        method: 'POST',
+        body: {
+          slug: fSlug.value.trim(),
+          name: fName.value.trim(),
+          twilio_phone_number: fNum.value.trim() || null,
+          users: fEmail.value ? [{ email: fEmail.value.trim(), password: fPw.value, role: 'owner' }] : [],
+          grant_credits: 20
+        }
+      });
+      toast('Client created with 20 free credits');
+      fSlug.value = fName.value = fNum.value = fEmail.value = fPw.value = '';
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  }}, 'Create client'));
+  wrap.appendChild(createPanel);
+
+  return wrap;
+}
+
+// ============================================================
 // ROUTER / RENDER
 // ============================================================
 async function render() {
@@ -808,12 +1013,21 @@ async function render() {
   if (activityPoll && state.view !== 'activity') { clearInterval(activityPoll); activityPoll = null; }
   root.innerHTML = '';
   if (!state.token) { root.appendChild(renderLogin()); return; }
-  if (!state.client) {
+  if (!state.user) {
     try { await loadMe(); } catch { logout(); return; }
+  }
+  // Admins land on the admin view by default unless they pick a client.
+  if (state.isAdmin && !state.impersonating && state.view !== 'admin') {
+    state.view = 'admin';
+  }
+  // Reload client context when impersonation toggles.
+  if (state.isAdmin && state.impersonating && !state.client) {
+    try { await loadMe(); } catch (e) { toast('Impersonation failed: ' + e.message, true); }
   }
   let view;
   try {
     switch (state.view) {
+      case 'admin':     view = await viewAdmin(); break;
       case 'overview':  view = await viewOverview(); break;
       case 'activity':  view = await viewActivity(); break;
       case 'contacts':  view = await viewContacts(); break;
