@@ -653,18 +653,16 @@ tbody tr:last-child td { border-bottom: none; }
   margin-bottom: 28px;
 }
 .login .login-brand .logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
   background: var(--brand-grad);
   display: grid;
   place-items: center;
-  font-weight: 700;
-  font-size: 18px;
-  color: white;
   box-shadow: var(--brand-glow);
   position: relative;
   overflow: hidden;
+  flex-shrink: 0;
 }
 .login .login-brand .logo::after {
   content: '';
