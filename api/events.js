@@ -19,6 +19,13 @@
 //
 // ?action=list    -> GET, JWT-authenticated portal call. Returns latest
 //                    client_events for the caller's client.
+//
+// ?action=vapi    -> POST from Vapi webhooks. Authenticated by shared secret
+//                    in the x-vapi-secret header (env VAPI_WEBHOOK_SECRET).
+//                    Handles call.started (upserts a Vapi lead) and
+//                    call.ended (inserts a vapi_calls row). Resolves the
+//                    client_id from existing leads.phone, falling back to
+//                    DEFAULT_CLIENT_ID env var.
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
@@ -146,6 +153,98 @@ async function handleIngest(req, res) {
   return res.status(200).json({ ok: true, id: data?.id || null, is_new: isNew, welcome });
 }
 
+// ============================================================
+// Vapi webhook receiver (folded in here to stay under the
+// Vercel 12-function cap).
+// ============================================================
+const VAPI_OUTCOME_MAP = {
+  customerHangup: 'Hung Up',
+  assistantHangup: 'Completed',
+  voicemail: 'Voicemail'
+};
+
+async function resolveVapiClientId(phone) {
+  if (phone) {
+    const { data } = await supabaseAdmin
+      .from('leads')
+      .select('client_id')
+      .eq('phone', phone)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data?.client_id) return data.client_id;
+  }
+  return process.env.DEFAULT_CLIENT_ID || null;
+}
+
+async function handleVapi(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'method_not_allowed' });
+  }
+
+  const expected = process.env.VAPI_WEBHOOK_SECRET;
+  if (!expected) return res.status(500).json({ error: 'webhook_secret_not_configured' });
+  if (req.headers['x-vapi-secret'] !== expected) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const raw = await readRaw(req);
+  let body;
+  try { body = raw ? JSON.parse(raw) : {}; }
+  catch { return res.status(400).json({ error: 'invalid_json' }); }
+
+  // Vapi sometimes nests the event under `message` — accept both shapes.
+  const evt = body?.message || body || {};
+  const type = evt.type || body?.type;
+  const call = evt.call || body?.call;
+  if (!type || !call) return res.status(400).json({ error: 'missing_type_or_call' });
+
+  const phone = call.customer?.number || null;
+  const clientId = await resolveVapiClientId(phone);
+  if (!clientId) return res.status(400).json({ error: 'no_client_resolved' });
+
+  if (type === 'call.started') {
+    if (phone) {
+      const { data: existing } = await supabaseAdmin
+        .from('leads')
+        .select('id')
+        .eq('client_id', clientId)
+        .eq('phone', phone)
+        .maybeSingle();
+      if (!existing) {
+        const { error } = await supabaseAdmin.from('leads').insert({
+          client_id: clientId,
+          name: phone,
+          phone,
+          source: 'Vapi',
+          status: 'Contacted',
+          created_at: new Date().toISOString()
+        });
+        if (error) return res.status(500).json({ error: error.message });
+      }
+    }
+    return res.status(200).json({ ok: true, handled: 'call.started' });
+  }
+
+  if (type === 'call.ended') {
+    const outcome = VAPI_OUTCOME_MAP[call.endedReason] || call.endedReason || null;
+    const { error } = await supabaseAdmin.from('vapi_calls').insert({
+      client_id: clientId,
+      caller_phone: phone,
+      duration_seconds: Number(call.duration) || 0,
+      outcome,
+      transcript: call.transcript || null,
+      vapi_call_id: call.id || null,
+      created_at: new Date().toISOString()
+    });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(200).json({ ok: true, handled: 'call.ended' });
+  }
+
+  return res.status(200).json({ ok: true, ignored: type });
+}
+
 async function handleList(req, res) {
   if (!methodGuard(req, res, ['GET'])) return;
   const ctx = await requireUser(req, res);
@@ -170,6 +269,7 @@ export default async function handler(req, res) {
   try {
     if (action === 'ingest') return await handleIngest(req, res);
     if (action === 'list')   return await handleList(req, res);
+    if (action === 'vapi')   return await handleVapi(req, res);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message || 'internal_error' });

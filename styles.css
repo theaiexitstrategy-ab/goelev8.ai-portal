@@ -1231,7 +1231,9 @@ tbody tr:last-child td { border-bottom: none; }
   display: none;
   position: fixed;
   left: 0; right: 0; bottom: 0;
-  z-index: 60;
+  /* Below the slide-in sidebar drawer (z-index 60) and its backdrop (55),
+     so the drawer fully covers it when opened via the hamburger. */
+  z-index: 50;
   background: rgba(10, 14, 26, 0.92);
   backdrop-filter: blur(20px) saturate(160%);
   border-top: 1px solid var(--border, rgba(255,255,255,0.08));
@@ -1260,7 +1262,9 @@ tbody tr:last-child td { border-bottom: none; }
 @media (max-width: 820px) {
   .bottom-nav { display: flex; }
   .app.has-bottom-nav .main { padding-bottom: 84px; }
-  .app.has-bottom-nav .sidebar { display: none; }
+  /* NOTE: do NOT hide .sidebar here — it's already a slide-in drawer on
+     mobile (toggled by the hamburger in .mobile-header). Hiding it kills
+     access to Messages / Contacts / Billing / Connect / Activity. */
 }
 
 /* Install prompt banner */
