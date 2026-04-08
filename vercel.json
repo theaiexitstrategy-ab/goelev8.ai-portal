@@ -1,8 +1,10 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/api/webhooks/lead", "destination": "/api/events?action=lead" },
+    { "source": "/api/webhooks/vapi", "destination": "/api/events?action=vapi" },
+    { "source": "/api/(.*)",         "destination": "/api/$1" },
+    { "source": "/((?!api/).*)",     "destination": "/index.html" }
   ],
   "headers": [
     {
