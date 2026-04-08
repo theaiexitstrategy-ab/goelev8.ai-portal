@@ -159,14 +159,34 @@ function shell(content) {
     : null;
 
   // Bottom nav for mobile (iPhone/iPad). Only shows when a client context exists.
+  // The first 4 buttons jump to a view; the "Menu" button opens the full
+  // sidebar drawer so the user can reach Messages, Contacts, Activity,
+  // Credits & Billing, Payments (Connect), and Settings.
+  const openDrawer = () => document.body.classList.add('nav-open');
+  const bottomNavItems = [
+    { id: 'dashboard', label: 'Home' },
+    { id: 'leads', label: 'Leads' },
+    { id: 'bookings', label: 'Book' },
+    { id: 'calls', label: 'Calls' },
+    { id: '__menu__', label: 'Menu' }
+  ];
   const bottomNav = state.client
     ? el('nav', { class: 'bottom-nav' },
-        ['dashboard', 'leads', 'bookings', 'calls', 'settings'].map((id) => {
-          const labels = { dashboard: 'Home', leads: 'Leads', bookings: 'Book', calls: 'Calls', settings: 'More' };
+        bottomNavItems.map((item) => {
+          const isMenu = item.id === '__menu__';
+          const isActive = !isMenu && state.view === item.id;
           return el('button', {
-            class: 'bnav-btn' + (state.view === id ? ' active' : ''),
-            onclick: () => { state.view = id; closeNav(); render(); }
-          }, el('span', { class: 'bnav-dot' }), el('span', { class: 'bnav-label' }, labels[id]));
+            class: 'bnav-btn' + (isActive ? ' active' : '') + (isMenu ? ' bnav-menu' : ''),
+            'aria-label': isMenu ? 'Open full menu' : item.label,
+            onclick: isMenu
+              ? openDrawer
+              : () => { state.view = item.id; closeNav(); render(); }
+          },
+            isMenu
+              ? el('span', { class: 'bnav-icon' }, el('span'), el('span'), el('span'))
+              : el('span', { class: 'bnav-dot' }),
+            el('span', { class: 'bnav-label' }, item.label)
+          );
         })
       )
     : null;
