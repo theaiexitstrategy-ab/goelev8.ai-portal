@@ -4,7 +4,17 @@
     { "source": "/api/webhooks/lead", "destination": "/api/events?action=lead" },
     { "source": "/api/webhooks/vapi", "destination": "/api/events?action=vapi" },
     { "source": "/api/(.*)",         "destination": "/api/$1" },
-    { "source": "/((?!api/).*)",     "destination": "/index.html" }
+    { "source": "/islaystudios/login", "destination": "/clients/islaystudios/login.html" },
+    { "source": "/islaystudios/dashboard", "destination": "/clients/islaystudios/dashboard.html" },
+    { "source": "/islaystudios/blasts", "destination": "/clients/islaystudios/blasts.html" },
+    { "source": "/islaystudios/calls", "destination": "/clients/islaystudios/calls.html" },
+    { "source": "/islaystudios/credits", "destination": "/clients/islaystudios/credits.html" },
+    { "source": "/islaystudios/leads", "destination": "/clients/islaystudios/leads.html" },
+    { "source": "/islaystudios/analytics", "destination": "/clients/islaystudios/analytics.html" },
+    { "source": "/islaystudios/artists", "destination": "/clients/islaystudios/artists.html" },
+    { "source": "/islaystudios/settings", "destination": "/clients/islaystudios/settings.html" },
+    { "source": "/islaystudios", "destination": "/clients/islaystudios/dashboard.html" },
+    { "source": "/((?!api/|clients/).*)", "destination": "/index.html" }
   ],
   "headers": [
     {

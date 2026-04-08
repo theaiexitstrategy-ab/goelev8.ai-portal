@@ -20,31 +20,18 @@
 // ?action=list    -> GET, JWT-authenticated portal call. Returns latest
 //                    client_events for the caller's client.
 //
-// ?action=vapi    -> POST from Vapi webhooks. Authenticated by shared secret
-//                    in the x-vapi-secret header (env VAPI_WEBHOOK_SECRET).
-//                    Handles call.started (upserts a Vapi lead) and
-//                    call.ended (inserts a vapi_calls row). Resolves the
-//                    client_id from existing leads.phone, falling back to
-//                    DEFAULT_CLIENT_ID env var.
-//
-// ?action=lead    -> POST from a client website (form submit) or the
-//                    /embed/track.js script. Authenticated by shared
-//                    secret in the x-goelev8-secret header
-//                    (env GOELEV8_WEBHOOK_SECRET).
-//                    Body: { slug, name, phone?, email?, source?,
-//                            funnel?, metadata? }
-//                    Resolves client_id from slug, auto-tags from source/
-//                    funnel/URL hints, inserts into leads. Rate-limited
-//                    to 100 requests/minute per slug. Vercel rewrite
-//                    exposes this at the friendlier
-//                    POST /api/webhooks/lead URL.
+// ?action=vapi    -> POST from Vapi server webhook. Public URL is rewritten
+//                    by vercel.json from /api/webhooks/vapi to this action.
+//                    Authenticated by a shared secret in the
+//                    `x-vapi-secret` header (env: VAPI_WEBHOOK_SECRET).
+//                    Handles `end-of-call-report`, `status-update`, and
+//                    `function-call` messages and writes vapi_calls / leads
+//                    / bookings rows for the matching tenant.
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireUser, methodGuard, readJson } from '../lib/auth.js';
 import { sendWelcomeForEvent } from '../lib/welcome.js';
-import { sendArtistInquirySms, notifyOwnerNewInquiry } from '../lib/islay-sms.js';
-import { scheduleNudgeSequence } from '../lib/nudge-sms.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -167,351 +154,6 @@ async function handleIngest(req, res) {
   return res.status(200).json({ ok: true, id: data?.id || null, is_new: isNew, welcome });
 }
 
-// ============================================================
-// Universal lead webhook (POST /api/webhooks/lead via Vercel
-// rewrite, also reachable as ?action=lead). Auto-tags by source
-// URL, inserts into leads, fans out via Supabase Realtime so
-// open browsers fire a notification.
-// ============================================================
-
-// Friendly source -> tag mapping. Anything not matched falls back
-// to "general". Used ONLY when the caller didn't explicitly send
-// body.tags / body.tag — explicit client tags always win.
-function ge8AutoTag({ source, funnel, metadata }) {
-  const tags = new Set();
-  const candidate = [source, funnel, metadata?.url, metadata?.path]
-    .filter(Boolean).join(' ').toLowerCase();
-  if (/\/fit(\b|\/)/.test(candidate))     tags.add('athlete');
-  if (/\/rs2(\b|\/)/.test(candidate))     tags.add('lifestyle');
-  if (/(^|\/|\.)book\./.test(candidate))  tags.add('ready-to-book');
-  if (/\/book(ing)?(\b|\/)/.test(candidate)) tags.add('ready-to-book');
-  if (/sms|twilio/.test(candidate))       tags.add('sms-lead');
-  if (!tags.size) tags.add('general');
-  return [...tags];
-}
-
-// Normalize the caller-provided tag shape into a text[] for the leads
-// table. Accepts all of:
-//   body.tags: "athlete"           → ['athlete']
-//   body.tags: ["athlete","vip"]   → ['athlete','vip']
-//   body.tags: "athlete, vip"      → ['athlete','vip']
-//   body.tag:  "athlete"           → ['athlete']   (legacy singular)
-// Returns null if neither field is present or both are empty — caller
-// then falls back to ge8AutoTag() so we never overwrite an explicit
-// tag with an auto-generated fallback.
-function ge8NormalizeTags(body) {
-  const raw = body.tags ?? body.tag;
-  if (raw == null || raw === '') return null;
-  let arr;
-  if (Array.isArray(raw)) {
-    arr = raw;
-  } else if (typeof raw === 'string') {
-    // Support comma-separated ("athlete, vip") and JSON-encoded
-    // (`["athlete","vip"]`) string forms, since different client
-    // sites have sent both shapes in the wild.
-    const trimmed = raw.trim();
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      try { arr = JSON.parse(trimmed); } catch { arr = [trimmed]; }
-    } else {
-      arr = trimmed.split(',');
-    }
-  } else {
-    arr = [String(raw)];
-  }
-  const cleaned = (Array.isArray(arr) ? arr : [arr])
-    .map((t) => (t == null ? '' : String(t).trim().toLowerCase()))
-    .filter(Boolean);
-  return cleaned.length ? cleaned : null;
-}
-
-// In-memory rate limiter: 100 requests / 60 seconds per slug.
-// Vercel functions can run on multiple instances so this is best-
-// effort, not a hard cap. Sufficient to throttle a runaway form.
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 100;
-const ge8LeadRate = new Map();
-function ge8RateLimitOk(slug) {
-  const now = Date.now();
-  const key = String(slug || '__unknown__');
-  const arr = ge8LeadRate.get(key) || [];
-  const recent = arr.filter((t) => now - t < RATE_WINDOW_MS);
-  if (recent.length >= RATE_MAX) {
-    ge8LeadRate.set(key, recent);
-    return false;
-  }
-  recent.push(now);
-  ge8LeadRate.set(key, recent);
-  return true;
-}
-
-async function handleLead(req, res) {
-  // CORS — this endpoint is called from client websites (the embed/
-  // track.js form-capture beacon, hand-rolled fetch from a /fit funnel
-  // page, etc.). The custom X-GoElev8-Secret header makes every
-  // cross-origin POST a "non-simple" request, so the browser fires an
-  // OPTIONS preflight first.
-  //
-  // We keep an explicit allowlist rather than echoing the request
-  // origin blindly — even though the shared secret is the real
-  // authentication, the allowlist defends against a misconfigured
-  // client site accidentally hammering this endpoint from a dev URL
-  // and against browser-based credential replay in the wild. Add
-  // each new client domain here as they come online.
-  const ALLOWED_ORIGINS = [
-    'https://theflexfacility.com',
-    'https://www.theflexfacility.com',
-    'https://islaystudiosllc.com',
-    'https://www.islaystudiosllc.com',
-    'https://islay-studios.com',
-    'https://www.islay-studios.com'
-  ];
-  const origin = req.headers.origin || req.headers.Origin || '';
-  const allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : '';
-  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GoElev8-Secret, x-goelev8-secret');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.setHeader('Vary', 'Origin');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    return res.status(405).json({ error: 'method_not_allowed' });
-  }
-  const expected = process.env.GOELEV8_WEBHOOK_SECRET;
-  if (!expected) return res.status(500).json({ error: 'webhook_secret_not_configured' });
-
-  // Parse the body first so we can also accept the secret in the body
-  // when sendBeacon (which can't set custom headers) is used by the
-  // /embed/track.js fallback path.
-  let body;
-  try {
-    const raw = await readRaw(req);
-    body = raw ? JSON.parse(raw) : {};
-  } catch { return res.status(400).json({ error: 'invalid_json' }); }
-
-  const headerSecret =
-    req.headers['x-goelev8-secret'] ||
-    req.headers['X-GoElev8-Secret'.toLowerCase()];
-  const provided = headerSecret || body.secret;
-  if (provided !== expected) return res.status(401).json({ error: 'unauthorized' });
-  // Strip the body secret before we touch any other field so it never
-  // accidentally lands in metadata or logs.
-  delete body.secret;
-
-  const slug = String(body.slug || '').trim();
-  if (!slug) return res.status(400).json({ error: 'missing_slug' });
-
-  if (!ge8RateLimitOk(slug)) {
-    res.setHeader('Retry-After', '60');
-    return res.status(429).json({ error: 'rate_limited' });
-  }
-
-  const { name, phone, email, source, funnel, metadata } = body;
-  if (!name && !phone && !email) {
-    return res.status(400).json({ error: 'missing_contact_info' });
-  }
-
-  // Look up the client by slug.
-  const { data: client, error: clientErr } = await supabaseAdmin
-    .from('clients')
-    .select('id, slug, name')
-    .eq('slug', slug)
-    .maybeSingle();
-  if (clientErr) return res.status(500).json({ error: clientErr.message });
-  if (!client)   return res.status(404).json({ error: 'unknown_slug' });
-
-  // Explicit caller-provided tags always win over URL auto-tagging. This
-  // fixes the regression where every lead from theflexfacility.com/fit
-  // landed as tags=['general'] even though the proxy sent tag='athlete'.
-  // Only fall back to ge8AutoTag() when both body.tags and body.tag are
-  // missing, so a quiet client site still gets a sensible default.
-  const tags = ge8NormalizeTags(body) || ge8AutoTag({ source, funnel, metadata });
-
-  const insertRow = {
-    client_id: client.id,
-    name: (name || phone || email || 'Unknown').toString().slice(0, 200),
-    phone: phone ? String(phone).slice(0, 32) : null,
-    email: email ? String(email).slice(0, 200) : null,
-    source: source ? String(source).slice(0, 200) : null,
-    funnel: funnel ? String(funnel).slice(0, 64) : null,
-    status: 'New',
-    tags,
-    created_at: new Date().toISOString()
-  };
-
-  const { data: inserted, error: insertErr } = await supabaseAdmin
-    .from('leads')
-    .insert(insertRow)
-    .select('id')
-    .single();
-  if (insertErr) return res.status(500).json({ error: insertErr.message });
-
-  // The portal browser already subscribes to postgres_changes on
-  // public.leads filtered by client_id (see startRealtime in app.js),
-  // so an INSERT here automatically fans out a "New lead: …" system
-  // notification + toast to every connected client tab. No extra
-  // server-side push fan-out needed.
-
-  // ── iSlay Studios: also create an artist_inquiry row and send SMS ──
-  let artistInquiryId = null;
-  if (slug === 'islay-studios') {
-    try {
-      const { data: inquiry } = await supabaseAdmin.from('artist_inquiries').insert({
-        client_id: client.id,
-        artist_name: (name || 'Unknown').toString().slice(0, 200),
-        artist_phone: phone ? String(phone).slice(0, 32) : null,
-        artist_email: email ? String(email).slice(0, 200) : null,
-        genre: metadata?.genre || null,
-        service_interest: metadata?.service_interest || null,
-        budget_range: metadata?.budget || null,
-        status: 'New',
-        source: source || 'islaystudiosllc.com'
-      }).select('id, artist_name, artist_phone, service_interest').single();
-
-      if (inquiry) {
-        artistInquiryId = inquiry.id;
-        // Load full client for SMS
-        const { data: fullClient } = await supabaseAdmin
-          .from('clients').select('*').eq('id', client.id).single();
-        if (fullClient) {
-          // Send welcome SMS to artist (deduped)
-          sendArtistInquirySms({ client: fullClient, inquiry }).catch(() => {});
-          // Notify owner
-          notifyOwnerNewInquiry({ client: fullClient, inquiry }).catch(() => {});
-        }
-      }
-    } catch (e) {
-      console.error('[lead/islay] artist_inquiry insert failed:', e.message);
-    }
-  }
-
-  // ── Nudge sequence: fire the 5-message SMS drip for new leads ──
-  let nudgeResult = { sent: false, reason: 'skipped' };
-  if (phone) {
-    try {
-      const { data: fullClient } = await supabaseAdmin
-        .from('clients').select('*').eq('id', client.id).single();
-      if (fullClient) {
-        nudgeResult = await scheduleNudgeSequence({
-          client: fullClient,
-          lead: { name, phone, email, source, funnel }
-        });
-      }
-    } catch (e) {
-      nudgeResult = { sent: false, reason: 'exception: ' + (e.message || e) };
-    }
-  }
-
-  return res.status(200).json({
-    ok: true,
-    lead_id: inserted?.id,
-    artist_inquiry_id: artistInquiryId,
-    client_id: client.id,
-    tags,
-    nudge: nudgeResult,
-    notification: {
-      title: 'New Lead',
-      body: `${insertRow.name} just came in${source ? ' from ' + source : ''}`,
-      url: '/?view=dashboard'
-    }
-  });
-}
-
-// ============================================================
-// Vapi webhook receiver (folded in here to stay under the
-// Vercel 12-function cap).
-// ============================================================
-const VAPI_OUTCOME_MAP = {
-  customerHangup: 'Hung Up',
-  assistantHangup: 'Completed',
-  voicemail: 'Voicemail'
-};
-
-async function resolveVapiClientId(phone) {
-  if (phone) {
-    const { data } = await supabaseAdmin
-      .from('leads')
-      .select('client_id')
-      .eq('phone', phone)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (data?.client_id) return data.client_id;
-  }
-  return process.env.DEFAULT_CLIENT_ID || null;
-}
-
-async function handleVapi(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ error: 'method_not_allowed' });
-  }
-
-  const expected = process.env.VAPI_WEBHOOK_SECRET;
-  if (!expected) return res.status(500).json({ error: 'webhook_secret_not_configured' });
-  if (req.headers['x-vapi-secret'] !== expected) {
-    return res.status(401).json({ error: 'unauthorized' });
-  }
-
-  const raw = await readRaw(req);
-  let body;
-  try { body = raw ? JSON.parse(raw) : {}; }
-  catch { return res.status(400).json({ error: 'invalid_json' }); }
-
-  // Vapi sometimes nests the event under `message` — accept both shapes.
-  const evt = body?.message || body || {};
-  const type = evt.type || body?.type;
-  const call = evt.call || body?.call;
-  if (!type || !call) return res.status(400).json({ error: 'missing_type_or_call' });
-
-  const phone = call.customer?.number || null;
-  const clientId = await resolveVapiClientId(phone);
-  if (!clientId) return res.status(400).json({ error: 'no_client_resolved' });
-
-  if (type === 'call.started') {
-    if (phone) {
-      const { data: existing } = await supabaseAdmin
-        .from('leads')
-        .select('id')
-        .eq('client_id', clientId)
-        .eq('phone', phone)
-        .maybeSingle();
-      if (!existing) {
-        const { error } = await supabaseAdmin.from('leads').insert({
-          client_id: clientId,
-          name: phone,
-          phone,
-          source: 'Vapi',
-          status: 'Contacted',
-          created_at: new Date().toISOString()
-        });
-        if (error) return res.status(500).json({ error: error.message });
-      }
-    }
-    return res.status(200).json({ ok: true, handled: 'call.started' });
-  }
-
-  if (type === 'call.ended') {
-    const outcome = VAPI_OUTCOME_MAP[call.endedReason] || call.endedReason || null;
-    const { error } = await supabaseAdmin.from('vapi_calls').insert({
-      client_id: clientId,
-      caller_phone: phone,
-      duration_seconds: Number(call.duration) || 0,
-      outcome,
-      transcript: call.transcript || null,
-      vapi_call_id: call.id || null,
-      created_at: new Date().toISOString()
-    });
-    if (error) return res.status(500).json({ error: error.message });
-    return res.status(200).json({ ok: true, handled: 'call.ended' });
-  }
-
-  return res.status(200).json({ ok: true, ignored: type });
-}
-
 async function handleList(req, res) {
   if (!methodGuard(req, res, ['GET'])) return;
   const ctx = await requireUser(req, res);
@@ -530,6 +172,222 @@ async function handleList(req, res) {
   return res.status(200).json({ events: data || [] });
 }
 
+// ============================================================
+// Vapi webhook
+// ============================================================
+//
+// Vapi posts a JSON body of the shape:
+//   { message: { type, call: { id, assistantId, phoneNumberId, customer: { number } },
+//                transcript, summary, recordingUrl, durationSeconds,
+//                cost, endedReason, analysis: { structuredData, summary }, ... } }
+//
+// We resolve the tenant by matching `call.phoneNumberId`, the assistant id,
+// or the customer number against `clients.twilio_phone_number`. Each call is
+// upserted on `vapi_call_id` so retries are idempotent. When the upstream
+// reports an end-of-call we also write a `leads` row (and optionally a
+// `bookings` row if the structured data carries booking fields).
+async function resolveVapiClientId({ phoneNumberId, assistantId, toNumber, fromNumber, customerNumber }) {
+  const tryNumbers = [toNumber, fromNumber, customerNumber].filter(Boolean);
+  for (const num of tryNumbers) {
+    const { data } = await supabaseAdmin
+      .from('clients')
+      .select('id')
+      .eq('twilio_phone_number', num)
+      .maybeSingle();
+    if (data?.id) return data.id;
+  }
+  // Fall back to a `vapi_*` config column if/when one is added; for now we
+  // accept an explicit mapping via env (JSON: {"<phoneNumberId>":"<clientId>"}).
+  if (phoneNumberId && process.env.VAPI_PHONE_TO_CLIENT) {
+    try {
+      const map = JSON.parse(process.env.VAPI_PHONE_TO_CLIENT);
+      if (map[phoneNumberId]) return map[phoneNumberId];
+      if (assistantId && map[assistantId]) return map[assistantId];
+    } catch {}
+  }
+  return null;
+}
+
+function pickStructured(analysis) {
+  if (!analysis || typeof analysis !== 'object') return {};
+  return analysis.structuredData || analysis.structured_data || {};
+}
+
+function toIso(v) {
+  if (!v) return null;
+  try { return new Date(v).toISOString(); } catch { return null; }
+}
+
+async function upsertContactFromCall({ clientId, name, phone, email }) {
+  if (!phone) return null;
+  const { data: existing } = await supabaseAdmin
+    .from('contacts').select('id, name, email')
+    .eq('client_id', clientId).eq('phone', phone).maybeSingle();
+  if (existing) {
+    const patch = {};
+    if (name && !existing.name) patch.name = name;
+    if (email && !existing.email) patch.email = email;
+    if (Object.keys(patch).length) {
+      await supabaseAdmin.from('contacts').update(patch).eq('id', existing.id);
+    }
+    return existing.id;
+  }
+  const { data: created } = await supabaseAdmin.from('contacts').insert({
+    client_id: clientId,
+    name: name || phone,
+    phone,
+    email: email || null,
+    source: 'vapi'
+  }).select('id').single();
+  return created?.id || null;
+}
+
+async function handleVapi(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'method_not_allowed' });
+  }
+
+  // Auth: shared secret in header (Vapi sends whatever you set as
+  // serverUrlSecret; we accept either x-vapi-secret or x-vapi-signature
+  // for forward compatibility).
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+  if (!secret) return res.status(500).json({ error: 'missing_VAPI_WEBHOOK_SECRET' });
+  const provided =
+    req.headers['x-vapi-secret'] ||
+    req.headers['x-vapi-signature'] ||
+    (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!provided || !timingSafeEq(String(provided), secret)) {
+    return res.status(401).json({ error: 'invalid_signature' });
+  }
+
+  const raw = await readRaw(req);
+  let body;
+  try { body = raw ? JSON.parse(raw) : {}; }
+  catch { return res.status(400).json({ error: 'invalid_json' }); }
+
+  const msg = body.message || body; // Vapi nests under .message; tolerate either
+  const type = msg.type || msg.event || 'unknown';
+  const call = msg.call || {};
+  const callId = call.id || msg.callId || null;
+  if (!callId) return res.status(400).json({ error: 'missing_call_id' });
+
+  const customerNumber = call.customer?.number || msg.customer?.number || null;
+  const phoneNumberId = call.phoneNumberId || msg.phoneNumberId || null;
+  const assistantId = call.assistantId || msg.assistantId || null;
+  const toNumber = call.phoneNumber?.number || call.to || null;
+  const fromNumber = call.from || null;
+
+  const clientId = await resolveVapiClientId({
+    phoneNumberId, assistantId, toNumber, fromNumber, customerNumber
+  });
+  if (!clientId) return res.status(422).json({ error: 'unknown_client', call_id: callId });
+
+  // Build the row we want to upsert.
+  const structured = pickStructured(msg.analysis);
+  const direction =
+    msg.direction || call.type === 'inboundPhoneCall' ? 'inbound' :
+    call.type === 'outboundPhoneCall' ? 'outbound' : (msg.direction || null);
+
+  const row = {
+    client_id: clientId,
+    vapi_call_id: callId,
+    assistant_id: assistantId,
+    phone_number_id: phoneNumberId,
+    direction,
+    from_number: fromNumber,
+    to_number: toNumber,
+    customer_number: customerNumber,
+    status: msg.status || call.status || type,
+    ended_reason: msg.endedReason || call.endedReason || null,
+    started_at: toIso(msg.startedAt || call.startedAt),
+    ended_at: toIso(msg.endedAt || call.endedAt),
+    duration_seconds: typeof msg.durationSeconds === 'number'
+      ? Math.round(msg.durationSeconds)
+      : (typeof msg.duration === 'number' ? Math.round(msg.duration) : null),
+    recording_url: msg.recordingUrl || call.recordingUrl || null,
+    transcript: msg.transcript || null,
+    summary: msg.summary || msg.analysis?.summary || null,
+    structured_data: structured,
+    cost_cents: typeof msg.cost === 'number' ? Math.round(msg.cost * 100) : null,
+    payload: msg
+  };
+
+  // Upsert vapi_calls on the unique vapi_call_id.
+  const { data: vapiRow, error: upErr } = await supabaseAdmin
+    .from('vapi_calls')
+    .upsert(row, { onConflict: 'vapi_call_id' })
+    .select('id, lead_id, contact_id')
+    .single();
+  if (upErr) return res.status(500).json({ error: upErr.message });
+
+  // For terminal events, fan out into contacts/leads/bookings.
+  let leadId = vapiRow?.lead_id || null;
+  let bookingId = null;
+
+  if (type === 'end-of-call-report' || msg.endedReason || msg.endedAt) {
+    const name = structured.name || structured.full_name ||
+                 structured.caller_name || msg.customer?.name || null;
+    const phone = structured.phone || structured.phone_number || customerNumber || null;
+    const email = structured.email || null;
+
+    const contactId = vapiRow?.contact_id ||
+      await upsertContactFromCall({ clientId, name, phone, email });
+
+    if (contactId && contactId !== vapiRow?.contact_id) {
+      await supabaseAdmin.from('vapi_calls').update({ contact_id: contactId }).eq('id', vapiRow.id);
+    }
+
+    // Always create a lead row for an ended call so it shows up on the dash.
+    const { data: leadRow } = await supabaseAdmin.from('leads').insert({
+      client_id: clientId,
+      contact_id: contactId,
+      vapi_call_id: vapiRow.id,
+      name,
+      phone,
+      email,
+      source: 'vapi',
+      intent: structured.intent || structured.reason || null,
+      notes: msg.summary || msg.analysis?.summary || null,
+      payload: structured
+    }).select('id').single();
+    leadId = leadRow?.id || leadId;
+    if (leadId) {
+      await supabaseAdmin.from('vapi_calls').update({ lead_id: leadId }).eq('id', vapiRow.id);
+    }
+
+    // If the assistant captured a booking, write it.
+    const bookingStart = structured.booking_time || structured.appointment_time ||
+                         structured.starts_at || null;
+    if (bookingStart) {
+      const { data: bk } = await supabaseAdmin.from('bookings').insert({
+        client_id: clientId,
+        contact_id: contactId,
+        vapi_call_id: vapiRow.id,
+        lead_id: leadId,
+        service: structured.service || structured.appointment_type || 'Vapi booking',
+        starts_at: toIso(bookingStart),
+        ends_at: toIso(structured.ends_at || structured.end_time),
+        status: structured.status || 'scheduled',
+        notes: structured.notes || null,
+        contact_name: name,
+        contact_phone: phone,
+        contact_email: email,
+        source: 'vapi'
+      }).select('id').single();
+      bookingId = bk?.id || null;
+    }
+  }
+
+  return res.status(200).json({
+    ok: true,
+    call_id: callId,
+    vapi_row_id: vapiRow?.id || null,
+    lead_id: leadId,
+    booking_id: bookingId
+  });
+}
+
 export default async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   const action = url.searchParams.get('action');
@@ -537,7 +395,6 @@ export default async function handler(req, res) {
     if (action === 'ingest') return await handleIngest(req, res);
     if (action === 'list')   return await handleList(req, res);
     if (action === 'vapi')   return await handleVapi(req, res);
-    if (action === 'lead')   return await handleLead(req, res);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message || 'internal_error' });
