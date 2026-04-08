@@ -1340,11 +1340,24 @@ render();
 // ============================================================
 
 // Register service worker (production only — avoids local-dev cache pain).
+// We register, then immediately call .update() so users pick up new
+// service-worker.js content on every page load instead of waiting for the
+// browser's lazy ~24h refresh. When a new SW takes control, reload once so
+// the user sees the latest CSS/JS instead of whatever the old SW had cached.
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js').catch((err) => {
+  window.addEventListener('load', async () => {
+    try {
+      const reg = await navigator.serviceWorker.register('/service-worker.js');
+      reg.update().catch(() => {});
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    } catch (err) {
       console.warn('SW register failed', err);
-    });
+    }
   });
 }
 
