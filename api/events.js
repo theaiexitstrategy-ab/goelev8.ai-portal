@@ -208,8 +208,24 @@ function ge8RateLimitOk(slug) {
 }
 
 async function handleLead(req, res) {
+  // CORS — this endpoint is called from arbitrary client websites
+  // (the embed/track.js form-capture beacon, or hand-rolled fetch
+  // from a /fit funnel page, etc.). The custom X-GoElev8-Secret
+  // header makes every cross-origin POST a "non-simple" request,
+  // which means the browser fires an OPTIONS preflight first. We
+  // accept any origin because the secret is what proves the call
+  // is legit — browser origin alone wouldn't help anyway.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GoElev8-Secret, x-goelev8-secret');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.setHeader('Vary', 'Origin');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
+    res.setHeader('Allow', 'POST, OPTIONS');
     return res.status(405).json({ error: 'method_not_allowed' });
   }
   const expected = process.env.GOELEV8_WEBHOOK_SECRET;
