@@ -926,15 +926,18 @@ tbody tr:last-child td { border-bottom: none; }
 
   /* Mobile top header bar — sticky so the hamburger never scrolls away.
      Without this users would lose access to the full nav (Messages,
-     Credits, Connect, Settings) the moment they scrolled down. */
+     Credits, Connect, Settings) the moment they scrolled down.
+     The top padding honors env(safe-area-inset-top) so the hamburger
+     + brand sit *below* the iPhone notch/dynamic island instead of
+     being occluded by it. */
   .mobile-header {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 4px 14px;
-    margin: -16px -16px 8px;
-    padding-left: 16px;
-    padding-right: 16px;
+    padding: calc(10px + env(safe-area-inset-top)) 4px 14px;
+    margin: calc(-16px - env(safe-area-inset-top)) -16px 8px;
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
     position: sticky;
     top: 0;
     z-index: 40;
@@ -983,8 +986,16 @@ tbody tr:last-child td { border-bottom: none; }
   }
   .mobile-header .mobile-brand .logo img { width: 70%; height: 70%; object-fit: contain; }
 
-  /* Main content */
-  .main { padding: 16px 16px 80px; max-width: 100%; }
+  /* Main content. Padding honors safe-area insets so nothing sits under
+     the notch in landscape / the home indicator at the bottom. */
+  .main {
+    padding:
+      16px
+      calc(16px + env(safe-area-inset-right))
+      calc(80px + env(safe-area-inset-bottom))
+      calc(16px + env(safe-area-inset-left));
+    max-width: 100%;
+  }
   .topbar { margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
   h1 { font-size: 22px; }
   h2 { font-size: 15px; }
@@ -1248,7 +1259,11 @@ tbody tr:last-child td { border-bottom: none; }
   background: rgba(10, 14, 26, 0.92);
   backdrop-filter: blur(20px) saturate(160%);
   border-top: 1px solid var(--border, rgba(255,255,255,0.08));
-  padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+  padding:
+    6px
+    calc(4px + env(safe-area-inset-right))
+    calc(6px + env(safe-area-inset-bottom))
+    calc(4px + env(safe-area-inset-left));
 }
 .bottom-nav .bnav-btn {
   flex: 1;
@@ -1400,4 +1415,201 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
   font-size: 13px;
   color: var(--text-dim, #94a3b8);
   white-space: pre-wrap;
+}
+
+/* ============================================================
+   © 2026 GoElev8.ai | Aaron Bryant. All rights reserved.
+   Mobile polish: install pill, iOS bottom sheet, admin cards.
+   ============================================================ */
+
+/* Install pill button — lives in the mobile header next to the brand.
+   Hidden on desktop since .mobile-header itself is display:none there. */
+.install-pill {
+  margin-left: auto;
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: rgba(0, 207, 255, 0.14);
+  border: 1px solid rgba(0, 207, 255, 0.5);
+  color: #93e3ff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.install-pill:hover { background: rgba(0, 207, 255, 0.22); }
+.install-pill:active { transform: scale(0.96); }
+.install-pill::before { content: '+ '; opacity: 0.8; }
+
+/* iOS "Add to Home Screen" bottom sheet */
+.ios-sheet-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: ge8FadeIn 0.2s ease;
+}
+@keyframes ge8FadeIn { from { opacity: 0; } to { opacity: 1; } }
+.ios-sheet {
+  width: 100%;
+  max-width: 520px;
+  background: linear-gradient(180deg, #13161f 0%, #0b0c14 100%);
+  border-top-left-radius: 24px;
+  border-top-right-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 0;
+  padding:
+    28px
+    calc(24px + env(safe-area-inset-right))
+    calc(28px + env(safe-area-inset-bottom))
+    calc(24px + env(safe-area-inset-left));
+  box-shadow: 0 -24px 64px rgba(0, 0, 0, 0.6);
+  animation: ge8SlideUp 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes ge8SlideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.ios-sheet .handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  margin: -10px auto 18px;
+}
+.ios-sheet h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: #f0f1f5;
+}
+.ios-sheet p {
+  color: #a8acbb;
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+.ios-sheet ol {
+  margin: 0 0 22px;
+  padding-left: 22px;
+  color: #d1d5db;
+  font-size: 14px;
+}
+.ios-sheet ol li { margin-bottom: 10px; line-height: 1.5; }
+.ios-sheet ol li strong { color: #f0f1f5; }
+.ios-sheet .share-glyph {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  vertical-align: -6px;
+  margin: 0 3px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(0, 207, 255, 0.15);
+  border: 1px solid rgba(0, 207, 255, 0.4);
+  color: #93e3ff;
+  font-size: 14px;
+  font-weight: 700;
+}
+.ios-sheet .close {
+  width: 100%;
+  padding: 13px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f0f1f5;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+}
+.ios-sheet .close:hover { background: rgba(255, 255, 255, 0.08); }
+
+/* Admin client cards — stacked layout for <=767px, hidden on desktop. */
+.admin-cards { display: none; }
+@media (max-width: 767px) {
+  .admin-table-wrap { display: none; }
+  .admin-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+}
+.admin-card {
+  padding: 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+}
+.admin-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.admin-card-head strong {
+  font-size: 15px;
+  color: #f0f1f5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.04);
+}
+.admin-card-row:first-of-type { border-top: 0; padding-top: 0; }
+.admin-card-row > span:first-child {
+  color: var(--text-dim, #a8acbb);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.admin-card-row > :last-child {
+  color: #f0f1f5;
+  font-weight: 500;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+.admin-card-row code {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  color: #d1d5db;
+}
+.admin-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.admin-card-actions .btn { flex: 1 1 auto; }
+.admin-card-credits {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.admin-card-credits input[type="number"] {
+  width: 80px;
+  flex: 0 0 80px;
+}
+.admin-card-credits input[type="text"] {
+  flex: 1 1 120px;
+  min-width: 0;
 }

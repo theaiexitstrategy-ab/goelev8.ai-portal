@@ -127,6 +127,31 @@ function shell(content) {
   const navBtn = (id, label) =>
     el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; closeNav(); render(); } }, label);
 
+  // Install pill — sits in the mobile header next to the brand. Only
+  // renders when the portal is installable (Android/Chromium has fired
+  // beforeinstallprompt, OR we're on iOS Safari where the user can
+  // long-press Share → Add to Home Screen). Hidden when already running
+  // in standalone mode or previously dismissed.
+  const installState = window.ge8InstallState || { canInstall: false, mode: null };
+  const installPill = installState.canInstall
+    ? el('button', {
+        class: 'install-pill',
+        'aria-label': 'Install GoElev8 app',
+        onclick: () => {
+          if (installState.mode === 'native' && deferredInstallPrompt) {
+            deferredInstallPrompt.prompt();
+            deferredInstallPrompt.userChoice.finally(() => {
+              deferredInstallPrompt = null;
+              window.ge8InstallState = { canInstall: false, mode: null };
+              render();
+            });
+          } else {
+            ge8ShowIosSheet();
+          }
+        }
+      }, 'Install')
+    : null;
+
   const mobileHeader = el('div', { class: 'mobile-header' },
     el('button', {
       class: 'nav-toggle',
@@ -136,7 +161,8 @@ function shell(content) {
     el('div', { class: 'mobile-brand' },
       el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
       el('span', {}, 'GoElev8.AI')
-    )
+    ),
+    installPill
   );
   const navBackdrop = el('div', { class: 'nav-backdrop', onclick: closeNav });
 
@@ -948,6 +974,37 @@ async function viewAdmin() {
       tableHost.appendChild(el('div', { class: 'muted' }, 'No clients yet.'));
       return;
     }
+    // Build shared per-client action bindings once so the table row
+    // and the mobile card can share the same onclick handlers without
+    // duplicating logic.
+    const buildClient = (c) => {
+      const amountInput = el('input', { type: 'number', min: '1', value: '20', style: 'width:70px' });
+      const noteInput   = el('input', { type: 'text', placeholder: 'note (optional)', style: 'width:140px' });
+      const adjust = async (sign) => {
+        const raw = parseInt(amountInput.value, 10);
+        if (!Number.isFinite(raw) || raw <= 0) { toast('Enter a positive amount', true); return; }
+        const delta = sign * Math.abs(raw);
+        try {
+          const r = await api('/api/admin?action=set-credits', {
+            method: 'POST', body: { client_id: c.id, delta, note: noteInput.value }
+          });
+          toast(`${c.name}: ${r.client.credit_balance} credits`);
+          await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+      const pauseToggle = async () => {
+        try {
+          await api('/api/admin?action=billing-pause', {
+            method: 'POST', body: { client_id: c.id, paused: !c.billing_paused }
+          });
+          toast(c.billing_paused ? 'Billing resumed' : 'Billing paused');
+          await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+      return { c, amountInput, noteInput, adjust, pauseToggle };
+    };
+
+    // ---- Desktop / iPad: table ----
     const table = el('table', { class: 'admin-table' },
       el('thead', {}, el('tr', {},
         el('th', {}, 'Client'),
@@ -959,20 +1016,10 @@ async function viewAdmin() {
         el('th', {}, 'Actions')
       )),
       el('tbody', {}, ...allClients.map((c) => {
-        const amountInput = el('input', { type: 'number', min: '1', value: '20', style: 'width:70px' });
-        const noteInput   = el('input', { type: 'text', placeholder: 'note (optional)', style: 'width:140px' });
-        const adjust = async (sign) => {
-          const raw = parseInt(amountInput.value, 10);
-          if (!Number.isFinite(raw) || raw <= 0) { toast('Enter a positive amount', true); return; }
-          const delta = sign * Math.abs(raw);
-          try {
-            const r = await api('/api/admin?action=set-credits', {
-              method: 'POST', body: { client_id: c.id, delta, note: noteInput.value }
-            });
-            toast(`${c.name}: ${r.client.credit_balance} credits`);
-            await refresh();
-          } catch (e) { toast(e.message, true); }
-        };
+        // NOTE: table rows use their own action-button instances so the
+        // input state (amount/note) is independent between the table and
+        // the mobile card.
+        const b = buildClient(c);
         return el('tr', {},
           el('td', {}, el('strong', {}, c.name || '—')),
           el('td', {}, el('code', {}, c.slug)),
@@ -986,23 +1033,66 @@ async function viewAdmin() {
             el('button', { class: 'btn sm', onclick: () => {
               setImpersonation(c.id); render();
             }}, 'View as'),
-            amountInput, noteInput,
-            el('button', { class: 'btn sm btn-success', onclick: () => adjust(+1) }, '+ Add'),
-            el('button', { class: 'btn sm btn-warn',    onclick: () => adjust(-1) }, '− Remove'),
-            el('button', { class: 'btn sm ' + (c.billing_paused ? 'btn-success' : 'btn-warn'), onclick: async () => {
-              try {
-                await api('/api/admin?action=billing-pause', {
-                  method: 'POST', body: { client_id: c.id, paused: !c.billing_paused }
-                });
-                toast(c.billing_paused ? 'Billing resumed' : 'Billing paused');
-                await refresh();
-              } catch (e) { toast(e.message, true); }
-            }}, c.billing_paused ? 'Resume billing' : 'Pause billing')
+            b.amountInput, b.noteInput,
+            el('button', { class: 'btn sm btn-success', onclick: () => b.adjust(+1) }, '+ Add'),
+            el('button', { class: 'btn sm btn-warn',    onclick: () => b.adjust(-1) }, '− Remove'),
+            el('button', {
+              class: 'btn sm ' + (c.billing_paused ? 'btn-success' : 'btn-warn'),
+              onclick: b.pauseToggle
+            }, c.billing_paused ? 'Resume billing' : 'Pause billing')
           )
         );
       }))
     );
-    tableHost.appendChild(table);
+    const tableWrap = el('div', { class: 'admin-table-wrap' }, table);
+    tableHost.appendChild(tableWrap);
+
+    // ---- Mobile (<=767px): stacked cards, via CSS swap ----
+    const cards = el('div', { class: 'admin-cards' },
+      ...allClients.map((c) => {
+        const b = buildClient(c);
+        return el('div', { class: 'admin-card' },
+          el('div', { class: 'admin-card-head' },
+            el('strong', {}, c.name || '—'),
+            c.billing_paused
+              ? el('span', { class: 'pill warn' }, 'PAUSED')
+              : el('span', { class: 'pill ok' }, 'active')
+          ),
+          el('div', { class: 'admin-card-row' },
+            el('span', {}, 'Slug'),
+            el('code', {}, c.slug || '—')
+          ),
+          el('div', { class: 'admin-card-row' },
+            el('span', {}, 'Twilio'),
+            el('code', {}, c.twilio_phone_number || '—')
+          ),
+          el('div', { class: 'admin-card-row' },
+            el('span', {}, 'Credits'),
+            el('span', {}, String(c.credit_balance ?? 0))
+          ),
+          el('div', { class: 'admin-card-row' },
+            el('span', {}, 'Sent 30d'),
+            el('span', {}, String(c.sent_30d || 0))
+          ),
+          el('div', { class: 'admin-card-credits' },
+            b.amountInput,
+            b.noteInput,
+            el('button', { class: 'btn sm btn-success', onclick: () => b.adjust(+1) }, '+ Add'),
+            el('button', { class: 'btn sm btn-warn',    onclick: () => b.adjust(-1) }, '− Remove')
+          ),
+          el('div', { class: 'admin-card-actions' },
+            el('button', { class: 'btn sm', onclick: () => {
+              setImpersonation(c.id); render();
+            }}, 'View as'),
+            el('button', {
+              class: 'btn sm ' + (c.billing_paused ? 'btn-success' : 'btn-warn'),
+              onclick: b.pauseToggle
+            }, c.billing_paused ? 'Resume billing' : 'Pause billing')
+          )
+        );
+      })
+    );
+    tableHost.appendChild(cards);
   };
   refresh().catch((e) => { tableHost.innerHTML = ''; tableHost.appendChild(el('div', { class: 'err' }, e.message)); });
 
@@ -1460,13 +1550,32 @@ function ge8ShowInstallBanner(mode) {
   document.body.appendChild(banner);
 }
 
+// Shared install state. shell() reads this on every render to decide
+// whether the "+ Install" pill should appear in the mobile header.
+window.ge8InstallState = { canInstall: false, mode: null };
+
+function ge8UpdateInstallState() {
+  if (ge8IsStandalone()) {
+    window.ge8InstallState = { canInstall: false, mode: null };
+  } else if (deferredInstallPrompt) {
+    window.ge8InstallState = { canInstall: true, mode: 'native' };
+  } else if (ge8IsIOS()) {
+    window.ge8InstallState = { canInstall: true, mode: 'ios' };
+  } else {
+    window.ge8InstallState = { canInstall: false, mode: null };
+  }
+}
+ge8UpdateInstallState();
+
 // Capture the native prompt event as soon as Chromium fires it. If the
-// 30-second timer has already elapsed, show the banner immediately;
-// otherwise just stash the event and the timer below will pick it up.
+// 30-second timer has already elapsed, show the post-delay banner too;
+// always re-render so the header install pill appears immediately.
 let ge8InstallTimerDone = false;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
+  ge8UpdateInstallState();
+  if (typeof render === 'function') render();
   if (ge8InstallTimerDone) ge8ShowInstallBanner('native');
 });
 
@@ -1475,8 +1584,35 @@ window.addEventListener('beforeinstallprompt', (e) => {
 window.addEventListener('appinstalled', () => {
   localStorage.setItem('ge8_install_dismissed', '1');
   deferredInstallPrompt = null;
+  ge8UpdateInstallState();
   ge8HideInstallBanner();
+  if (typeof render === 'function') render();
 });
+
+// iOS "Add to Home Screen" bottom sheet. Shown when the install pill is
+// tapped on iOS Safari, or from the 30s install banner. Content is the
+// step-by-step Share → Add to Home Screen flow.
+function ge8ShowIosSheet() {
+  if (document.querySelector('.ios-sheet-bg')) return;
+  const close = () => bg.remove();
+  const sheet = el('div', { class: 'ios-sheet', onclick: (e) => e.stopPropagation() },
+    el('div', { class: 'handle' }),
+    el('h2', {}, 'Install GoElev8 Portal'),
+    el('p', {}, 'Get quick access from your home screen — works offline, launches like an app.'),
+    el('ol', {},
+      el('li', {},
+        'Tap the Share button ',
+        el('span', { class: 'share-glyph', 'aria-label': 'Share icon' }, '↑'),
+        ' in the Safari toolbar.'
+      ),
+      el('li', {}, 'Scroll down and tap ', el('strong', {}, 'Add to Home Screen'), '.'),
+      el('li', {}, 'Tap ', el('strong', {}, 'Add'), ' in the top-right corner.')
+    ),
+    el('button', { class: 'close', onclick: close }, 'Got it')
+  );
+  const bg = el('div', { class: 'ios-sheet-bg', onclick: close }, sheet);
+  document.body.appendChild(bg);
+}
 
 // 30-second delay after load.
 window.addEventListener('load', () => {
