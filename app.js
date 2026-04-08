@@ -158,6 +158,15 @@ function shell(content) {
         el('button', { class: 'link', onclick: () => { setImpersonation(null); render(); } }, 'Exit'))
     : null;
 
+  // We're "in a client context" whenever either (a) state.client was
+  // successfully fetched from /api/portal/me, or (b) admin has picked a
+  // client to impersonate. Using state.impersonating as a fallback means
+  // the nav still renders if /me fails to load the client row (e.g. a
+  // transient DB error, a schema skew like a missing column, or the row
+  // was fetched with a different selector). Without this fallback, a
+  // single null field on me.js would wipe out the entire sidebar nav.
+  const inClientContext = !!(state.client || state.impersonating);
+
   // Bottom nav for mobile (iPhone/iPad). Only shows when a client context exists.
   // The first 4 buttons jump to a view; the "Menu" button opens the full
   // sidebar drawer so the user can reach Messages, Contacts, Activity,
@@ -170,7 +179,7 @@ function shell(content) {
     { id: 'calls', label: 'Calls' },
     { id: '__menu__', label: 'Menu' }
   ];
-  const bottomNav = state.client
+  const bottomNav = inClientContext
     ? el('nav', { class: 'bottom-nav' },
         bottomNavItems.map((item) => {
           const isMenu = item.id === '__menu__';
@@ -191,20 +200,20 @@ function shell(content) {
       )
     : null;
 
-  return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') + (state.client ? ' has-bottom-nav' : '') },
+  return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') + (inClientContext ? ' has-bottom-nav' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
         el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
         el('div', { class: 'name' }, 'GoElev8.AI',
           el('small', {}, state.isAdmin ? 'Master Admin' : 'Client Portal'))
       ),
-      state.client
+      inClientContext
         ? el('div', { class: 'client-pill' },
-            el('div', { class: 'name' }, state.client?.name || ''),
+            el('div', { class: 'name' }, state.client?.name || (state.impersonating ? 'Loading client…' : '')),
             el('div', { class: 'num' }, state.client?.twilio_phone_number || 'No number assigned')
           )
         : null,
-      state.client
+      inClientContext
         ? el('div', { class: 'nav' },
             navBtn('dashboard', 'Dashboard'),
             navBtn('leads', 'Leads'),
