@@ -26,6 +26,18 @@
 //                    call.ended (inserts a vapi_calls row). Resolves the
 //                    client_id from existing leads.phone, falling back to
 //                    DEFAULT_CLIENT_ID env var.
+//
+// ?action=lead    -> POST from a client website (form submit) or the
+//                    /embed/track.js script. Authenticated by shared
+//                    secret in the x-goelev8-secret header
+//                    (env GOELEV8_WEBHOOK_SECRET).
+//                    Body: { slug, name, phone?, email?, source?,
+//                            funnel?, metadata? }
+//                    Resolves client_id from slug, auto-tags from source/
+//                    funnel/URL hints, inserts into leads. Rate-limited
+//                    to 100 requests/minute per slug. Vercel rewrite
+//                    exposes this at the friendlier
+//                    POST /api/webhooks/lead URL.
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
@@ -154,6 +166,136 @@ async function handleIngest(req, res) {
 }
 
 // ============================================================
+// Universal lead webhook (POST /api/webhooks/lead via Vercel
+// rewrite, also reachable as ?action=lead). Auto-tags by source
+// URL, inserts into leads, fans out via Supabase Realtime so
+// open browsers fire a notification.
+// ============================================================
+
+// Friendly source -> tag mapping. Anything not matched falls back
+// to "general".
+function ge8AutoTag({ source, funnel, metadata }) {
+  const tags = new Set();
+  const candidate = [source, funnel, metadata?.url, metadata?.path]
+    .filter(Boolean).join(' ').toLowerCase();
+  if (/\/fit(\b|\/)/.test(candidate))     tags.add('athlete');
+  if (/\/rs2(\b|\/)/.test(candidate))     tags.add('lifestyle');
+  if (/(^|\/|\.)book\./.test(candidate))  tags.add('ready-to-book');
+  if (/\/book(ing)?(\b|\/)/.test(candidate)) tags.add('ready-to-book');
+  if (/sms|twilio/.test(candidate))       tags.add('sms-lead');
+  if (!tags.size) tags.add('general');
+  return [...tags];
+}
+
+// In-memory rate limiter: 100 requests / 60 seconds per slug.
+// Vercel functions can run on multiple instances so this is best-
+// effort, not a hard cap. Sufficient to throttle a runaway form.
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 100;
+const ge8LeadRate = new Map();
+function ge8RateLimitOk(slug) {
+  const now = Date.now();
+  const key = String(slug || '__unknown__');
+  const arr = ge8LeadRate.get(key) || [];
+  const recent = arr.filter((t) => now - t < RATE_WINDOW_MS);
+  if (recent.length >= RATE_MAX) {
+    ge8LeadRate.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  ge8LeadRate.set(key, recent);
+  return true;
+}
+
+async function handleLead(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'method_not_allowed' });
+  }
+  const expected = process.env.GOELEV8_WEBHOOK_SECRET;
+  if (!expected) return res.status(500).json({ error: 'webhook_secret_not_configured' });
+
+  // Parse the body first so we can also accept the secret in the body
+  // when sendBeacon (which can't set custom headers) is used by the
+  // /embed/track.js fallback path.
+  let body;
+  try {
+    const raw = await readRaw(req);
+    body = raw ? JSON.parse(raw) : {};
+  } catch { return res.status(400).json({ error: 'invalid_json' }); }
+
+  const headerSecret =
+    req.headers['x-goelev8-secret'] ||
+    req.headers['X-GoElev8-Secret'.toLowerCase()];
+  const provided = headerSecret || body.secret;
+  if (provided !== expected) return res.status(401).json({ error: 'unauthorized' });
+  // Strip the body secret before we touch any other field so it never
+  // accidentally lands in metadata or logs.
+  delete body.secret;
+
+  const slug = String(body.slug || '').trim();
+  if (!slug) return res.status(400).json({ error: 'missing_slug' });
+
+  if (!ge8RateLimitOk(slug)) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({ error: 'rate_limited' });
+  }
+
+  const { name, phone, email, source, funnel, metadata } = body;
+  if (!name && !phone && !email) {
+    return res.status(400).json({ error: 'missing_contact_info' });
+  }
+
+  // Look up the client by slug.
+  const { data: client, error: clientErr } = await supabaseAdmin
+    .from('clients')
+    .select('id, slug, name')
+    .eq('slug', slug)
+    .maybeSingle();
+  if (clientErr) return res.status(500).json({ error: clientErr.message });
+  if (!client)   return res.status(404).json({ error: 'unknown_slug' });
+
+  const tags = ge8AutoTag({ source, funnel, metadata });
+
+  const insertRow = {
+    client_id: client.id,
+    name: (name || phone || email || 'Unknown').toString().slice(0, 200),
+    phone: phone ? String(phone).slice(0, 32) : null,
+    email: email ? String(email).slice(0, 200) : null,
+    source: source ? String(source).slice(0, 200) : null,
+    funnel: funnel ? String(funnel).slice(0, 64) : null,
+    status: 'New',
+    tags,
+    created_at: new Date().toISOString()
+  };
+
+  const { data: inserted, error: insertErr } = await supabaseAdmin
+    .from('leads')
+    .insert(insertRow)
+    .select('id')
+    .single();
+  if (insertErr) return res.status(500).json({ error: insertErr.message });
+
+  // The portal browser already subscribes to postgres_changes on
+  // public.leads filtered by client_id (see startRealtime in app.js),
+  // so an INSERT here automatically fans out a "New lead: …" system
+  // notification + toast to every connected client tab. No extra
+  // server-side push fan-out needed.
+
+  return res.status(200).json({
+    ok: true,
+    lead_id: inserted?.id,
+    client_id: client.id,
+    tags,
+    notification: {
+      title: 'New Lead',
+      body: `${insertRow.name} just came in${source ? ' from ' + source : ''}`,
+      url: '/?view=dashboard'
+    }
+  });
+}
+
+// ============================================================
 // Vapi webhook receiver (folded in here to stay under the
 // Vercel 12-function cap).
 // ============================================================
@@ -270,6 +412,7 @@ export default async function handler(req, res) {
     if (action === 'ingest') return await handleIngest(req, res);
     if (action === 'list')   return await handleList(req, res);
     if (action === 'vapi')   return await handleVapi(req, res);
+    if (action === 'lead')   return await handleLead(req, res);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message || 'internal_error' });

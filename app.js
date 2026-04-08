@@ -2,6 +2,33 @@
 // GoElev8.ai Portal — vanilla JS SPA
 // State + router + views.
 
+// ============================================================
+// Google Analytics GA4 helper. No-ops gracefully if gtag isn't
+// loaded (e.g. ad-blocker), so it's safe to call from anywhere.
+// ============================================================
+function ge8Track(eventName, props = {}) {
+  try {
+    if (typeof window !== 'undefined' && typeof window.gtag === 'function') {
+      window.gtag('event', eventName, props);
+    }
+  } catch {}
+}
+function ge8SetUser(props = {}) {
+  try {
+    if (typeof window !== 'undefined' && typeof window.gtag === 'function') {
+      window.gtag('set', 'user_properties', props);
+    }
+  } catch {}
+}
+// Track standalone-launch on page load — fires once if the user
+// opened the PWA from their home screen.
+if (typeof window !== 'undefined') {
+  const isStandalone =
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true;
+  if (isStandalone) ge8Track('pwa_launched');
+}
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, attrs = {}, ...children) => {
   const node = document.createElement(tag);
@@ -148,6 +175,10 @@ function renderLogin() {
         localStorage.setItem('ge8_token', r.access_token);
         state.token = r.access_token;
         await loadMe();
+        ge8Track('login_success', {
+          client_slug: state.client?.slug || null,
+          client_name: state.client?.name || null
+        });
         render();
       } catch (err) {
         errBox.innerHTML = `<div class="err">${err.message || 'Login failed'}</div>`;
@@ -185,6 +216,17 @@ async function loadMe() {
   state.clientError = r.client_error || null;
   if (r.client_error) {
     console.warn('[portal/me] client_error:', r.client_error);
+  }
+  // Stamp every GA4 event with the active client_slug so cross-tenant
+  // filtering "show only this client's activity" works in the dashboard.
+  if (state.client?.slug) {
+    ge8SetUser({
+      client_slug: state.client.slug,
+      client_name: state.client.name || null,
+      is_admin: !!state.isAdmin
+    });
+  } else if (state.isAdmin) {
+    ge8SetUser({ client_slug: null, client_name: null, is_admin: true });
   }
 }
 
@@ -300,7 +342,12 @@ function shell(content) {
   const tabBtn = (tab, extraClass) => el('button', {
     class: 'tab-btn ' + (extraClass || '') + (state.view === tab.id ? ' active' : ''),
     'aria-label': tab.label,
-    onclick: () => { state.view = tab.id; closeNav(); render(); }
+    onclick: () => {
+      state.view = tab.id;
+      ge8Track('tab_viewed', { tab_name: tab.id });
+      closeNav();
+      render();
+    }
   },
     tabIcon(tab.icon),
     el('span', { class: 'tab-label' }, tab.label)
@@ -438,6 +485,7 @@ function card(label, value, sub, cls = '') {
 // CONTACTS
 // ============================================================
 async function viewContacts() {
+  ge8Track('contact_viewed');
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Contacts'),
@@ -602,6 +650,7 @@ async function openBookingModal() {
 // MESSAGES (SMS inbox + composer)
 // ============================================================
 async function viewMessages() {
+  ge8Track('message_viewed');
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Messages')));
 
@@ -1449,12 +1498,19 @@ async function viewDashboard() {
       el('span', { class: 'muted small' }, 'Latest 5')
     ));
     const recentLeads = (leadsR.leads || []).slice(0, 5);
+    ge8Track('lead_viewed', { count: recentLeads.length });
     if (!recentLeads.length) {
       leadsPanel.appendChild(emptyState('No leads yet. Vapi calls and web form submissions will appear here.'));
     } else {
       const list = el('div', { class: 'lead-list' });
       for (const l of recentLeads) {
-        list.appendChild(el('div', { class: 'lead-row' },
+        list.appendChild(el('div', {
+          class: 'lead-row',
+          onclick: () => ge8Track('lead_clicked', {
+            lead_source: l.source || null,
+            lead_status: l.status || null
+          })
+        },
           el('div', { class: 'lead-main' },
             el('div', { class: 'lead-name' }, l.name || '—'),
             el('div', { class: 'lead-meta muted' },
@@ -1616,6 +1672,7 @@ async function viewLeads() {
 // VAPI CALLS
 // ============================================================
 async function viewCalls() {
+  ge8Track('call_viewed');
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Calls'),
@@ -1649,6 +1706,7 @@ async function viewCalls() {
       row.addEventListener('click', () => {
         const next = row.nextSibling;
         if (next && next.classList?.contains('call-transcript')) { next.remove(); return; }
+        ge8Track('transcript_expanded', { outcome: c.outcome || null });
         const t = el('div', { class: 'call-transcript' },
           c.transcript || el('span', { class: 'muted' }, 'No transcript captured.')
         );
@@ -1743,6 +1801,10 @@ if (initialView) {
 }
 if (params.get('credits') === 'success') {
   toast('Payment received! Credits will appear shortly.');
+  ge8Track('credits_purchased', {
+    pack_name: params.get('pack') || null,
+    amount: params.get('amount') || null
+  });
   history.replaceState({}, '', '/');
 }
 if (params.get('connect') === 'done') {
@@ -1875,6 +1937,7 @@ let ge8InstallTimerDone = false;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
+  ge8Track('pwa_install_prompted');
   ge8UpdateInstallState();
   if (typeof render === 'function') render();
   if (ge8InstallTimerDone) ge8ShowInstallBanner('native');
