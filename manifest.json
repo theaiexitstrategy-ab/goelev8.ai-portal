@@ -28,17 +28,17 @@
       "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     },
     {
-      "name": "Leads",
-      "short_name": "Leads",
-      "description": "Pipeline tracker",
-      "url": "/?view=leads",
-      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
-    },
-    {
-      "name": "Vapi Calls",
+      "name": "Calls",
       "short_name": "Calls",
       "description": "AI voice answer log",
       "url": "/?view=calls",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Messages",
+      "short_name": "Messages",
+      "description": "SMS conversations",
+      "url": "/?view=messages",
       "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     }
   ]

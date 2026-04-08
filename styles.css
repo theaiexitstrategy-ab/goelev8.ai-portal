@@ -53,7 +53,16 @@
   /* Type */
   --font-sans: 'Inter', 'Outfit', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* iOS / Dynamic Island safe-area shortcuts. Used throughout the
+     mobile layout so notch + home indicator never clip content. */
+  --sat: env(safe-area-inset-top);
+  --sab: env(safe-area-inset-bottom);
+  --sal: env(safe-area-inset-left);
+  --sar: env(safe-area-inset-right);
 }
+
+input, textarea { touch-action: manipulation; }
 
 * { box-sizing: border-box; }
 *::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -934,10 +943,10 @@ tbody tr:last-child td { border-bottom: none; }
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: calc(10px + env(safe-area-inset-top)) 4px 14px;
-    margin: calc(-16px - env(safe-area-inset-top)) -16px 8px;
-    padding-left: calc(16px + env(safe-area-inset-left));
-    padding-right: calc(16px + env(safe-area-inset-right));
+    padding: calc(10px + var(--sat)) 4px 14px;
+    margin: calc(-16px - var(--sat)) -16px 8px;
+    padding-left: calc(16px + var(--sal));
+    padding-right: calc(16px + var(--sar));
     position: sticky;
     top: 0;
     z-index: 40;
@@ -991,9 +1000,9 @@ tbody tr:last-child td { border-bottom: none; }
   .main {
     padding:
       16px
-      calc(16px + env(safe-area-inset-right))
-      calc(80px + env(safe-area-inset-bottom))
-      calc(16px + env(safe-area-inset-left));
+      calc(16px + var(--sar))
+      calc(80px + var(--sab))
+      calc(16px + var(--sal));
     max-width: 100%;
   }
   .topbar { margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
@@ -1260,10 +1269,10 @@ tbody tr:last-child td { border-bottom: none; }
   backdrop-filter: blur(20px) saturate(160%);
   border-top: 1px solid var(--border, rgba(255,255,255,0.08));
   padding:
-    6px
-    calc(4px + env(safe-area-inset-right))
-    calc(6px + env(safe-area-inset-bottom))
-    calc(4px + env(safe-area-inset-left));
+    8px
+    calc(4px + var(--sar))
+    calc(8px + var(--sab))
+    calc(4px + var(--sal));
 }
 .bottom-nav .bnav-btn {
   flex: 1;
@@ -1613,3 +1622,129 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
   flex: 1 1 120px;
   min-width: 0;
 }
+
+/* ============================================================
+   © 2026 GoElev8.ai | Aaron Bryant. All rights reserved.
+   5-tab navigation: shared tab-btn, sidebar-tab variant, bnav-btn
+   variant. Plus powered-footer + client-logo overrides.
+   ============================================================ */
+
+/* Generic tab button (used in both desktop sidebar and mobile bottom-nav) */
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: none;
+  border: 0;
+  border-radius: 10px;
+  color: var(--text-dim, #a8acbb);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.tab-btn svg { flex-shrink: 0; opacity: 0.85; }
+.tab-btn:hover { background: rgba(255, 255, 255, 0.04); color: #f0f1f5; }
+.tab-btn.active {
+  color: #00CFFF;
+  background: rgba(0, 207, 255, 0.10);
+}
+.tab-btn.active svg { opacity: 1; }
+
+/* Sidebar variant */
+.tab-btn.sidebar-tab { width: 100%; }
+.sidebar .nav { display: flex; flex-direction: column; gap: 4px; }
+
+/* Bottom-nav variant — column layout, label below icon, full width split */
+.bottom-nav .tab-btn.bnav-btn {
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 4px;
+  border-radius: 0;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  width: auto;
+  min-width: 0;
+}
+.bottom-nav .tab-btn.bnav-btn .tab-label {
+  font-size: 11px;
+  line-height: 1;
+}
+.bottom-nav .tab-btn.bnav-btn:hover { background: none; color: #f0f1f5; }
+.bottom-nav .tab-btn.bnav-btn.active {
+  background: none;
+  color: #00CFFF;
+}
+.bottom-nav .tab-btn.bnav-btn svg { width: 22px; height: 22px; }
+.bottom-nav .tab-btn.bnav-btn.active svg {
+  filter: drop-shadow(0 0 6px rgba(0, 207, 255, 0.6));
+}
+
+/* Admin Master button has the same look as a tab-btn */
+.tab-btn.admin-master { width: 100%; }
+
+/* Powered-by footer — appears at the bottom of every page inside .main,
+   plus at the bottom of the sidebar on desktop. Small, gray, link tints
+   on hover. */
+.powered-footer {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.05));
+  text-align: center;
+  font-size: 11px;
+  color: #6b6f80;
+  letter-spacing: 0.02em;
+}
+.powered-footer a {
+  color: #6b6f80;
+  text-decoration: none;
+  border-bottom: 1px dotted #6b6f80;
+}
+.powered-footer a:hover { color: #00CFFF; border-bottom-color: #00CFFF; }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 14px 6px 4px;
+  text-align: center;
+  font-size: 11px;
+  color: #6b6f80;
+}
+.sidebar-footer a {
+  color: #6b6f80;
+  text-decoration: none;
+  border-bottom: 1px dotted #6b6f80;
+}
+.sidebar-footer a:hover { color: #00CFFF; border-bottom-color: #00CFFF; }
+
+/* Client logo override — a client logo is usually full-color/photo, so
+   strip the brand gradient background and let it sit on a neutral pad. */
+.brand .logo.client-logo,
+.mobile-brand .logo.client-logo {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.brand .logo.client-logo img,
+.mobile-brand .logo.client-logo img {
+  width: 80%;
+  height: 80%;
+  object-fit: contain;
+  filter: none;
+}
+
+/* Panel head: title + small right-aligned hint */
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+.panel-head h2 { margin: 0; }
+.muted.small { font-size: 11px; }
+

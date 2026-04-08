@@ -56,16 +56,39 @@ function logout() {
   render();
 }
 
-function setImpersonation(clientId) {
+// Stash a tiny snapshot of the impersonated client's basic info so the
+// header can render the right name + logo + Twilio number even when
+// /api/portal/me hasn't returned yet (or returns null due to a transient
+// error). Cleared on stop-impersonate.
+function setImpersonation(clientId, clientObj) {
   if (clientId) {
     state.impersonating = clientId;
     localStorage.setItem('ge8_impersonate', clientId);
+    if (clientObj) {
+      try {
+        localStorage.setItem('ge8_impersonate_meta', JSON.stringify({
+          id: clientId,
+          name: clientObj.name || null,
+          twilio_phone_number: clientObj.twilio_phone_number || null,
+          logo_url: clientObj.logo_url || null,
+          brand_color: clientObj.brand_color || null
+        }));
+      } catch {}
+    }
   } else {
     state.impersonating = null;
     localStorage.removeItem('ge8_impersonate');
+    localStorage.removeItem('ge8_impersonate_meta');
   }
   state.client = null;
-  state.view = 'overview';
+  state.view = 'dashboard';
+}
+
+function ge8ImpersonateMeta() {
+  try {
+    const raw = localStorage.getItem('ge8_impersonate_meta');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
 }
 
 // ============================================================
@@ -74,10 +97,46 @@ function setImpersonation(clientId) {
 function renderLogin() {
   const box = el('div', { class: 'box' });
   const errBox = el('div');
-  const emailInput = el('input', { type: 'email', placeholder: 'you@example.com', required: true });
-  const pwInput = el('input', { type: 'password', placeholder: '••••••••', required: true });
+  // iOS-friendly input attributes:
+  //   - inputmode + autocapitalize/autocorrect avoid the keyboard
+  //     fighting with the form
+  //   - autocomplete hints let the keychain pre-fill
+  //   - touch-action: manipulation turns off iOS double-tap-to-zoom
+  //     delay so taps register on the first touch
+  //   - NO autofocus: setting autofocus on a freshly-mounted input
+  //     during page transition is exactly the race that makes the
+  //     keyboard never appear on the first tap on iOS PWA standalone.
+  const emailInput = el('input', {
+    type: 'email',
+    name: 'email',
+    placeholder: 'you@example.com',
+    required: true,
+    autocomplete: 'username',
+    inputmode: 'email',
+    autocapitalize: 'off',
+    autocorrect: 'off',
+    spellcheck: 'false',
+    style: 'touch-action: manipulation;'
+  });
+  const pwInput = el('input', {
+    type: 'password',
+    name: 'password',
+    placeholder: '••••••••',
+    required: true,
+    autocomplete: 'current-password',
+    autocapitalize: 'off',
+    autocorrect: 'off',
+    spellcheck: 'false',
+    style: 'touch-action: manipulation;'
+  });
+
+  // Tapping anywhere on the email field group should focus the input.
+  // Also catches the case where the field <label> is tapped.
+  const focusEmail = () => { try { emailInput.focus(); } catch {} };
+  const focusPw    = () => { try { pwInput.focus();    } catch {} };
 
   const form = el('form', {
+    autocomplete: 'on',
     onsubmit: async (e) => {
       e.preventDefault();
       errBox.innerHTML = '';
@@ -103,8 +162,14 @@ function renderLogin() {
       )
     ),
     errBox,
-    el('div', { class: 'field' }, el('label', {}, 'Email'), emailInput),
-    el('div', { class: 'field' }, el('label', {}, 'Password'), pwInput),
+    el('div', { class: 'field', onclick: focusEmail },
+      el('label', { onclick: focusEmail }, 'Email'),
+      emailInput
+    ),
+    el('div', { class: 'field', onclick: focusPw },
+      el('label', { onclick: focusPw }, 'Password'),
+      pwInput
+    ),
     el('button', { class: 'btn', type: 'submit' }, 'Sign in →'),
     el('div', { class: 'footer' }, 'Powered by GoElev8 AI Infrastructure')
   );
@@ -117,21 +182,83 @@ async function loadMe() {
   state.user = r.user;
   state.client = r.client;
   state.isAdmin = !!r.isAdmin;
+  state.clientError = r.client_error || null;
+  if (r.client_error) {
+    console.warn('[portal/me] client_error:', r.client_error);
+  }
 }
 
 // ============================================================
 // SHELL
 // ============================================================
+
+// Inline SVG icons for the 5-tab nav. Stroke-only feather-style glyphs
+// that inherit currentColor so the active-tab teal works automatically.
+function tabIcon(name) {
+  const svg = (paths, viewBox = '0 0 24 24') => {
+    const ns = 'http://www.w3.org/2000/svg';
+    const s = document.createElementNS(ns, 'svg');
+    s.setAttribute('viewBox', viewBox);
+    s.setAttribute('width', '22');
+    s.setAttribute('height', '22');
+    s.setAttribute('fill', 'none');
+    s.setAttribute('stroke', 'currentColor');
+    s.setAttribute('stroke-width', '2');
+    s.setAttribute('stroke-linecap', 'round');
+    s.setAttribute('stroke-linejoin', 'round');
+    for (const d of paths) {
+      const p = document.createElementNS(ns, 'path');
+      p.setAttribute('d', d);
+      s.appendChild(p);
+    }
+    return s;
+  };
+  switch (name) {
+    case 'home':   return svg(['M3 12 12 4l9 8', 'M5 10v10h14V10']);
+    case 'phone':  return svg(['M5 4h4l2 5-3 2a14 14 0 0 0 5 5l2-3 5 2v4a2 2 0 0 1-2 2A18 18 0 0 1 3 6a2 2 0 0 1 2-2z']);
+    case 'chat':   return svg(['M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z']);
+    case 'person': return svg(['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z']);
+    case 'gear':   return svg([
+      'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+      'M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z'
+    ]);
+    case 'menu':   return svg(['M4 6h16', 'M4 12h16', 'M4 18h16']);
+  }
+  return svg([]);
+}
+
+const TABS = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'home'   },
+  { id: 'calls',     label: 'Calls',     icon: 'phone'  },
+  { id: 'messages',  label: 'Messages',  icon: 'chat'   },
+  { id: 'contacts',  label: 'Contacts',  icon: 'person' },
+  { id: 'settings',  label: 'Settings',  icon: 'gear'   }
+];
+
 function shell(content) {
   const closeNav = () => document.body.classList.remove('nav-open');
-  const navBtn = (id, label) =>
-    el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; closeNav(); render(); } }, label);
 
-  // Install pill — sits in the mobile header next to the brand. Only
-  // renders when the portal is installable (Android/Chromium has fired
-  // beforeinstallprompt, OR we're on iOS Safari where the user can
-  // long-press Share → Add to Home Screen). Hidden when already running
-  // in standalone mode or previously dismissed.
+  // We're "in a client context" whenever either (a) state.client was
+  // successfully fetched from /api/portal/me, or (b) admin has picked a
+  // client to impersonate. The state.impersonating fallback keeps the
+  // nav rendering even if /me returns null due to a schema or transient
+  // DB issue.
+  const inClientContext = !!(state.client || state.impersonating);
+
+  // Per-client branding falls back to cached impersonation metadata if
+  // /api/portal/me hasn't returned yet (or returned client: null).
+  const meta = state.impersonating ? ge8ImpersonateMeta() : null;
+  const clientName  = state.client?.name                || meta?.name                || (state.impersonating ? 'Switching client…' : '');
+  const clientPhone = state.client?.twilio_phone_number || meta?.twilio_phone_number || '';
+  const clientLogo  = state.client?.logo_url            || meta?.logo_url            || null;
+
+  // Header brand: client logo when in a client context, GoElev8 logo otherwise.
+  const makeBrandLogo = () => inClientContext && clientLogo
+    ? el('div', { class: 'logo client-logo' }, el('img', { src: clientLogo, alt: clientName || 'Client logo' }))
+    : el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: 'GoElev8.AI' }));
+  const brandName = inClientContext ? (clientName || 'GoElev8.AI') : 'GoElev8.AI';
+
+  // Install pill — sits in the mobile header next to the brand.
   const installState = window.ge8InstallState || { canInstall: false, mode: null };
   const installPill = installState.canInstall
     ? el('button', {
@@ -152,27 +279,49 @@ function shell(content) {
       }, 'Install')
     : null;
 
+  // Mobile header — hamburger only for admins (regular clients have the
+  // 5-tab bottom nav and don't need a drawer).
   const mobileHeader = el('div', { class: 'mobile-header' },
-    el('button', {
-      class: 'nav-toggle',
-      'aria-label': 'Menu',
-      onclick: () => document.body.classList.toggle('nav-open')
-    }, el('span', {}), el('span', {}), el('span', {})),
+    state.isAdmin
+      ? el('button', {
+          class: 'nav-toggle',
+          'aria-label': 'Menu',
+          onclick: () => document.body.classList.toggle('nav-open')
+        }, el('span', {}), el('span', {}), el('span', {}))
+      : null,
     el('div', { class: 'mobile-brand' },
-      el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
-      el('span', {}, 'GoElev8.AI')
+      makeBrandLogo(),
+      el('span', {}, brandName)
     ),
     installPill
   );
   const navBackdrop = el('div', { class: 'nav-backdrop', onclick: closeNav });
 
+  const tabBtn = (tab, extraClass) => el('button', {
+    class: 'tab-btn ' + (extraClass || '') + (state.view === tab.id ? ' active' : ''),
+    'aria-label': tab.label,
+    onclick: () => { state.view = tab.id; closeNav(); render(); }
+  },
+    tabIcon(tab.icon),
+    el('span', { class: 'tab-label' }, tab.label)
+  );
+
+  const sidebarTabs = inClientContext
+    ? el('div', { class: 'nav' }, ...TABS.map((t) => tabBtn(t, 'sidebar-tab')))
+    : null;
+
   const adminSection = state.isAdmin
     ? el('div', { class: 'admin-section' },
         el('div', { class: 'admin-label' }, 'ADMIN'),
-        navBtn('admin', 'Master Admin'),
+        el('button', {
+          class: 'tab-btn admin-master' + (state.view === 'admin' ? ' active' : ''),
+          onclick: () => { state.view = 'admin'; closeNav(); render(); }
+        }, tabIcon('gear'), el('span', { class: 'tab-label' }, 'Master Admin')),
         state.impersonating
-          ? el('button', { class: 'btn-stop-impersonate', onclick: () => { setImpersonation(null); render(); } },
-              '× Stop impersonating')
+          ? el('button', {
+              class: 'btn-stop-impersonate',
+              onclick: () => { setImpersonation(null); render(); }
+            }, '× Stop impersonating')
           : null
       )
     : null;
@@ -180,85 +329,44 @@ function shell(content) {
   const banner = state.isAdmin && state.impersonating
     ? el('div', { class: 'impersonation-banner' },
         el('span', {}, 'Viewing as '),
-        el('strong', {}, state.client?.name || '…'),
+        el('strong', {}, clientName || '…'),
         el('button', { class: 'link', onclick: () => { setImpersonation(null); render(); } }, 'Exit'))
     : null;
 
-  // We're "in a client context" whenever either (a) state.client was
-  // successfully fetched from /api/portal/me, or (b) admin has picked a
-  // client to impersonate. Using state.impersonating as a fallback means
-  // the nav still renders if /me fails to load the client row (e.g. a
-  // transient DB error, a schema skew like a missing column, or the row
-  // was fetched with a different selector). Without this fallback, a
-  // single null field on me.js would wipe out the entire sidebar nav.
-  const inClientContext = !!(state.client || state.impersonating);
-
-  // Bottom nav for mobile (iPhone/iPad). Only shows when a client context exists.
-  // The first 4 buttons jump to a view; the "Menu" button opens the full
-  // sidebar drawer so the user can reach Messages, Contacts, Activity,
-  // Credits & Billing, Payments (Connect), and Settings.
-  const openDrawer = () => document.body.classList.add('nav-open');
-  const bottomNavItems = [
-    { id: 'dashboard', label: 'Home' },
-    { id: 'leads', label: 'Leads' },
-    { id: 'bookings', label: 'Book' },
-    { id: 'calls', label: 'Calls' },
-    { id: '__menu__', label: 'Menu' }
-  ];
+  // Bottom tab bar for mobile — always 5 tabs in client context.
   const bottomNav = inClientContext
-    ? el('nav', { class: 'bottom-nav' },
-        bottomNavItems.map((item) => {
-          const isMenu = item.id === '__menu__';
-          const isActive = !isMenu && state.view === item.id;
-          return el('button', {
-            class: 'bnav-btn' + (isActive ? ' active' : '') + (isMenu ? ' bnav-menu' : ''),
-            'aria-label': isMenu ? 'Open full menu' : item.label,
-            onclick: isMenu
-              ? openDrawer
-              : () => { state.view = item.id; closeNav(); render(); }
-          },
-            isMenu
-              ? el('span', { class: 'bnav-icon' }, el('span'), el('span'), el('span'))
-              : el('span', { class: 'bnav-dot' }),
-            el('span', { class: 'bnav-label' }, item.label)
-          );
-        })
-      )
+    ? el('nav', { class: 'bottom-nav' }, ...TABS.map((t) => tabBtn(t, 'bnav-btn')))
     : null;
+
+  // "Powered by GoElev8.AI" footer required on every page.
+  const poweredFooter = el('div', { class: 'powered-footer' },
+    'Powered by ',
+    el('a', { href: 'https://goelev8.ai', target: '_blank', rel: 'noopener' }, 'GoElev8.AI')
+  );
 
   return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') + (inClientContext ? ' has-bottom-nav' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
-        el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
-        el('div', { class: 'name' }, 'GoElev8.AI',
+        makeBrandLogo(),
+        el('div', { class: 'name' }, brandName,
           el('small', {}, state.isAdmin ? 'Master Admin' : 'Client Portal'))
       ),
       inClientContext
         ? el('div', { class: 'client-pill' },
-            el('div', { class: 'name' }, state.client?.name || (state.impersonating ? 'Loading client…' : '')),
-            el('div', { class: 'num' }, state.client?.twilio_phone_number || 'No number assigned')
+            el('div', { class: 'name' }, clientName || ''),
+            el('div', { class: 'num' }, clientPhone || 'No number assigned')
           )
         : null,
-      inClientContext
-        ? el('div', { class: 'nav' },
-            navBtn('dashboard', 'Dashboard'),
-            navBtn('leads', 'Leads'),
-            navBtn('bookings', 'Bookings'),
-            navBtn('calls', 'Vapi Calls'),
-            navBtn('overview', 'Overview'),
-            navBtn('activity', 'Activity'),
-            navBtn('messages', 'Messages'),
-            navBtn('contacts', 'Contacts'),
-            navBtn('billing', 'Credits & Billing'),
-            navBtn('connect', 'Payments (Connect)'),
-            navBtn('settings', 'Settings')
-          )
-        : null,
+      sidebarTabs,
       adminSection,
-      el('button', { class: 'signout', onclick: logout }, 'Sign out')
+      el('button', { class: 'signout', onclick: logout }, 'Sign out'),
+      el('div', { class: 'sidebar-footer' },
+        'Powered by ',
+        el('a', { href: 'https://goelev8.ai', target: '_blank', rel: 'noopener' }, 'GoElev8.AI')
+      )
     ),
     navBackdrop,
-    el('main', { class: 'main' }, mobileHeader, banner, content),
+    el('main', { class: 'main' }, mobileHeader, banner, content, poweredFooter),
     bottomNav
   );
 }
@@ -756,15 +864,81 @@ async function viewConnect() {
 // ============================================================
 // SETTINGS
 // ============================================================
-function viewSettings() {
+async function viewSettings() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Settings')));
 
+  // ----- Account info -----
   const panel = el('div', { class: 'panel' });
   panel.appendChild(el('h2', {}, 'Account'));
   panel.appendChild(el('p', {}, `Email: ${state.user?.email || ''}`));
   panel.appendChild(el('p', {}, `Client: ${state.client?.name || ''}`));
+  panel.appendChild(el('p', { class: 'muted' }, state.client?.twilio_phone_number ? `Twilio number: ${state.client.twilio_phone_number}` : 'No Twilio number assigned'));
   wrap.appendChild(panel);
+
+  // ----- Credits & Billing (embedded) -----
+  try {
+    const billingWrap = await viewBilling();
+    // Strip the inner topbar so it merges visually with this Settings page.
+    const inner = billingWrap.querySelector('.topbar');
+    if (inner) inner.remove();
+    const sectionHead = el('div', { class: 'topbar', style: 'margin-top:8px' },
+      el('h2', {}, 'Credits & Billing')
+    );
+    wrap.appendChild(sectionHead);
+    while (billingWrap.firstChild) wrap.appendChild(billingWrap.firstChild);
+  } catch (e) {
+    wrap.appendChild(el('div', { class: 'panel' },
+      el('h2', {}, 'Credits & Billing'),
+      el('p', { class: 'err' }, e.message)
+    ));
+  }
+
+  // ----- Payments / Stripe Connect (embedded) -----
+  try {
+    const connectWrap = await viewConnect();
+    const inner = connectWrap.querySelector('.topbar');
+    if (inner) inner.remove();
+    const sectionHead = el('div', { class: 'topbar', style: 'margin-top:8px' },
+      el('h2', {}, 'Payments — Stripe Connect')
+    );
+    wrap.appendChild(sectionHead);
+    while (connectWrap.firstChild) wrap.appendChild(connectWrap.firstChild);
+  } catch (e) {
+    wrap.appendChild(el('div', { class: 'panel' },
+      el('h2', {}, 'Payments — Stripe Connect'),
+      el('p', { class: 'err' }, e.message)
+    ));
+  }
+
+  // ----- Notification preferences -----
+  const notif = el('div', { class: 'panel' });
+  notif.appendChild(el('h2', {}, 'Notification preferences'));
+  const notifEnabled = el('input', { type: 'checkbox' });
+  notifEnabled.checked = (typeof Notification !== 'undefined') && Notification.permission === 'granted';
+  notif.appendChild(el('label', { class: 'toggle-row' },
+    notifEnabled,
+    el('span', {}, 'Push notifications for new leads & bookings')
+  ));
+  notif.appendChild(el('p', { class: 'muted', style: 'font-size:12px;margin-top:6px' },
+    'When enabled, GoElev8 will send a notification the moment a new lead or booking comes in. Works while the app is open or installed to your home screen.'));
+  notifEnabled.addEventListener('change', async () => {
+    if (notifEnabled.checked) {
+      if (typeof Notification === 'undefined') { toast('Notifications not supported on this device', true); notifEnabled.checked = false; return; }
+      try {
+        const result = await Notification.requestPermission();
+        if (result !== 'granted') {
+          notifEnabled.checked = false;
+          toast(result === 'denied' ? 'Permission denied — re-enable in browser settings' : 'Permission not granted', true);
+        } else {
+          toast('Notifications enabled');
+        }
+      } catch { notifEnabled.checked = false; }
+    } else {
+      toast('To fully disable, revoke permission in browser settings');
+    }
+  });
+  wrap.appendChild(notif);
 
   // ----- Welcome SMS -----
   const wsms = el('div', { class: 'panel' });
@@ -1031,7 +1205,7 @@ async function viewAdmin() {
               : el('span', { class: 'pill ok' }, 'active')),
           el('td', { class: 'actions' },
             el('button', { class: 'btn sm', onclick: () => {
-              setImpersonation(c.id); render();
+              setImpersonation(c.id, c); render();
             }}, 'View as'),
             b.amountInput, b.noteInput,
             el('button', { class: 'btn sm btn-success', onclick: () => b.adjust(+1) }, '+ Add'),
@@ -1082,7 +1256,7 @@ async function viewAdmin() {
           ),
           el('div', { class: 'admin-card-actions' },
             el('button', { class: 'btn sm', onclick: () => {
-              setImpersonation(c.id); render();
+              setImpersonation(c.id, c); render();
             }}, 'View as'),
             el('button', {
               class: 'btn sm ' + (c.billing_paused ? 'btn-success' : 'btn-warn'),
@@ -1208,10 +1382,32 @@ async function viewDashboard() {
     el('div', { class: 'muted' }, state.client?.name || '')
   ));
 
+  // ---- Summary stats (top) ----
   const cards = el('div', { class: 'cards' });
   wrap.appendChild(cards);
   cards.appendChild(skeleton(1));
 
+  // ---- Recent leads ----
+  const leadsPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Recent leads'),
+      el('span', { class: 'muted small' }, 'Latest 5')
+    ),
+    skeleton(3)
+  );
+  wrap.appendChild(leadsPanel);
+
+  // ---- Upcoming bookings ----
+  const bookingsPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Upcoming bookings'),
+      el('span', { class: 'muted small' }, 'Next 5')
+    ),
+    skeleton(3)
+  );
+  wrap.appendChild(bookingsPanel);
+
+  // ---- Activity feed ----
   const feedPanel = el('div', { class: 'panel' },
     el('h2', {}, 'Recent activity'),
     skeleton(5)
@@ -1219,31 +1415,92 @@ async function viewDashboard() {
   wrap.appendChild(feedPanel);
 
   try {
-    const [leadsR, bookingsR, callsR] = await Promise.all([
+    const [billingR, leadsR, bookingsR, callsR] = await Promise.all([
+      api('/api/portal/billing').catch(() => null),
       api('/api/portal/crm?action=leads').catch(() => ({ leads: [] })),
       api('/api/portal/crm?action=bookings').catch(() => ({ bookings: [] })),
       api('/api/portal/crm?action=calls').catch(() => ({ calls: [] }))
     ]);
     const monthStart = new Date(startOfMonthISO()).getTime();
     const inMonth = (ts) => new Date(ts).getTime() >= monthStart;
-    const leadsMonth = (leadsR.leads || []).filter(l => inMonth(l.created_at)).length;
+    const leadsMonth    = (leadsR.leads    || []).filter(l => inMonth(l.created_at)).length;
     const bookingsMonth = (bookingsR.bookings || []).filter(b => inMonth(b.created_at || b.starts_at)).length;
-    const callsMonth = (callsR.calls || []).filter(c => inMonth(c.created_at)).length;
+    const smsMonth      = billingR?.sent_this_month ?? 0;
+    const callsMonth    = (callsR.calls    || []).filter(c => inMonth(c.created_at)).length;
 
     cards.innerHTML = '';
-    cards.appendChild(card('Leads (this month)', leadsMonth, 'New prospects', 'accent'));
-    cards.appendChild(card('Bookings (this month)', bookingsMonth, 'Confirmed + scheduled'));
-    cards.appendChild(card('Vapi Calls (this month)', callsMonth, 'AI voice answers'));
+    cards.appendChild(card('Total leads', leadsMonth, 'This month', 'accent'));
+    cards.appendChild(card('Bookings', bookingsMonth, 'This month'));
+    cards.appendChild(card('SMS sent', smsMonth, 'This month'));
+    cards.appendChild(card('Calls', callsMonth, 'This month'));
 
-    // Cache a tiny snapshot for offline.html to display if the user
-    // comes back without network.
+    // Cache a tiny snapshot for offline.html.
     window.ge8WriteSnapshot?.({
       leads_month: leadsMonth,
       bookings_month: bookingsMonth,
-      calls_month: callsMonth
+      calls_month: callsMonth,
+      sms_month: smsMonth
     });
 
-    // Recent activity feed: last 5 events across all 3 sources
+    // Recent leads — list (top 5 by created_at)
+    leadsPanel.innerHTML = '';
+    leadsPanel.appendChild(el('div', { class: 'panel-head' },
+      el('h2', {}, 'Recent leads'),
+      el('span', { class: 'muted small' }, 'Latest 5')
+    ));
+    const recentLeads = (leadsR.leads || []).slice(0, 5);
+    if (!recentLeads.length) {
+      leadsPanel.appendChild(emptyState('No leads yet. Vapi calls and web form submissions will appear here.'));
+    } else {
+      const list = el('div', { class: 'lead-list' });
+      for (const l of recentLeads) {
+        list.appendChild(el('div', { class: 'lead-row' },
+          el('div', { class: 'lead-main' },
+            el('div', { class: 'lead-name' }, l.name || '—'),
+            el('div', { class: 'lead-meta muted' },
+              [l.phone, l.source].filter(Boolean).join(' · ')
+            )
+          ),
+          el('div', { class: 'lead-side' },
+            statusBadge(l.status),
+            el('div', { class: 'lead-time muted' }, new Date(l.created_at).toLocaleDateString())
+          )
+        ));
+      }
+      leadsPanel.appendChild(list);
+    }
+
+    // Upcoming bookings — list (next 5 by starts_at, from now)
+    bookingsPanel.innerHTML = '';
+    bookingsPanel.appendChild(el('div', { class: 'panel-head' },
+      el('h2', {}, 'Upcoming bookings'),
+      el('span', { class: 'muted small' }, 'Next 5')
+    ));
+    const now = Date.now();
+    const upcoming = (bookingsR.bookings || [])
+      .filter(b => b.starts_at && new Date(b.starts_at).getTime() >= now)
+      .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
+      .slice(0, 5);
+    if (!upcoming.length) {
+      bookingsPanel.appendChild(emptyState('No upcoming bookings. Confirmed appointments will appear here.'));
+    } else {
+      const list = el('div', { class: 'lead-list' });
+      for (const b of upcoming) {
+        list.appendChild(el('div', { class: 'lead-row' },
+          el('div', { class: 'lead-main' },
+            el('div', { class: 'lead-name' }, b.service || 'Appointment'),
+            el('div', { class: 'lead-meta muted' }, b.contacts?.name || b.contacts?.phone || '—')
+          ),
+          el('div', { class: 'lead-side' },
+            statusBadge(b.status),
+            el('div', { class: 'lead-time muted' }, new Date(b.starts_at).toLocaleString())
+          )
+        ));
+      }
+      bookingsPanel.appendChild(list);
+    }
+
+    // Recent activity feed — last 5 across leads/bookings/calls
     const events = [
       ...(leadsR.leads || []).map(l => ({ ts: l.created_at, type: 'lead', label: `New lead: ${l.name}`, sub: l.source || '' })),
       ...(bookingsR.bookings || []).map(b => ({ ts: b.created_at || b.starts_at, type: 'booking', label: `Booking · ${b.service || 'appt'}`, sub: new Date(b.starts_at).toLocaleString() })),
@@ -1361,7 +1618,7 @@ async function viewLeads() {
 async function viewCalls() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
-    el('h1', {}, 'Vapi Calls'),
+    el('h1', {}, 'Calls'),
     el('div', { class: 'muted' }, 'AI voice answer log')
   ));
   const panel = el('div', { class: 'panel' });
@@ -1426,22 +1683,49 @@ async function render() {
   if (state.isAdmin && state.impersonating && !state.client) {
     try { await loadMe(); } catch (e) { toast('Impersonation failed: ' + e.message, true); }
   }
+  // If admin is impersonating but we don't have cached metadata for the
+  // impersonated client (e.g. the session was started before metadata was
+  // captured), backfill it once from the admin client list so the header
+  // shows the correct name + Twilio number even if /me returns null.
+  if (state.isAdmin && state.impersonating && !ge8ImpersonateMeta()) {
+    api('/api/admin?action=list-clients').then((r) => {
+      const found = (r.clients || []).find((x) => x.id === state.impersonating);
+      if (found) {
+        try {
+          localStorage.setItem('ge8_impersonate_meta', JSON.stringify({
+            id: found.id,
+            name: found.name || null,
+            twilio_phone_number: found.twilio_phone_number || null,
+            logo_url: found.logo_url || null,
+            brand_color: found.brand_color || null
+          }));
+          render();
+        } catch {}
+      }
+    }).catch(() => {});
+  }
+  // Legacy view IDs from older deeplinks/manifest shortcuts get folded
+  // into the new 5-tab shape so old bookmarks still land somewhere sane.
+  const LEGACY_REDIRECTS = {
+    overview:  'dashboard',
+    activity:  'dashboard',
+    leads:     'dashboard',
+    bookings:  'dashboard',
+    billing:   'settings',
+    connect:   'settings'
+  };
+  if (LEGACY_REDIRECTS[state.view]) state.view = LEGACY_REDIRECTS[state.view];
+
   let view;
   try {
     switch (state.view) {
-      case 'admin':     view = await viewAdmin(); break;
+      case 'admin':     view = await viewAdmin();    break;
       case 'dashboard': view = await viewDashboard(); break;
-      case 'leads':     view = await viewLeads(); break;
-      case 'calls':     view = await viewCalls(); break;
-      case 'overview':  view = await viewOverview(); break;
-      case 'activity':  view = await viewActivity(); break;
-      case 'contacts':  view = await viewContacts(); break;
-      case 'bookings':  view = await viewBookings(); break;
+      case 'calls':     view = await viewCalls();    break;
       case 'messages':  view = await viewMessages(); break;
-      case 'billing':   view = await viewBilling(); break;
-      case 'connect':   view = await viewConnect(); break;
-      case 'settings':  view = viewSettings(); break;
-      default:          view = await viewOverview();
+      case 'contacts':  view = await viewContacts(); break;
+      case 'settings':  view = await viewSettings(); break;
+      default:          view = await viewDashboard();
     }
   } catch (e) {
     view = el('div', { class: 'panel' }, el('p', { class: 'err' }, 'Error: ' + e.message));
@@ -1449,8 +1733,14 @@ async function render() {
   root.appendChild(shell(view));
 }
 
-// Handle credits=success redirect
+// Handle credits=success redirect AND deep-link ?view= for the PWA
+// home-screen shortcuts in manifest.json.
 const params = new URLSearchParams(window.location.search);
+const initialView = params.get('view');
+if (initialView) {
+  state.view = initialView;
+  history.replaceState({}, '', '/');
+}
 if (params.get('credits') === 'success') {
   toast('Payment received! Credits will appear shortly.');
   history.replaceState({}, '', '/');
@@ -1469,19 +1759,30 @@ render();
 // Register service worker (production only — avoids local-dev cache pain).
 // We register, then immediately call .update() so users pick up new
 // service-worker.js content on every page load instead of waiting for the
-// browser's lazy ~24h refresh. When a new SW takes control, reload once so
-// the user sees the latest CSS/JS instead of whatever the old SW had cached.
+// browser's lazy ~24h refresh.
+//
+// IMPORTANT: only auto-reload on controllerchange when there was ALREADY
+// a controller before this page load. Without this guard, the very first
+// SW install (where controller goes from null → set) triggers an
+// auto-reload during the user's first interaction with the page. On iOS
+// Safari that race makes the login inputs lose focus and look "broken"
+// — the user has to close + reopen the app several times before the
+// reload settles. By gating on the previous controller we only reload
+// when we're upgrading from an older SW.
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', async () => {
     try {
+      const hadController = !!navigator.serviceWorker.controller;
       const reg = await navigator.serviceWorker.register('/service-worker.js');
       reg.update().catch(() => {});
-      let refreshing = false;
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (refreshing) return;
-        refreshing = true;
-        window.location.reload();
-      });
+      if (hadController) {
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (refreshing) return;
+          refreshing = true;
+          window.location.reload();
+        });
+      }
     } catch (err) {
       console.warn('SW register failed', err);
     }
