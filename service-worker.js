@@ -3,16 +3,20 @@
 // Bump CACHE_NAME whenever the asset strategy changes — the activate
 // handler deletes any cache that doesn't match the current name, which
 // is how stale assets get evicted on the next page load.
-const CACHE_NAME = 'goelev8-portal-v4';
+const CACHE_NAME = 'goelev8-portal-v5';
+const OFFLINE_URL = '/offline.html';
 
 // Only truly static, rarely-changing assets get pre-cached. Anything
 // listed here MUST exist at the given URL or the entire install will
 // silently fail (atomic addAll). HTML/CSS/JS are intentionally NOT
 // pre-cached — they go through network-first below so the user always
-// sees the latest deploy.
+// sees the latest deploy. offline.html is pre-cached so we can serve
+// it from the fetch handler when a navigation fails with no network.
 const STATIC_ASSETS = [
   '/manifest.json',
-  '/icon-192.png'
+  '/offline.html',
+  '/icons/icon-192x192.png',
+  '/icons/icon-512x512.png'
 ];
 
 // Install: cache static assets
@@ -78,7 +82,10 @@ self.addEventListener('fetch', (event) => {
     url.pathname.endsWith('.js');
 
   if (isAppShell) {
-    // Network-first: always try to get the freshest deploy.
+    // Network-first: always try to get the freshest deploy. If the
+    // network fails AND nothing useful is cached, a navigation request
+    // falls back to the pre-cached offline.html so users see a branded
+    // offline page instead of the browser's generic error.
     event.respondWith(
       fetch(request)
         .then((response) => {
@@ -88,7 +95,15 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(request).then((c) => c || caches.match('/index.html')))
+        .catch(async () => {
+          const cached = await caches.match(request);
+          if (cached) return cached;
+          if (request.mode === 'navigate' || request.destination === 'document') {
+            const offline = await caches.match(OFFLINE_URL);
+            if (offline) return offline;
+          }
+          return caches.match('/index.html');
+        })
     );
     return;
   }
@@ -113,8 +128,8 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'GoElev8.ai';
   const options = {
     body: data.body || 'You have a new update',
-    icon: '/icon-192.png',
-    badge: '/icon-192.png',
+    icon: '/icons/icon-192x192.png',
+    badge: '/icons/icon-96x96.png',
     data: { url: data.url || '/' },
     vibrate: [200, 100, 200],
   };

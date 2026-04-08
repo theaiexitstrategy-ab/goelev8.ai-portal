@@ -1,42 +1,45 @@
 {
-  "name": "GoElev8.AI Client Portal",
+  "name": "GoElev8.AI Portal",
   "short_name": "GoElev8",
-  "description": "Your AI performance dashboard — leads, CRM, and smart recommendations.",
+  "description": "Your AI automation dashboard — leads, bookings, Vapi calls, CRM, and billing.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#080a0f",
-  "theme_color": "#080a0f",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
   "categories": ["business", "productivity"],
   "icons": [
-    {
-      "src": "/icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
+    { "src": "/icons/icon-72x72.png",   "sizes": "72x72",   "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-96x96.png",   "sizes": "96x96",   "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-128x128.png", "sizes": "128x128", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-144x144.png", "sizes": "144x144", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-152x152.png", "sizes": "152x152", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-384x384.png", "sizes": "384x384", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
-  "screenshots": [],
   "shortcuts": [
     {
-      "name": "Funnel Submissions",
-      "short_name": "Leads",
-      "description": "View your latest leads",
-      "url": "/?view=funnel",
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "description": "Leads, bookings, and call stats for the month",
+      "url": "/?view=dashboard",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     },
     {
-      "name": "CRM Contacts",
-      "short_name": "CRM",
-      "description": "View your contact pipeline",
-      "url": "/?view=crm",
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+      "name": "Leads",
+      "short_name": "Leads",
+      "description": "Pipeline tracker",
+      "url": "/?view=leads",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Vapi Calls",
+      "short_name": "Calls",
+      "description": "AI voice answer log",
+      "url": "/?view=calls",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     }
   ]
 }
