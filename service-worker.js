@@ -1,20 +1,24 @@
 // © 2026 GoElev8.ai | Aaron Bryant. All rights reserved.
 
-const CACHE_NAME = 'goelev8-portal-v1';
+// Bump CACHE_NAME whenever the asset strategy changes — the activate
+// handler deletes any cache that doesn't match the current name, which
+// is how stale assets get evicted on the next page load.
+const CACHE_NAME = 'goelev8-portal-v3';
+
+// Only truly static, rarely-changing assets get pre-cached. Anything
+// listed here MUST exist at the given URL or the entire install will
+// silently fail (atomic addAll). HTML/CSS/JS are intentionally NOT
+// pre-cached — they go through network-first below so the user always
+// sees the latest deploy.
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
   '/manifest.json',
-  '/icons/icon-192x192.png',
-  '/icons/icon-512x512.png',
+  '/icon-192.png'
 ];
 
 // Install: cache static assets
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
-    })
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
   );
   self.skipWaiting();
 });
@@ -33,29 +37,61 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: network-first for API, cache-first for static
+// Fetch strategy:
+//   - Supabase API → network-only with offline fallback
+//   - Same-origin HTML / CSS / JS → network-first (always try fresh, fall
+//     back to cache only if offline). This is critical: cache-first here
+//     would mean a single broken deploy gets pinned forever in users'
+//     browsers, even after we ship a fix.
+//   - Images / fonts / icons → cache-first (rarely change, expensive to
+//     refetch).
 self.addEventListener('fetch', (event) => {
   const { request } = event;
+  if (request.method !== 'GET') return;
   const url = new URL(request.url);
 
-  // Always go network-first for Supabase API calls
+  // Supabase: network only, never cache.
   if (url.hostname.includes('supabase.co')) {
     event.respondWith(
-      fetch(request).catch(() => {
-        return new Response(JSON.stringify({ error: 'Offline - no data available' }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      })
+      fetch(request).catch(() =>
+        new Response(JSON.stringify({ error: 'Offline - no data available' }), {
+          headers: { 'Content-Type': 'application/json' }
+        })
+      )
     );
     return;
   }
 
-  // Cache-first for static assets
+  const isAppShell =
+    request.mode === 'navigate' ||
+    request.destination === 'document' ||
+    request.destination === 'script' ||
+    request.destination === 'style' ||
+    url.pathname.endsWith('.html') ||
+    url.pathname.endsWith('.css') ||
+    url.pathname.endsWith('.js');
+
+  if (isAppShell) {
+    // Network-first: always try to get the freshest deploy.
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then((c) => c || caches.match('/index.html')))
+    );
+    return;
+  }
+
+  // Everything else (images, fonts, icons): cache-first.
   event.respondWith(
     caches.match(request).then((cached) => {
       return cached || fetch(request).then((response) => {
-        // Cache successful GET requests
-        if (request.method === 'GET' && response.status === 200) {
+        if (response && response.status === 200) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
         }
@@ -71,8 +107,8 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'GoElev8.ai';
   const options = {
     body: data.body || 'You have a new update',
-    icon: '/icons/icon-192x192.png',
-    badge: '/icons/icon-72x72.png',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     data: { url: data.url || '/' },
     vibrate: [200, 100, 200],
   };

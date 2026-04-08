@@ -924,13 +924,24 @@ tbody tr:last-child td { border-bottom: none; }
   .nav button::before { width: 16px; height: 16px; }
   .signout { padding: 12px 14px; font-size: 14px; }
 
-  /* Mobile top header bar */
+  /* Mobile top header bar — sticky so the hamburger never scrolls away.
+     Without this users would lose access to the full nav (Messages,
+     Credits, Connect, Settings) the moment they scrolled down. */
   .mobile-header {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 4px 18px;
-    margin: -4px 0 4px;
+    padding: 10px 4px 14px;
+    margin: -16px -16px 8px;
+    padding-left: 16px;
+    padding-right: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: linear-gradient(180deg, rgba(10,14,26,0.96) 0%, rgba(10,14,26,0.85) 100%);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border-bottom: 1px solid var(--border, rgba(255,255,255,0.06));
   }
   .mobile-header .nav-toggle {
     background: var(--bg-glass);
@@ -1259,6 +1270,25 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .bottom-nav .bnav-btn.active { color: #2D9CDB; }
 .bottom-nav .bnav-btn.active .bnav-dot { opacity: 1; box-shadow: 0 0 8px #2D9CDB; }
+
+/* "Menu" button: 3-line hamburger so users can see it opens a menu. */
+.bottom-nav .bnav-menu { color: #2D9CDB; }
+.bottom-nav .bnav-menu .bnav-icon {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  width: 18px;
+  height: 12px;
+}
+.bottom-nav .bnav-menu .bnav-icon span {
+  display: block;
+  width: 100%;
+  height: 2px;
+  background: currentColor;
+  border-radius: 2px;
+}
+body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
 @media (max-width: 820px) {
   .bottom-nav { display: flex; }
   .app.has-bottom-nav .main { padding-bottom: 84px; }

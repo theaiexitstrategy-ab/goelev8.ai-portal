@@ -159,14 +159,34 @@ function shell(content) {
     : null;
 
   // Bottom nav for mobile (iPhone/iPad). Only shows when a client context exists.
+  // The first 4 buttons jump to a view; the "Menu" button opens the full
+  // sidebar drawer so the user can reach Messages, Contacts, Activity,
+  // Credits & Billing, Payments (Connect), and Settings.
+  const openDrawer = () => document.body.classList.add('nav-open');
+  const bottomNavItems = [
+    { id: 'dashboard', label: 'Home' },
+    { id: 'leads', label: 'Leads' },
+    { id: 'bookings', label: 'Book' },
+    { id: 'calls', label: 'Calls' },
+    { id: '__menu__', label: 'Menu' }
+  ];
   const bottomNav = state.client
     ? el('nav', { class: 'bottom-nav' },
-        ['dashboard', 'leads', 'bookings', 'calls', 'settings'].map((id) => {
-          const labels = { dashboard: 'Home', leads: 'Leads', bookings: 'Book', calls: 'Calls', settings: 'More' };
+        bottomNavItems.map((item) => {
+          const isMenu = item.id === '__menu__';
+          const isActive = !isMenu && state.view === item.id;
           return el('button', {
-            class: 'bnav-btn' + (state.view === id ? ' active' : ''),
-            onclick: () => { state.view = id; closeNav(); render(); }
-          }, el('span', { class: 'bnav-dot' }), el('span', { class: 'bnav-label' }, labels[id]));
+            class: 'bnav-btn' + (isActive ? ' active' : '') + (isMenu ? ' bnav-menu' : ''),
+            'aria-label': isMenu ? 'Open full menu' : item.label,
+            onclick: isMenu
+              ? openDrawer
+              : () => { state.view = item.id; closeNav(); render(); }
+          },
+            isMenu
+              ? el('span', { class: 'bnav-icon' }, el('span'), el('span'), el('span'))
+              : el('span', { class: 'bnav-dot' }),
+            el('span', { class: 'bnav-label' }, item.label)
+          );
         })
       )
     : null;
@@ -1340,11 +1360,24 @@ render();
 // ============================================================
 
 // Register service worker (production only — avoids local-dev cache pain).
+// We register, then immediately call .update() so users pick up new
+// service-worker.js content on every page load instead of waiting for the
+// browser's lazy ~24h refresh. When a new SW takes control, reload once so
+// the user sees the latest CSS/JS instead of whatever the old SW had cached.
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js').catch((err) => {
+  window.addEventListener('load', async () => {
+    try {
+      const reg = await navigator.serviceWorker.register('/service-worker.js');
+      reg.update().catch(() => {});
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    } catch (err) {
       console.warn('SW register failed', err);
-    });
+    }
   });
 }
 
