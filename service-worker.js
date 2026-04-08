@@ -3,7 +3,7 @@
 // Bump CACHE_NAME whenever the asset strategy changes — the activate
 // handler deletes any cache that doesn't match the current name, which
 // is how stale assets get evicted on the next page load.
-const CACHE_NAME = 'goelev8-portal-v3';
+const CACHE_NAME = 'goelev8-portal-v4';
 
 // Only truly static, rarely-changing assets get pre-cached. Anything
 // listed here MUST exist at the given URL or the entire install will
@@ -23,18 +23,24 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// Activate: clear old caches
+// Activate: clear old caches AND force any controlled tabs to navigate to
+// themselves. This is what unsticks users whose previous service worker was
+// cache-first and pinned an old broken styles.css/app.js — the new SW takes
+// over via clients.claim(), purges the old cache, then reloads each open
+// tab so it picks up the freshly-fetched assets without the user having to
+// manually hard-refresh.
 self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames
-          .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
-      );
-    })
-  );
-  self.clients.claim();
+  event.waitUntil((async () => {
+    const cacheNames = await caches.keys();
+    await Promise.all(
+      cacheNames.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name))
+    );
+    await self.clients.claim();
+    const wins = await self.clients.matchAll({ type: 'window' });
+    for (const win of wins) {
+      try { await win.navigate(win.url); } catch { /* navigate may be unsupported */ }
+    }
+  })());
 });
 
 // Fetch strategy:
