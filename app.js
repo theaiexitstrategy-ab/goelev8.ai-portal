@@ -162,6 +162,8 @@ function shell(content) {
             navBtn('activity', 'Activity'),
             navBtn('messages', 'Messages'),
             navBtn('contacts', 'Contacts'),
+            navBtn('leads', 'Leads'),
+            navBtn('calls', 'Voice Calls'),
             navBtn('bookings', 'Bookings'),
             navBtn('billing', 'Credits & Billing'),
             navBtn('connect', 'Payments (Connect)'),
@@ -189,12 +191,26 @@ async function viewOverview() {
     lowBalance ? 'Low — top up soon' : 'Available to send', lowBalance ? 'warn' : 'accent'));
 
   try {
-    const b = await api('/api/portal/billing');
+    const [b, c, bk, ld, vc] = await Promise.all([
+      api('/api/portal/billing'),
+      api('/api/portal/crm?action=contacts'),
+      api('/api/portal/crm?action=bookings'),
+      api('/api/portal/crm?action=leads').catch(() => ({ leads: [] })),
+      api('/api/portal/crm?action=vapi_calls').catch(() => ({ vapi_calls: [] }))
+    ]);
     cards.appendChild(card('Sent This Month', b.sent_this_month, 'Outbound SMS'));
-    const [{ data: contacts }, bookings] = [{ data: null }, null];
-    const c = await api('/api/portal/crm?action=contacts');
     cards.appendChild(card('Contacts', c.contacts.length, 'Total in CRM'));
-    const bk = await api('/api/portal/crm?action=bookings');
+    const newLeads7d = (ld.leads || []).filter(l =>
+      Date.now() - new Date(l.created_at).getTime() < 7 * 86400e3
+    ).length;
+    cards.appendChild(card('Leads', ld.leads?.length ?? 0,
+      newLeads7d ? `${newLeads7d} new in last 7d` : 'All time'));
+    const callsThisMonth = (vc.vapi_calls || []).filter(v => {
+      const d = new Date(v.created_at);
+      const now = new Date();
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    }).length;
+    cards.appendChild(card('Voice Calls', callsThisMonth, 'This month'));
     cards.appendChild(card('Bookings', bk.bookings.length, 'Scheduled'));
   } catch (e) {}
 
@@ -400,6 +416,100 @@ async function openBookingModal() {
   );
   const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
   document.body.appendChild(bg);
+}
+
+// ============================================================
+// LEADS
+// ============================================================
+async function viewLeads() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Leads'),
+    el('div', { class: 'muted' }, 'Captured by Vapi voice agents and web forms')
+  ));
+  const panel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(panel);
+  try {
+    const r = await api('/api/portal/crm?action=leads');
+    panel.innerHTML = '';
+    if (!r.leads.length) {
+      panel.appendChild(el('p', { class: 'muted' }, 'No leads yet. They will appear here once a Vapi call ends or a form is submitted.'));
+      return wrap;
+    }
+    panel.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'When'), el('th', {}, 'Name'), el('th', {}, 'Phone'),
+        el('th', {}, 'Email'), el('th', {}, 'Source'), el('th', {}, 'Intent'),
+        el('th', {}, 'Status'), el('th', {}, '')
+      )),
+      el('tbody', {}, ...r.leads.map(l =>
+        el('tr', {},
+          el('td', {}, new Date(l.created_at).toLocaleString()),
+          el('td', {}, l.name || '—'),
+          el('td', {}, l.phone || '—'),
+          el('td', {}, l.email || '—'),
+          el('td', {}, el('span', { class: 'badge' }, l.source || 'manual')),
+          el('td', {}, l.intent || '—'),
+          el('td', {}, el('span', { class: 'badge' }, l.status || 'new')),
+          el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
+            if (!confirm('Delete lead?')) return;
+            await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: l.id } });
+            render();
+          }}, 'Delete'))
+        )
+      ))
+    ));
+  } catch (e) { panel.innerHTML = `<p class="err">${e.message}</p>`; }
+  return wrap;
+}
+
+// ============================================================
+// VOICE CALLS (Vapi)
+// ============================================================
+async function viewCalls() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Voice Calls'),
+    el('div', { class: 'muted' }, 'Inbound & outbound AI voice calls handled by Vapi')
+  ));
+  const panel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(panel);
+  try {
+    const r = await api('/api/portal/crm?action=vapi_calls');
+    panel.innerHTML = '';
+    if (!r.vapi_calls.length) {
+      panel.appendChild(el('p', { class: 'muted' }, 'No calls yet. Once your Vapi assistant runs, calls will land here in real time.'));
+      return wrap;
+    }
+    const fmtDur = (s) => {
+      if (!s && s !== 0) return '—';
+      const m = Math.floor(s / 60), r = s % 60;
+      return `${m}:${String(r).padStart(2, '0')}`;
+    };
+    const fmtCost = (c) => (c || c === 0) ? `$${(c / 100).toFixed(2)}` : '—';
+    panel.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'When'), el('th', {}, 'Direction'), el('th', {}, 'From / To'),
+        el('th', {}, 'Status'), el('th', {}, 'Duration'), el('th', {}, 'Cost'),
+        el('th', {}, 'Summary'), el('th', {}, '')
+      )),
+      el('tbody', {}, ...r.vapi_calls.map(v =>
+        el('tr', {},
+          el('td', {}, new Date(v.started_at || v.created_at).toLocaleString()),
+          el('td', {}, el('span', { class: 'badge' }, v.direction || '—')),
+          el('td', {}, v.customer_number || v.from_number || v.to_number || '—'),
+          el('td', {}, el('span', { class: 'badge' }, v.status || '—')),
+          el('td', {}, fmtDur(v.duration_seconds)),
+          el('td', {}, fmtCost(v.cost_cents)),
+          el('td', { style: 'max-width:340px' }, v.summary || '—'),
+          el('td', {}, v.recording_url
+            ? el('a', { class: 'btn sm', href: v.recording_url, target: '_blank' }, 'Recording')
+            : '—')
+        )
+      ))
+    ));
+  } catch (e) { panel.innerHTML = `<p class="err">${e.message}</p>`; }
+  return wrap;
 }
 
 // ============================================================
@@ -1045,6 +1155,8 @@ async function render() {
       case 'overview':  view = await viewOverview(); break;
       case 'activity':  view = await viewActivity(); break;
       case 'contacts':  view = await viewContacts(); break;
+      case 'leads':     view = await viewLeads(); break;
+      case 'calls':     view = await viewCalls(); break;
       case 'bookings':  view = await viewBookings(); break;
       case 'messages':  view = await viewMessages(); break;
       case 'billing':   view = await viewBilling(); break;

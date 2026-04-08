@@ -19,6 +19,14 @@
 //
 // ?action=list    -> GET, JWT-authenticated portal call. Returns latest
 //                    client_events for the caller's client.
+//
+// ?action=vapi    -> POST from Vapi server webhook. Public URL is rewritten
+//                    by vercel.json from /api/webhooks/vapi to this action.
+//                    Authenticated by a shared secret in the
+//                    `x-vapi-secret` header (env: VAPI_WEBHOOK_SECRET).
+//                    Handles `end-of-call-report`, `status-update`, and
+//                    `function-call` messages and writes vapi_calls / leads
+//                    / bookings rows for the matching tenant.
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
@@ -164,12 +172,229 @@ async function handleList(req, res) {
   return res.status(200).json({ events: data || [] });
 }
 
+// ============================================================
+// Vapi webhook
+// ============================================================
+//
+// Vapi posts a JSON body of the shape:
+//   { message: { type, call: { id, assistantId, phoneNumberId, customer: { number } },
+//                transcript, summary, recordingUrl, durationSeconds,
+//                cost, endedReason, analysis: { structuredData, summary }, ... } }
+//
+// We resolve the tenant by matching `call.phoneNumberId`, the assistant id,
+// or the customer number against `clients.twilio_phone_number`. Each call is
+// upserted on `vapi_call_id` so retries are idempotent. When the upstream
+// reports an end-of-call we also write a `leads` row (and optionally a
+// `bookings` row if the structured data carries booking fields).
+async function resolveVapiClientId({ phoneNumberId, assistantId, toNumber, fromNumber, customerNumber }) {
+  const tryNumbers = [toNumber, fromNumber, customerNumber].filter(Boolean);
+  for (const num of tryNumbers) {
+    const { data } = await supabaseAdmin
+      .from('clients')
+      .select('id')
+      .eq('twilio_phone_number', num)
+      .maybeSingle();
+    if (data?.id) return data.id;
+  }
+  // Fall back to a `vapi_*` config column if/when one is added; for now we
+  // accept an explicit mapping via env (JSON: {"<phoneNumberId>":"<clientId>"}).
+  if (phoneNumberId && process.env.VAPI_PHONE_TO_CLIENT) {
+    try {
+      const map = JSON.parse(process.env.VAPI_PHONE_TO_CLIENT);
+      if (map[phoneNumberId]) return map[phoneNumberId];
+      if (assistantId && map[assistantId]) return map[assistantId];
+    } catch {}
+  }
+  return null;
+}
+
+function pickStructured(analysis) {
+  if (!analysis || typeof analysis !== 'object') return {};
+  return analysis.structuredData || analysis.structured_data || {};
+}
+
+function toIso(v) {
+  if (!v) return null;
+  try { return new Date(v).toISOString(); } catch { return null; }
+}
+
+async function upsertContactFromCall({ clientId, name, phone, email }) {
+  if (!phone) return null;
+  const { data: existing } = await supabaseAdmin
+    .from('contacts').select('id, name, email')
+    .eq('client_id', clientId).eq('phone', phone).maybeSingle();
+  if (existing) {
+    const patch = {};
+    if (name && !existing.name) patch.name = name;
+    if (email && !existing.email) patch.email = email;
+    if (Object.keys(patch).length) {
+      await supabaseAdmin.from('contacts').update(patch).eq('id', existing.id);
+    }
+    return existing.id;
+  }
+  const { data: created } = await supabaseAdmin.from('contacts').insert({
+    client_id: clientId,
+    name: name || phone,
+    phone,
+    email: email || null,
+    source: 'vapi'
+  }).select('id').single();
+  return created?.id || null;
+}
+
+async function handleVapi(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'method_not_allowed' });
+  }
+
+  // Auth: shared secret in header (Vapi sends whatever you set as
+  // serverUrlSecret; we accept either x-vapi-secret or x-vapi-signature
+  // for forward compatibility).
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+  if (!secret) return res.status(500).json({ error: 'missing_VAPI_WEBHOOK_SECRET' });
+  const provided =
+    req.headers['x-vapi-secret'] ||
+    req.headers['x-vapi-signature'] ||
+    (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!provided || !timingSafeEq(String(provided), secret)) {
+    return res.status(401).json({ error: 'invalid_signature' });
+  }
+
+  const raw = await readRaw(req);
+  let body;
+  try { body = raw ? JSON.parse(raw) : {}; }
+  catch { return res.status(400).json({ error: 'invalid_json' }); }
+
+  const msg = body.message || body; // Vapi nests under .message; tolerate either
+  const type = msg.type || msg.event || 'unknown';
+  const call = msg.call || {};
+  const callId = call.id || msg.callId || null;
+  if (!callId) return res.status(400).json({ error: 'missing_call_id' });
+
+  const customerNumber = call.customer?.number || msg.customer?.number || null;
+  const phoneNumberId = call.phoneNumberId || msg.phoneNumberId || null;
+  const assistantId = call.assistantId || msg.assistantId || null;
+  const toNumber = call.phoneNumber?.number || call.to || null;
+  const fromNumber = call.from || null;
+
+  const clientId = await resolveVapiClientId({
+    phoneNumberId, assistantId, toNumber, fromNumber, customerNumber
+  });
+  if (!clientId) return res.status(422).json({ error: 'unknown_client', call_id: callId });
+
+  // Build the row we want to upsert.
+  const structured = pickStructured(msg.analysis);
+  const direction =
+    msg.direction || call.type === 'inboundPhoneCall' ? 'inbound' :
+    call.type === 'outboundPhoneCall' ? 'outbound' : (msg.direction || null);
+
+  const row = {
+    client_id: clientId,
+    vapi_call_id: callId,
+    assistant_id: assistantId,
+    phone_number_id: phoneNumberId,
+    direction,
+    from_number: fromNumber,
+    to_number: toNumber,
+    customer_number: customerNumber,
+    status: msg.status || call.status || type,
+    ended_reason: msg.endedReason || call.endedReason || null,
+    started_at: toIso(msg.startedAt || call.startedAt),
+    ended_at: toIso(msg.endedAt || call.endedAt),
+    duration_seconds: typeof msg.durationSeconds === 'number'
+      ? Math.round(msg.durationSeconds)
+      : (typeof msg.duration === 'number' ? Math.round(msg.duration) : null),
+    recording_url: msg.recordingUrl || call.recordingUrl || null,
+    transcript: msg.transcript || null,
+    summary: msg.summary || msg.analysis?.summary || null,
+    structured_data: structured,
+    cost_cents: typeof msg.cost === 'number' ? Math.round(msg.cost * 100) : null,
+    payload: msg
+  };
+
+  // Upsert vapi_calls on the unique vapi_call_id.
+  const { data: vapiRow, error: upErr } = await supabaseAdmin
+    .from('vapi_calls')
+    .upsert(row, { onConflict: 'vapi_call_id' })
+    .select('id, lead_id, contact_id')
+    .single();
+  if (upErr) return res.status(500).json({ error: upErr.message });
+
+  // For terminal events, fan out into contacts/leads/bookings.
+  let leadId = vapiRow?.lead_id || null;
+  let bookingId = null;
+
+  if (type === 'end-of-call-report' || msg.endedReason || msg.endedAt) {
+    const name = structured.name || structured.full_name ||
+                 structured.caller_name || msg.customer?.name || null;
+    const phone = structured.phone || structured.phone_number || customerNumber || null;
+    const email = structured.email || null;
+
+    const contactId = vapiRow?.contact_id ||
+      await upsertContactFromCall({ clientId, name, phone, email });
+
+    if (contactId && contactId !== vapiRow?.contact_id) {
+      await supabaseAdmin.from('vapi_calls').update({ contact_id: contactId }).eq('id', vapiRow.id);
+    }
+
+    // Always create a lead row for an ended call so it shows up on the dash.
+    const { data: leadRow } = await supabaseAdmin.from('leads').insert({
+      client_id: clientId,
+      contact_id: contactId,
+      vapi_call_id: vapiRow.id,
+      name,
+      phone,
+      email,
+      source: 'vapi',
+      intent: structured.intent || structured.reason || null,
+      notes: msg.summary || msg.analysis?.summary || null,
+      payload: structured
+    }).select('id').single();
+    leadId = leadRow?.id || leadId;
+    if (leadId) {
+      await supabaseAdmin.from('vapi_calls').update({ lead_id: leadId }).eq('id', vapiRow.id);
+    }
+
+    // If the assistant captured a booking, write it.
+    const bookingStart = structured.booking_time || structured.appointment_time ||
+                         structured.starts_at || null;
+    if (bookingStart) {
+      const { data: bk } = await supabaseAdmin.from('bookings').insert({
+        client_id: clientId,
+        contact_id: contactId,
+        vapi_call_id: vapiRow.id,
+        lead_id: leadId,
+        service: structured.service || structured.appointment_type || 'Vapi booking',
+        starts_at: toIso(bookingStart),
+        ends_at: toIso(structured.ends_at || structured.end_time),
+        status: structured.status || 'scheduled',
+        notes: structured.notes || null,
+        contact_name: name,
+        contact_phone: phone,
+        contact_email: email,
+        source: 'vapi'
+      }).select('id').single();
+      bookingId = bk?.id || null;
+    }
+  }
+
+  return res.status(200).json({
+    ok: true,
+    call_id: callId,
+    vapi_row_id: vapiRow?.id || null,
+    lead_id: leadId,
+    booking_id: bookingId
+  });
+}
+
 export default async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   const action = url.searchParams.get('action');
   try {
     if (action === 'ingest') return await handleIngest(req, res);
     if (action === 'list')   return await handleList(req, res);
+    if (action === 'vapi')   return await handleVapi(req, res);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message || 'internal_error' });
