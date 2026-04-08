@@ -1145,6 +1145,14 @@ async function viewDashboard() {
     cards.appendChild(card('Bookings (this month)', bookingsMonth, 'Confirmed + scheduled'));
     cards.appendChild(card('Vapi Calls (this month)', callsMonth, 'AI voice answers'));
 
+    // Cache a tiny snapshot for offline.html to display if the user
+    // comes back without network.
+    window.ge8WriteSnapshot?.({
+      leads_month: leadsMonth,
+      bookings_month: bookingsMonth,
+      calls_month: callsMonth
+    });
+
     // Recent activity feed: last 5 events across all 3 sources
     const events = [
       ...(leadsR.leads || []).map(l => ({ ts: l.created_at, type: 'lead', label: `New lead: ${l.name}`, sub: l.source || '' })),
@@ -1390,28 +1398,115 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
   });
 }
 
-// "Add to Home Screen" install prompt
+// "Add to Home Screen" install prompt.
+//
+// Rules:
+//   - Show once per device (localStorage flag)
+//   - Wait ~30 seconds after page load before showing (don't nag on first touch)
+//   - Don't show if already running in standalone mode (already installed)
+//   - On Chromium/Android: use the native beforeinstallprompt flow
+//   - On iOS Safari: beforeinstallprompt doesn't exist, so show a manual
+//     "Tap Share → Add to Home Screen" instruction panel instead
 let deferredInstallPrompt = null;
+
+function ge8IsStandalone() {
+  return (
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+    // iOS Safari legacy
+    window.navigator.standalone === true
+  );
+}
+function ge8IsIOS() {
+  const ua = navigator.userAgent || '';
+  const iosDevice = /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isSafari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+  return iosDevice && isSafari;
+}
+function ge8HideInstallBanner() {
+  const b = document.querySelector('.install-banner');
+  if (b) b.remove();
+}
+function ge8ShowInstallBanner(mode) {
+  if (document.querySelector('.install-banner')) return;
+  if (localStorage.getItem('ge8_install_dismissed')) return;
+  if (ge8IsStandalone()) return;
+
+  const dismiss = () => {
+    localStorage.setItem('ge8_install_dismissed', '1');
+    ge8HideInstallBanner();
+  };
+
+  const installBtn = mode === 'native'
+    ? el('button', { class: 'btn sm', onclick: async () => {
+        ge8HideInstallBanner();
+        if (!deferredInstallPrompt) return;
+        deferredInstallPrompt.prompt();
+        try { await deferredInstallPrompt.userChoice; } catch {}
+        deferredInstallPrompt = null;
+        localStorage.setItem('ge8_install_dismissed', '1');
+      }}, 'Install')
+    : null;
+
+  const label = mode === 'native'
+    ? 'Install GoElev8 Portal for quick access'
+    : 'Install: tap the Share button, then "Add to Home Screen"';
+
+  const banner = el('div', { class: 'install-banner' },
+    el('span', {}, label),
+    installBtn,
+    el('button', { class: 'btn sm ghost', onclick: dismiss }, 'Not now')
+  );
+  document.body.appendChild(banner);
+}
+
+// Capture the native prompt event as soon as Chromium fires it. If the
+// 30-second timer has already elapsed, show the banner immediately;
+// otherwise just stash the event and the timer below will pick it up.
+let ge8InstallTimerDone = false;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  if (localStorage.getItem('ge8_install_dismissed')) return;
-  const banner = el('div', { class: 'install-banner' },
-    el('span', {}, 'Install GoElev8 for one-tap access'),
-    el('button', { class: 'btn sm', onclick: async () => {
-      banner.remove();
-      if (!deferredInstallPrompt) return;
-      deferredInstallPrompt.prompt();
-      await deferredInstallPrompt.userChoice;
-      deferredInstallPrompt = null;
-    }}, 'Install'),
-    el('button', { class: 'btn sm ghost', onclick: () => {
-      localStorage.setItem('ge8_install_dismissed', '1');
-      banner.remove();
-    }}, 'Not now')
-  );
-  document.body.appendChild(banner);
+  if (ge8InstallTimerDone) ge8ShowInstallBanner('native');
 });
+
+// Clear the flag once the user actually installs, so future devices (e.g.
+// on a new phone) can still see the prompt.
+window.addEventListener('appinstalled', () => {
+  localStorage.setItem('ge8_install_dismissed', '1');
+  deferredInstallPrompt = null;
+  ge8HideInstallBanner();
+});
+
+// 30-second delay after load.
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    ge8InstallTimerDone = true;
+    if (ge8IsStandalone()) return;
+    if (localStorage.getItem('ge8_install_dismissed')) return;
+    if (deferredInstallPrompt) {
+      ge8ShowInstallBanner('native');
+    } else if (ge8IsIOS()) {
+      ge8ShowInstallBanner('ios');
+    }
+    // On browsers that don't support PWA install at all (e.g. desktop
+    // Firefox) we simply never show the banner.
+  }, 30_000);
+});
+
+// Write a tiny snapshot to localStorage on every successful dashboard
+// render so offline.html has something to display. Kept intentionally
+// small (< 1 KB) and only updated from viewDashboard's data fetch.
+window.ge8WriteSnapshot = (s) => {
+  try {
+    localStorage.setItem('ge8_last_snapshot', JSON.stringify({
+      leads_month: s.leads_month,
+      bookings_month: s.bookings_month,
+      calls_month: s.calls_month,
+      ts: Date.now()
+    }));
+  } catch {}
+};
 
 // Live notifications via Supabase Realtime: subscribes to INSERTs on leads
 // + bookings for the current client and shows a system notification + toast.

@@ -1,0 +1,144 @@
+<!-- © 2026 GoElev8.ai | Aaron Bryant. All rights reserved. -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Offline · GoElev8.AI Portal</title>
+<meta name="theme-color" content="#0a0a0a" />
+<link rel="icon" type="image/png" href="/icons/icon-192x192.png" />
+<link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #0a0a0a;
+    color: #f0f1f5;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 60% at 15% 10%, rgba(0, 207, 255, 0.13) 0%, transparent 50%),
+      radial-gradient(ellipse 60% 50% at 85% 80%, rgba(0, 184, 230, 0.10) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+  main {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 24px;
+    text-align: center;
+  }
+  .logo {
+    width: 96px;
+    height: 96px;
+    border-radius: 22px;
+    background: linear-gradient(135deg, #00CFFF 0%, #00b8e6 50%, #00CFFF 100%);
+    display: grid;
+    place-items: center;
+    box-shadow: 0 0 0 1px rgba(0,207,255,0.4), 0 16px 48px rgba(0,184,230,0.35);
+    margin-bottom: 28px;
+  }
+  .logo img { width: 70%; height: 70%; object-fit: contain; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); }
+  h1 { font-size: 24px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.02em; }
+  p  { color: #a8acbb; font-size: 15px; margin: 0 0 6px; max-width: 420px; line-height: 1.5; }
+  .retry {
+    margin-top: 28px;
+    padding: 12px 22px;
+    border-radius: 12px;
+    border: 1px solid rgba(0, 207, 255, 0.4);
+    background: rgba(0, 207, 255, 0.12);
+    color: #93e3ff;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+  .retry:hover { background: rgba(0, 207, 255, 0.2); }
+  .retry:active { transform: translateY(1px); }
+  .snapshot {
+    margin-top: 32px;
+    padding: 16px 20px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    max-width: 360px;
+    width: 100%;
+    text-align: left;
+  }
+  .snapshot-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6b6f80;
+    margin-bottom: 10px;
+  }
+  .snapshot-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    font-size: 13px;
+  }
+  .snapshot-row span:first-child { color: #a8acbb; }
+  .snapshot-row span:last-child  { color: #f0f1f5; font-weight: 500; }
+  .snapshot.empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo"><img src="/icons/icon-192x192.png" alt="GoElev8" /></div>
+  <h1>You're offline</h1>
+  <p>Your data will sync automatically when you reconnect.</p>
+  <button class="retry" onclick="location.reload()">Try again</button>
+
+  <div class="snapshot empty" id="snapshot">
+    <div class="snapshot-title">Last synced snapshot</div>
+  </div>
+</main>
+<script>
+  // Show the last cached summary if the portal dashboard saved one.
+  // app.js writes this to localStorage on every successful /api/portal
+  // round-trip so we have something to show here when we're offline.
+  try {
+    const raw = localStorage.getItem('ge8_last_snapshot');
+    if (raw) {
+      const s = JSON.parse(raw);
+      const snap = document.getElementById('snapshot');
+      snap.classList.remove('empty');
+      const rows = [
+        ['Leads this month',    s.leads_month],
+        ['Bookings this month', s.bookings_month],
+        ['Vapi calls this month', s.calls_month],
+        ['Last updated',        s.ts ? new Date(s.ts).toLocaleString() : null]
+      ];
+      for (const [label, value] of rows) {
+        if (value == null) continue;
+        const row = document.createElement('div');
+        row.className = 'snapshot-row';
+        row.innerHTML = '<span></span><span></span>';
+        row.children[0].textContent = label;
+        row.children[1].textContent = String(value);
+        snap.appendChild(row);
+      }
+    }
+  } catch {}
+
+  // Auto-retry when connectivity returns.
+  window.addEventListener('online', () => location.reload());
+</script>
+</body>
+</html>
