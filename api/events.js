@@ -173,7 +173,8 @@ async function handleIngest(req, res) {
 // ============================================================
 
 // Friendly source -> tag mapping. Anything not matched falls back
-// to "general".
+// to "general". Used ONLY when the caller didn't explicitly send
+// body.tags / body.tag — explicit client tags always win.
 function ge8AutoTag({ source, funnel, metadata }) {
   const tags = new Set();
   const candidate = [source, funnel, metadata?.url, metadata?.path]
@@ -185,6 +186,40 @@ function ge8AutoTag({ source, funnel, metadata }) {
   if (/sms|twilio/.test(candidate))       tags.add('sms-lead');
   if (!tags.size) tags.add('general');
   return [...tags];
+}
+
+// Normalize the caller-provided tag shape into a text[] for the leads
+// table. Accepts all of:
+//   body.tags: "athlete"           → ['athlete']
+//   body.tags: ["athlete","vip"]   → ['athlete','vip']
+//   body.tags: "athlete, vip"      → ['athlete','vip']
+//   body.tag:  "athlete"           → ['athlete']   (legacy singular)
+// Returns null if neither field is present or both are empty — caller
+// then falls back to ge8AutoTag() so we never overwrite an explicit
+// tag with an auto-generated fallback.
+function ge8NormalizeTags(body) {
+  const raw = body.tags ?? body.tag;
+  if (raw == null || raw === '') return null;
+  let arr;
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else if (typeof raw === 'string') {
+    // Support comma-separated ("athlete, vip") and JSON-encoded
+    // (`["athlete","vip"]`) string forms, since different client
+    // sites have sent both shapes in the wild.
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try { arr = JSON.parse(trimmed); } catch { arr = [trimmed]; }
+    } else {
+      arr = trimmed.split(',');
+    }
+  } else {
+    arr = [String(raw)];
+  }
+  const cleaned = (Array.isArray(arr) ? arr : [arr])
+    .map((t) => (t == null ? '' : String(t).trim().toLowerCase()))
+    .filter(Boolean);
+  return cleaned.length ? cleaned : null;
 }
 
 // In-memory rate limiter: 100 requests / 60 seconds per slug.
@@ -271,7 +306,12 @@ async function handleLead(req, res) {
   if (clientErr) return res.status(500).json({ error: clientErr.message });
   if (!client)   return res.status(404).json({ error: 'unknown_slug' });
 
-  const tags = ge8AutoTag({ source, funnel, metadata });
+  // Explicit caller-provided tags always win over URL auto-tagging. This
+  // fixes the regression where every lead from theflexfacility.com/fit
+  // landed as tags=['general'] even though the proxy sent tag='athlete'.
+  // Only fall back to ge8AutoTag() when both body.tags and body.tag are
+  // missing, so a quiet client site still gets a sensible default.
+  const tags = ge8NormalizeTags(body) || ge8AutoTag({ source, funnel, metadata });
 
   const insertRow = {
     client_id: client.id,
