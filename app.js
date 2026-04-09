@@ -266,6 +266,7 @@ function tabIcon(name) {
       'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
       'M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z'
     ]);
+    case 'nudge':  return svg(['M4 4h16v12H5.2L4 17.3V4z', 'M8 9h8', 'M8 12h5']);
     case 'menu':   return svg(['M4 6h16', 'M4 12h16', 'M4 18h16']);
   }
   return svg([]);
@@ -277,6 +278,7 @@ const TABS = [
   { id: 'calls',     label: 'Calls',     icon: 'phone'  },
   { id: 'messages',  label: 'Messages',  icon: 'chat'   },
   { id: 'analytics', label: 'Analytics', icon: 'chart'  },
+  { id: 'nudges',    label: 'Nudges',    icon: 'nudge'  },
   { id: 'settings',  label: 'Settings',  icon: 'gear'   }
 ];
 
@@ -960,6 +962,289 @@ async function viewConnect() {
       wrap.appendChild(cp);
     }
   } catch {}
+  return wrap;
+}
+
+// ============================================================
+// NUDGE SEQUENCE EDITOR
+// ============================================================
+
+// A2P 10DLC blocked phrases
+const NUDGE_BLOCKED = [
+  'FREE', 'WINNER', 'GUARANTEED', 'RISK FREE', 'CANCEL ANYTIME',
+  'CLICK HERE', 'ACT NOW', 'LIMITED TIME', 'URGENT', 'CONGRATULATIONS',
+  "YOU'VE BEEN SELECTED", 'NO OBLIGATION', 'CALL NOW'
+];
+
+const NUDGE_OPT_OUT_RE = [
+  /reply\s+stop\s+to\s+opt\s+out/i,
+  /txt\s+stop\s+to\s+end/i,
+  /text\s+stop\s+to\s+(end|opt\s+out|unsubscribe)/i,
+  /reply\s+stop\s+to\s+(end|unsubscribe)/i
+];
+
+const NUDGE_URL_RE = /https?:\/\/[^\s)}\]]+/gi;
+
+const NUDGE_DELAY_OPTIONS = {
+  1: [{ value: 0, label: 'Immediate' }],
+  2: [{ value: 30, label: '30 min' }, { value: 60, label: '1 hr' }, { value: 120, label: '2 hr' }, { value: 240, label: '4 hr' }],
+  3: [{ value: 720, label: '12 hr' }, { value: 1440, label: '24 hr' }, { value: 2880, label: '48 hr' }],
+  4: [{ value: 1440, label: '24 hr' }, { value: 2880, label: '48 hr' }, { value: 4320, label: '72 hr' }],
+  5: [{ value: 4320, label: '72 hr' }, { value: 7200, label: '5 days' }, { value: 10080, label: '7 days' }]
+};
+
+const NUDGE_MERGE_TAGS = ['[first_name]', '[business_name]', '[funnel_url]', '[phone]'];
+
+const NUDGE_SAMPLE_DATA = {
+  '[first_name]': 'Jane',
+  '[business_name]': '', // filled from state.client
+  '[funnel_url]': '',    // filled from state.client
+  '[phone]': '(555) 123-4567'
+};
+
+function nudgeValidateBody(body, msgNum) {
+  const errors = [];
+  const upper = body.toUpperCase();
+  for (const phrase of NUDGE_BLOCKED) {
+    if (upper.includes(phrase)) errors.push(`Contains blocked A2P phrase "${phrase}"`);
+  }
+  const urls = body.match(NUDGE_URL_RE) || [];
+  for (const url of urls) {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      if (!host.endsWith('goelev8.ai') && host !== 'goelev8.ai') {
+        errors.push(`URL "${url}" is not on the goelev8.ai domain`);
+      }
+    } catch { errors.push(`Invalid URL "${url}"`); }
+  }
+  let finalBody = body;
+  if (msgNum === 1) {
+    const hasOptOut = NUDGE_OPT_OUT_RE.some((re) => re.test(body));
+    if (!hasOptOut) finalBody = body + '\nReply STOP to opt out.';
+  }
+  if (finalBody.length > 160) errors.push(`${finalBody.length} characters exceeds the 160-character limit`);
+  return { finalBody, errors };
+}
+
+function nudgeRenderPreview(body) {
+  const biz = state.client?.business_name || state.client?.name || 'Your Business';
+  const slug = state.client?.slug || 'demo';
+  const sample = { ...NUDGE_SAMPLE_DATA, '[business_name]': biz, '[funnel_url]': `goelev8.ai/f/${slug}` };
+  return body.replace(/\[(first_name|business_name|funnel_url|phone)\]/gi, (m) => sample[m.toLowerCase()] || m);
+}
+
+async function viewNudges() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'SMS Nudge Sequence'),
+    el('div', { class: 'muted' }, 'Customize the 5-message drip that fires when a lead opts in through your funnel page')
+  ));
+
+  // Load nudges
+  let nudges;
+  try {
+    const r = await api('/api/portal/nudges');
+    nudges = r.nudges || [];
+  } catch (e) {
+    wrap.appendChild(el('div', { class: 'panel' }, el('p', { class: 'err' }, 'Failed to load nudges: ' + e.message)));
+    return wrap;
+  }
+
+  // Pad to 5 if needed
+  while (nudges.length < 5) {
+    nudges.push({ message_number: nudges.length + 1, message_body: '', delay_minutes: 0, is_active: true, is_custom: false });
+  }
+
+  // State for each card
+  const cardStates = nudges.map((n) => ({
+    message_number: n.message_number,
+    message_body: n.message_body || '',
+    delay_minutes: n.delay_minutes,
+    is_active: n.is_active,
+    is_custom: n.is_custom
+  }));
+
+  const cardEls = [];
+
+  for (let i = 0; i < 5; i++) {
+    const cs = cardStates[i];
+    const num = cs.message_number;
+    const card = el('div', { class: 'nudge-card' + (cs.is_active ? '' : ' nudge-inactive') });
+
+    // ── Header row ──
+    const headerRow = el('div', { class: 'nudge-header' });
+    const badge = el('span', { class: 'nudge-badge' }, `Message ${num}`);
+    const toggle = el('input', { type: 'checkbox', class: 'nudge-toggle' });
+    toggle.checked = cs.is_active;
+    const toggleLabel = el('label', { class: 'nudge-toggle-row' },
+      toggle,
+      el('span', { class: 'nudge-toggle-text' }, 'Active')
+    );
+    headerRow.appendChild(badge);
+    headerRow.appendChild(toggleLabel);
+    card.appendChild(headerRow);
+
+    // ── Delay selector ──
+    const delayOpts = NUDGE_DELAY_OPTIONS[num] || [];
+    const delaySelect = el('select', { class: 'nudge-delay' },
+      ...delayOpts.map((o) => {
+        const opt = el('option', { value: o.value }, o.label);
+        if (o.value === cs.delay_minutes) opt.selected = true;
+        return opt;
+      })
+    );
+    const delayRow = el('div', { class: 'nudge-delay-row' },
+      el('span', { class: 'nudge-delay-label' }, num === 1 ? 'Sends' : 'Delay'),
+      delaySelect
+    );
+    if (num === 1) { delaySelect.disabled = true; }
+    card.appendChild(delayRow);
+
+    // ── Merge tag buttons ──
+    const tagBar = el('div', { class: 'nudge-tag-bar' },
+      el('span', { class: 'nudge-tag-hint' }, 'Insert:'),
+      ...NUDGE_MERGE_TAGS.map((tag) =>
+        el('button', {
+          class: 'nudge-tag-btn',
+          type: 'button',
+          onclick: () => {
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const val = textarea.value;
+            textarea.value = val.slice(0, start) + tag + val.slice(end);
+            textarea.selectionStart = textarea.selectionEnd = start + tag.length;
+            textarea.focus();
+            textarea.dispatchEvent(new Event('input'));
+          }
+        }, tag)
+      )
+    );
+    card.appendChild(tagBar);
+
+    // ── Textarea ──
+    const textarea = el('textarea', {
+      class: 'nudge-textarea',
+      rows: 3,
+      maxlength: 320,
+      placeholder: `Write message ${num}...`
+    });
+    textarea.value = cs.message_body;
+    card.appendChild(textarea);
+
+    // ── Character counter ──
+    const charCount = el('div', { class: 'nudge-char-count' });
+    // ── Validation errors ──
+    const errBox = el('div', { class: 'nudge-errors' });
+
+    const updateCounter = () => {
+      const body = textarea.value;
+      cs.message_body = body;
+      const { finalBody, errors } = nudgeValidateBody(body, num);
+      const len = finalBody.length;
+      charCount.textContent = `${len}/160 characters`;
+      charCount.className = 'nudge-char-count' + (len > 160 ? ' nudge-over' : len > 140 ? ' nudge-warn' : '');
+
+      errBox.innerHTML = '';
+      if (errors.length) {
+        for (const e of errors) {
+          errBox.appendChild(el('div', { class: 'nudge-err-line' }, e));
+        }
+      }
+      // Also update opt-out notice for msg 1
+      if (num === 1 && finalBody !== body) {
+        const notice = el('div', { class: 'nudge-opt-notice' }, 'Opt-out text will be auto-appended on save');
+        // Only add if not already present
+        if (!errBox.querySelector('.nudge-opt-notice')) {
+          errBox.appendChild(notice);
+        }
+      }
+      // Update preview
+      previewText.textContent = nudgeRenderPreview(finalBody);
+    };
+    textarea.addEventListener('input', updateCounter);
+
+    card.appendChild(charCount);
+    card.appendChild(errBox);
+
+    // ── Preview panel ──
+    const previewText = el('div', { class: 'nudge-preview-bubble' });
+    const previewPanel = el('div', { class: 'nudge-preview' },
+      el('div', { class: 'nudge-preview-label' }, 'Preview'),
+      previewText
+    );
+    card.appendChild(previewPanel);
+
+    // ── Save button for this slot ──
+    const saveOneBtn = el('button', { class: 'btn sm nudge-save-one', onclick: async () => {
+      const { finalBody, errors } = nudgeValidateBody(textarea.value, num);
+      if (errors.length) { toast(errors[0], true); return; }
+      saveOneBtn.disabled = true;
+      saveOneBtn.textContent = 'Saving...';
+      try {
+        await api(`/api/portal/nudges?slot=${num}`, {
+          method: 'PUT',
+          body: { message_body: textarea.value, delay_minutes: Number(delaySelect.value), is_active: toggle.checked }
+        });
+        cs.is_custom = true;
+        toast(`Message ${num} saved`);
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        saveOneBtn.disabled = false;
+        saveOneBtn.textContent = 'Save';
+      }
+    }}, 'Save');
+    card.appendChild(saveOneBtn);
+
+    // Toggle handler
+    toggle.addEventListener('change', () => {
+      cs.is_active = toggle.checked;
+      card.className = 'nudge-card' + (toggle.checked ? '' : ' nudge-inactive');
+    });
+
+    // Delay handler
+    delaySelect.addEventListener('change', () => {
+      cs.delay_minutes = Number(delaySelect.value);
+    });
+
+    // Init
+    updateCounter();
+    cardEls.push(card);
+    wrap.appendChild(card);
+  }
+
+  // ── Bulk save button ──
+  const bulkBar = el('div', { class: 'nudge-bulk-bar' });
+  const bulkBtn = el('button', { class: 'btn', onclick: async () => {
+    // Validate all
+    const allErrors = [];
+    for (const cs of cardStates) {
+      const { errors } = nudgeValidateBody(cs.message_body, cs.message_number);
+      allErrors.push(...errors.map((e) => `Msg ${cs.message_number}: ${e}`));
+    }
+    if (allErrors.length) { toast(allErrors[0], true); return; }
+
+    bulkBtn.disabled = true;
+    bulkBtn.textContent = 'Saving all...';
+    try {
+      const payload = cardStates.map((cs) => ({
+        message_number: cs.message_number,
+        message_body: cs.message_body,
+        delay_minutes: cs.delay_minutes,
+        is_active: cs.is_active
+      }));
+      await api('/api/portal/nudges', { method: 'PUT', body: { nudges: payload } });
+      toast('All nudge messages saved');
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      bulkBtn.disabled = false;
+      bulkBtn.textContent = 'Save all messages';
+    }
+  }}, 'Save all messages');
+  bulkBar.appendChild(bulkBtn);
+  wrap.appendChild(bulkBar);
+
   return wrap;
 }
 
@@ -2981,6 +3266,7 @@ async function render() {
       case 'calls':     view = await viewCalls();     break;
       case 'messages':  view = await viewMessages();  break;
       case 'analytics': view = await viewAnalytics(); break;
+      case 'nudges':    view = await viewNudges();    break;
       case 'contacts':  view = await viewContacts();  break;
       case 'settings':  view = await viewSettings();  break;
       default:          view = await viewDashboard();

@@ -2329,3 +2329,199 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
   }
 }
 
+/* ============================================================
+   Nudge Sequence Editor
+   ============================================================ */
+.nudge-card {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  margin-bottom: 16px;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+.nudge-card:hover { border-color: rgba(0, 207, 255, 0.3); }
+.nudge-inactive { opacity: 0.5; }
+.nudge-inactive:hover { opacity: 0.7; }
+
+.nudge-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.nudge-badge {
+  font-family: 'Bebas Neue', var(--font-sans);
+  font-size: 18px;
+  letter-spacing: 0.04em;
+  color: var(--brand-1);
+}
+.nudge-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.nudge-toggle-row input[type=checkbox] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--brand-3);
+}
+
+.nudge-delay-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.nudge-delay-label {
+  font-size: 13px;
+  color: var(--text-2);
+  min-width: 48px;
+}
+.nudge-delay {
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+}
+.nudge-delay:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.nudge-tag-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.nudge-tag-hint {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.nudge-tag-btn {
+  background: rgba(0, 207, 255, 0.08);
+  border: 1px solid rgba(0, 207, 255, 0.2);
+  border-radius: 6px;
+  color: var(--brand-1);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.nudge-tag-btn:hover {
+  background: rgba(0, 207, 255, 0.18);
+  border-color: var(--brand-1);
+}
+
+.nudge-textarea {
+  width: 100%;
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 72px;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+.nudge-textarea:focus {
+  outline: none;
+  border-color: var(--brand-1);
+  box-shadow: 0 0 0 2px rgba(0, 207, 255, 0.15);
+}
+
+.nudge-char-count {
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: right;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+}
+.nudge-char-count.nudge-warn { color: var(--warning); }
+.nudge-char-count.nudge-over { color: var(--danger); font-weight: 600; }
+
+.nudge-errors {
+  margin-top: 6px;
+}
+.nudge-err-line {
+  font-size: 12px;
+  color: var(--danger);
+  padding: 3px 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.nudge-err-line::before {
+  content: '\26A0';
+  font-size: 13px;
+}
+.nudge-opt-notice {
+  font-size: 12px;
+  color: var(--brand-1);
+  padding: 3px 0;
+  font-style: italic;
+}
+
+.nudge-preview {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.nudge-preview-label {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+.nudge-preview-bubble {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: 14px;
+  color: var(--text);
+  white-space: pre-wrap;
+  max-width: 400px;
+  line-height: 1.45;
+}
+
+.nudge-save-one {
+  margin-top: 12px;
+}
+
+.nudge-bulk-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 0 24px;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+}
+.nudge-bulk-bar .btn {
+  min-width: 180px;
+}
+
+@media (max-width: 768px) {
+  .nudge-card { padding: 14px; }
+  .nudge-tag-bar { gap: 4px; }
+  .nudge-tag-btn { font-size: 11px; padding: 2px 6px; }
+  .nudge-bulk-bar { justify-content: stretch; }
+  .nudge-bulk-bar .btn { width: 100%; min-width: unset; }
+  .nudge-preview-bubble { max-width: 100%; }
+}
+
