@@ -125,6 +125,9 @@ function renderLogin() {
   const box = el('div', { class: 'box' });
   const errBox = el('div');
   // iOS-friendly input attributes:
+  //   - id + matching <label for> is what makes a tap on the label
+  //     natively focus the input on iOS. Using a JS onclick handler on
+  //     a plain <div> loses the first tap in PWA standalone mode.
   //   - inputmode + autocapitalize/autocorrect avoid the keyboard
   //     fighting with the form
   //   - autocomplete hints let the keychain pre-fill
@@ -134,6 +137,7 @@ function renderLogin() {
   //     during page transition is exactly the race that makes the
   //     keyboard never appear on the first tap on iOS PWA standalone.
   const emailInput = el('input', {
+    id: 'ge8-login-email',
     type: 'email',
     name: 'email',
     placeholder: 'you@example.com',
@@ -146,6 +150,7 @@ function renderLogin() {
     style: 'touch-action: manipulation;'
   });
   const pwInput = el('input', {
+    id: 'ge8-login-password',
     type: 'password',
     name: 'password',
     placeholder: '••••••••',
@@ -156,11 +161,6 @@ function renderLogin() {
     spellcheck: 'false',
     style: 'touch-action: manipulation;'
   });
-
-  // Tapping anywhere on the email field group should focus the input.
-  // Also catches the case where the field <label> is tapped.
-  const focusEmail = () => { try { emailInput.focus(); } catch {} };
-  const focusPw    = () => { try { pwInput.focus();    } catch {} };
 
   const form = el('form', {
     autocomplete: 'on',
@@ -193,12 +193,12 @@ function renderLogin() {
       )
     ),
     errBox,
-    el('div', { class: 'field', onclick: focusEmail },
-      el('label', { onclick: focusEmail }, 'Email'),
+    el('div', { class: 'field' },
+      el('label', { for: 'ge8-login-email' }, 'Email'),
       emailInput
     ),
-    el('div', { class: 'field', onclick: focusPw },
-      el('label', { onclick: focusPw }, 'Password'),
+    el('div', { class: 'field' },
+      el('label', { for: 'ge8-login-password' }, 'Password'),
       pwInput
     ),
     el('button', { class: 'btn', type: 'submit' }, 'Sign in →'),
@@ -295,9 +295,43 @@ function shell(content) {
   const clientLogo  = state.client?.logo_url            || meta?.logo_url            || null;
 
   // Header brand: client logo when in a client context, GoElev8 logo otherwise.
-  const makeBrandLogo = () => inClientContext && clientLogo
-    ? el('div', { class: 'logo client-logo' }, el('img', { src: clientLogo, alt: clientName || 'Client logo' }))
-    : el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: 'GoElev8.AI' }));
+  //
+  // The client logo img is intentionally built with:
+  //   - explicit width + height HTML attributes so the browser reserves
+  //     the 32px box even before the cross-origin image finishes loading.
+  //     Without this the <img> briefly collapses to 0×0 on mobile PWAs
+  //     while flex layout is still resolving, and some iOS WebViews never
+  //     re-layout once the image arrives, leaving an invisible logo.
+  //   - loading="eager" + decoding="async" so iOS doesn't defer the
+  //     cross-origin Supabase Storage fetch behind lazy-load heuristics.
+  //   - an onerror fallback that swaps in the GoElev8 brand logo if the
+  //     client logo URL 404s or fails cross-origin, so the header never
+  //     looks broken even if a tenant's logo_url is misconfigured.
+  const makeBrandLogo = () => {
+    if (inClientContext && clientLogo) {
+      const img = el('img', {
+        src: clientLogo,
+        alt: clientName || 'Client logo',
+        width: 32,
+        height: 32,
+        loading: 'eager',
+        decoding: 'async'
+      });
+      img.addEventListener('error', () => {
+        img.src = '/logo.png';
+        img.parentElement?.classList.remove('client-logo');
+      });
+      return el('div', { class: 'logo client-logo' }, img);
+    }
+    return el('div', { class: 'logo' }, el('img', {
+      src: '/logo.png',
+      alt: 'GoElev8.AI',
+      width: 32,
+      height: 32,
+      loading: 'eager',
+      decoding: 'async'
+    }));
+  };
   const brandName = inClientContext ? (clientName || 'GoElev8.AI') : 'GoElev8.AI';
 
   // Install pill — sits in the mobile header next to the brand.
@@ -2039,33 +2073,104 @@ async function notify(title, body) {
   else new Notification(title, opts);
 }
 
-async function startRealtime() {
-  if (realtimeChannel || !state.client?.id) return;
-  const sb = await ensureSupabaseBrowser();
-  if (!sb) return;
-  const clientId = state.client.id;
-  realtimeChannel = sb.channel('portal-' + clientId)
+// Build the actual channel. Extracted so we can rebuild it on foreground
+// without duplicating the handler wiring.
+function ge8BuildRealtimeChannel(sb, clientId) {
+  // Unique channel name per subscription (suffix with Date.now) so that a
+  // previous, half-dead channel on the Supabase server can't collide with
+  // the fresh one we're about to subscribe.
+  return sb.channel(`portal-${clientId}-${Date.now()}`)
     .on('postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'leads', filter: `client_id=eq.${clientId}` },
       (payload) => {
         const l = payload.new || {};
+        console.log('[realtime] lead INSERT', l);
         notify('New lead', `${l.name || 'Someone'} just came in${l.source ? ' via ' + l.source : ''}`);
+        // If the user is currently on a view that lists leads, re-run
+        // the view so the new row appears without waiting for a manual
+        // refresh. Cheap: viewDashboard/viewLeads just re-hit the same
+        // REST endpoints the dashboard already polls on mount.
+        if (state.view === 'dashboard' || state.view === 'leads') {
+          try { render(); } catch {}
+        }
       })
     .on('postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'bookings', filter: `client_id=eq.${clientId}` },
       (payload) => {
         const b = payload.new || {};
+        console.log('[realtime] booking INSERT', b);
         const when = b.starts_at ? new Date(b.starts_at).toLocaleString() : 'soon';
         notify('New booking', `Confirmed for ${when}`);
+        if (state.view === 'dashboard') {
+          try { render(); } catch {}
+        }
       })
-    .subscribe();
+    .subscribe((status) => {
+      console.log('[realtime] channel status:', status);
+    });
+}
+
+async function startRealtime() {
+  if (!state.client?.id) return;
+  const sb = await ensureSupabaseBrowser();
+  if (!sb) return;
+  const clientId = state.client.id;
+
+  // Always tear down any existing channel before subscribing fresh. This
+  // is what makes the PWA recover from a backgrounded/killed WebSocket —
+  // iOS and Android kill the socket when the app is backgrounded and
+  // don't restore it on foreground, so we can't just reuse the stale
+  // channel object. Removing it first avoids leaking a dead channel on
+  // the Supabase server.
+  if (realtimeChannel) {
+    try { sb.removeChannel(realtimeChannel); } catch {}
+    realtimeChannel = null;
+  }
+
+  realtimeChannel = ge8BuildRealtimeChannel(sb, clientId);
 }
 
 function stopRealtime() {
   if (realtimeChannel && supabaseBrowser) {
-    supabaseBrowser.removeChannel(realtimeChannel);
+    try { supabaseBrowser.removeChannel(realtimeChannel); } catch {}
     realtimeChannel = null;
   }
+}
+
+// CRITICAL for PWAs: iOS and Android kill WebSockets when the app is
+// backgrounded and don't restore them on foreground. Without the handlers
+// below, the dashboard would silently stop receiving live lead/booking
+// events until the user killed and reopened the PWA. We resubscribe when:
+//   - visibilitychange → visible (standard page-lifecycle)
+//   - pageshow with e.persisted=true (iOS back-forward cache restore,
+//     which doesn't fire visibilitychange)
+//   - online (network dropped and came back)
+// On each of these we also re-render the current view, which refetches
+// the leads list via /api/portal/crm so any rows that arrived while
+// we were backgrounded show up even if Realtime missed them.
+let ge8LifecycleBound = false;
+function ge8BindLifecycleHandlers() {
+  if (ge8LifecycleBound) return;
+  ge8LifecycleBound = true;
+
+  const resync = (reason) => {
+    if (!state.token || !state.client?.id) return;
+    console.log('[realtime]', reason, '— resubscribing + refetching');
+    startRealtime();
+    // Re-run the current view so list data refreshes. Cheap — hits the
+    // existing REST endpoints that the view already uses on mount.
+    if (state.view === 'dashboard' || state.view === 'leads') {
+      try { render(); } catch {}
+    }
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') resync('visible');
+  });
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) resync('pageshow-bfcache');
+  });
+  window.addEventListener('online', () => resync('online'));
 }
 
 // Patch auth lifecycle to start/stop the realtime subscription. We rebind
@@ -2074,7 +2179,10 @@ function stopRealtime() {
 const _origLoadMe = loadMe;
 loadMe = async function patchedLoadMe() {  // eslint-disable-line no-func-assign
   await _origLoadMe();
-  if (state.client?.id) startRealtime();
+  if (state.client?.id) {
+    startRealtime();
+    ge8BindLifecycleHandlers();
+  }
 };
 const _origLogout = logout;
 logout = function patchedLogout() {  // eslint-disable-line no-func-assign
@@ -2084,4 +2192,9 @@ logout = function patchedLogout() {  // eslint-disable-line no-func-assign
 
 // If the user is already signed in on first load, kick off realtime once
 // the initial render finishes hydrating state.client.
-setTimeout(() => { if (state.client?.id) startRealtime(); }, 1500);
+setTimeout(() => {
+  if (state.client?.id) {
+    startRealtime();
+    ge8BindLifecycleHandlers();
+  }
+}, 1500);
