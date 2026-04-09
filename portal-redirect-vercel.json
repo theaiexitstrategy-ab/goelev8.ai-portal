@@ -1,0 +1,9 @@
+{
+  "redirects": [
+    {
+      "source": "/:path*",
+      "destination": "https://portal.goelev8.ai/:path*",
+      "permanent": true
+    }
+  ]
+}

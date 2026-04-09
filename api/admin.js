@@ -23,7 +23,7 @@ import { twilioForClient, estimateSegments } from '../lib/twilio.js';
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
     .from('clients')
-    .select('id, slug, name, twilio_phone_number, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at')
+    .select('id, slug, name, twilio_phone_number, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at, tier, conversion_label, business_name, logo_url, brand_color')
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
 
@@ -224,6 +224,20 @@ async function analytics(req, res) {
   });
 }
 
+async function setTier(req, res) {
+  const body = await readJson(req);
+  const { client_id, tier } = body || {};
+  const VALID_TIERS = ['starter', 'growth', 'custom'];
+  if (!client_id || !VALID_TIERS.includes(tier)) {
+    return res.status(400).json({ error: 'client_id and valid tier (starter/growth/custom) required' });
+  }
+  const { data, error } = await supabaseAdmin
+    .from('clients').update({ tier })
+    .eq('id', client_id).select('id, name, tier').single();
+  if (error) return res.status(400).json({ error: error.message });
+  return res.status(200).json({ client: data });
+}
+
 async function listAdmins(req, res) {
   const { data } = await supabaseAdmin
     .from('platform_admins').select('user_id, email, created_at').order('created_at');
@@ -247,6 +261,7 @@ export default async function handler(req, res) {
       case 'send-as-client': return await sendAsClient(req, res, ctx);
       case 'create-client':  return await createClient(req, res);
       case 'billing-pause':  return await billingPause(req, res);
+      case 'set-tier':       return await setTier(req, res);
       case 'analytics':      return await analytics(req, res);
       case 'list-admins':    return await listAdmins(req, res);
       default:               return res.status(400).json({ error: 'unknown_action' });

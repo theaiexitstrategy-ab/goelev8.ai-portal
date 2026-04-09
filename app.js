@@ -699,12 +699,25 @@ async function viewMessages() {
   layout.appendChild(list);
   layout.appendChild(pane);
 
-  const [contactsR, msgsR] = await Promise.all([
+  const fetches = [
     api('/api/portal/crm?action=contacts'),
     api('/api/portal/messages')
-  ]);
+  ];
+  // For iSlay: also fetch artist inquiries for phone→name matching
+  if (isIslayClient()) {
+    fetches.push(api('/api/portal/artist?action=inquiries').catch(() => ({ inquiries: [] })));
+  }
+  const [contactsR, msgsR, artistR] = await Promise.all(fetches);
   const contacts = contactsR.contacts;
   const allMsgs = msgsR.messages;
+
+  // Build phone→artist_name lookup for iSlay
+  const phoneToArtist = {};
+  if (isIslayClient() && artistR) {
+    for (const a of (artistR.inquiries || [])) {
+      if (a.artist_phone) phoneToArtist[a.artist_phone] = a.artist_name;
+    }
+  }
 
   // Group last message per contact
   const lastByContact = {};
@@ -721,11 +734,13 @@ async function viewMessages() {
 
   for (const c of contacts) {
     const last = lastByContact[c.id];
+    // Show artist name if phone matches an artist inquiry
+    const displayName = phoneToArtist[c.phone] || c.name;
     const item = el('div', {
       class: 'item' + (c.id === activeId ? ' active' : ''),
       onclick: () => { state.activeContactId = c.id; render(); }
     },
-      el('div', { class: 'name' }, c.name),
+      el('div', { class: 'name' }, displayName),
       el('div', { class: 'preview' }, last?.body || c.phone)
     );
     list.appendChild(item);
@@ -737,8 +752,9 @@ async function viewMessages() {
   }
 
   const contact = contacts.find(c => c.id === activeId);
+  const chatDisplayName = phoneToArtist[contact.phone] || contact.name;
   pane.appendChild(el('div', { class: 'chat-header' },
-    el('strong', {}, contact.name), ' ', el('span', { class: 'muted' }, contact.phone)
+    el('strong', {}, chatDisplayName), ' ', el('span', { class: 'muted' }, contact.phone)
   ));
 
   const body = el('div', { class: 'chat-body' });
@@ -1272,6 +1288,7 @@ async function viewAdmin() {
         el('th', {}, 'Twilio'),
         el('th', {}, 'Credits'),
         el('th', {}, 'Sent 30d'),
+        el('th', {}, 'Tier'),
         el('th', {}, 'Status'),
         el('th', {}, 'Actions')
       )),
@@ -1280,12 +1297,15 @@ async function viewAdmin() {
         // input state (amount/note) is independent between the table and
         // the mobile card.
         const b = buildClient(c);
+        const tierLabel = (c.tier || 'starter').charAt(0).toUpperCase() + (c.tier || 'starter').slice(1);
+        const tierCls = c.tier === 'custom' ? 'pill ok' : c.tier === 'growth' ? 'pill warn' : 'pill';
         return el('tr', {},
           el('td', {}, el('strong', {}, c.name || '—')),
           el('td', {}, el('code', {}, c.slug)),
           el('td', { class: 'muted mono' }, c.twilio_phone_number || '—'),
           el('td', {}, String(c.credit_balance ?? 0)),
           el('td', { class: 'muted' }, String(c.sent_30d || 0)),
+          el('td', {}, el('span', { class: tierCls }, tierLabel)),
           el('td', {}, c.billing_paused
               ? el('span', { class: 'pill warn' }, 'PAUSED')
               : el('span', { class: 'pill ok' }, 'active')),
@@ -1311,9 +1331,12 @@ async function viewAdmin() {
     const cards = el('div', { class: 'admin-cards' },
       ...allClients.map((c) => {
         const b = buildClient(c);
+        const tierLabel = (c.tier || 'starter').charAt(0).toUpperCase() + (c.tier || 'starter').slice(1);
+        const tierCls = c.tier === 'custom' ? 'pill ok' : c.tier === 'growth' ? 'pill warn' : 'pill';
         return el('div', { class: 'admin-card' },
           el('div', { class: 'admin-card-head' },
             el('strong', {}, c.name || '—'),
+            el('span', { class: tierCls }, tierLabel),
             c.billing_paused
               ? el('span', { class: 'pill warn' }, 'PAUSED')
               : el('span', { class: 'pill ok' }, 'active')
@@ -1432,6 +1455,317 @@ async function viewAdmin() {
 }
 
 // ============================================================
+// TIER FEATURE LOCKING (Part 12)
+// ============================================================
+const TIER_LEVELS = { starter: 1, growth: 2, custom: 3 };
+const TIER_NAMES  = { starter: 'Starter', growth: 'Growth', custom: 'Custom' };
+
+function clientTier() {
+  return state.client?.tier || 'starter';
+}
+
+function hasTierAccess(requiredTier) {
+  return (TIER_LEVELS[clientTier()] || 0) >= (TIER_LEVELS[requiredTier] || 0);
+}
+
+function tierLock(featureName, requiredTier, description) {
+  const clientName = state.client?.name || 'your business';
+  const tierLabel = TIER_NAMES[requiredTier] || requiredTier;
+  const mailto = `mailto:aaron@goelev8.ai?subject=${encodeURIComponent('Upgrade Request — ' + clientName)}&body=${encodeURIComponent('I would like to upgrade to ' + tierLabel + ' tier for ' + clientName + '.')}`;
+  return el('div', { class: 'tier-lock' },
+    el('div', { class: 'tier-lock-icon' }, '\uD83D\uDD12'),
+    el('div', { class: 'tier-lock-text' },
+      el('div', { class: 'tier-lock-title' }, featureName),
+      el('div', { class: 'tier-lock-desc muted' }, description || `Upgrade to ${tierLabel} to unlock ${featureName.toLowerCase()}.`)
+    ),
+    el('a', { class: 'btn tier-lock-btn', href: mailto }, 'Upgrade Now')
+  );
+}
+
+// Returns the conversion label for the current client.
+function conversionLabel() {
+  return state.client?.conversion_label || 'Conversions';
+}
+
+// Is this the iSlay Studios client?
+function isIslayClient() {
+  return state.client?.slug === 'islay-studios';
+}
+
+// ============================================================
+// ARTIST CONVERSION PIPELINE (Part 4 — iSlay Studios)
+// ============================================================
+const ARTIST_STAGES = ['New', 'Contacted', 'Booked', 'In Studio', 'Converted', 'Lost'];
+const GENRE_COLORS = {
+  'R&B': '#a855f7', 'Hip Hop': '#eab308', 'Gospel': '#3b82f6',
+  'Pop': '#ec4899', 'Rock': '#ef4444', 'Jazz': '#14b8a6',
+  'Country': '#f97316', 'Electronic': '#06b6d4'
+};
+
+function genreBadge(genre) {
+  if (!genre) return null;
+  const color = GENRE_COLORS[genre] || '#6b7280';
+  return el('span', { class: 'genre-badge', style: `background:${color}20;color:${color};border:1px solid ${color}40` }, genre);
+}
+
+function daysSince(dateStr) {
+  if (!dateStr) return null;
+  return Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
+}
+
+async function viewArtistPipeline() {
+  const wrap = el('div', {});
+
+  // Conversion rate card
+  const ratePanel = el('div', { class: 'panel' });
+  ratePanel.appendChild(skeleton(1));
+  wrap.appendChild(ratePanel);
+
+  // Pipeline
+  const pipePanel = el('div', { class: 'panel pipeline-panel' });
+  pipePanel.appendChild(skeleton(3));
+  wrap.appendChild(pipePanel);
+
+  try {
+    const [pipeR, dashR] = await Promise.all([
+      api('/api/portal/artist?action=pipeline'),
+      api('/api/portal/artist?action=dashboard')
+    ]);
+
+    // ── Conversion rate card ──
+    ratePanel.innerHTML = '';
+    ratePanel.appendChild(el('h2', {}, 'Artist ' + conversionLabel()));
+    const stats = dashR.stats;
+    const rateCards = el('div', { class: 'cards' });
+    rateCards.appendChild(card('Inquiries', stats.new_inquiries, 'This month', 'accent'));
+    rateCards.appendChild(card('Converted', stats.conversions, 'This month'));
+    const arrow = parseFloat(stats.conversion_rate) > 0 ? '\u2191' : '';
+    rateCards.appendChild(card('Rate', stats.conversion_rate + '%', arrow + ' conversion'));
+    rateCards.appendChild(card('Avg Session', '$' + stats.avg_session_value.toFixed(0), stats.avg_days_to_book ? stats.avg_days_to_book + 'd avg to book' : 'N/A'));
+    ratePanel.appendChild(rateCards);
+
+    // ── Pipeline stages ──
+    pipePanel.innerHTML = '';
+    pipePanel.appendChild(el('div', { class: 'panel-head' },
+      el('h2', {}, 'Artist Pipeline'),
+      el('button', { class: 'btn sm', onclick: () => openArtistInquiryModal() }, '+ New Inquiry')
+    ));
+
+    const pipeline = el('div', { class: 'pipeline' });
+    for (const stage of pipeR.stages) {
+      const data = pipeR.pipeline[stage] || { count: 0, value: 0, items: [] };
+      const stageClass = stage.toLowerCase().replace(/\s+/g, '-');
+      const col = el('div', { class: 'pipeline-stage stage-' + stageClass },
+        el('div', { class: 'pipeline-header' },
+          el('div', { class: 'pipeline-title' }, stage),
+          el('div', { class: 'pipeline-count' },
+            el('span', { class: 'pipeline-num' }, String(data.count)),
+            data.value > 0 ? el('span', { class: 'pipeline-value muted' }, ' $' + data.value.toLocaleString()) : null
+          )
+        )
+      );
+
+      const cardList = el('div', { class: 'pipeline-cards' });
+      for (const item of data.items) {
+        const days = daysSince(item.created_at);
+        const artistCard = el('div', { class: 'artist-card', draggable: 'true' },
+          el('div', { class: 'artist-card-top' },
+            el('div', { class: 'artist-card-name' }, item.artist_name),
+            genreBadge(item.genre)
+          ),
+          item.service_interest ? el('div', { class: 'artist-card-service muted' }, item.service_interest) : null,
+          item.budget_range ? el('div', { class: 'artist-card-budget muted' }, item.budget_range) : null,
+          el('div', { class: 'artist-card-footer' },
+            days != null ? el('span', { class: 'muted small' }, days + 'd ago') : null,
+            el('div', { class: 'artist-card-actions' },
+              el('button', { class: 'btn sm ghost', onclick: (e) => { e.stopPropagation(); viewArtistDetail(item); } }, 'View'),
+              stage !== 'Booked' && stage !== 'In Studio' && stage !== 'Converted' && stage !== 'Lost'
+                ? el('button', { class: 'btn sm', onclick: (e) => { e.stopPropagation(); openBookSessionModal(item); } }, 'Book')
+                : null
+            )
+          )
+        );
+
+        // Drag-and-drop: set inquiry id
+        artistCard.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/plain', item.id);
+          e.dataTransfer.effectAllowed = 'move';
+        });
+
+        cardList.appendChild(artistCard);
+      }
+      col.appendChild(cardList);
+
+      // Drop zone
+      col.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; col.classList.add('drag-over'); });
+      col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
+      col.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        col.classList.remove('drag-over');
+        const inquiryId = e.dataTransfer.getData('text/plain');
+        if (!inquiryId) return;
+        try {
+          await api('/api/portal/artist?action=inquiries', {
+            method: 'PATCH', body: { id: inquiryId, status: stage }
+          });
+          toast(`Moved to ${stage}`);
+          render();
+        } catch (err) { toast(err.message, true); }
+      });
+
+      pipeline.appendChild(col);
+    }
+    pipePanel.appendChild(pipeline);
+  } catch (e) {
+    ratePanel.innerHTML = '';
+    ratePanel.appendChild(el('div', { class: 'err' }, e.message));
+  }
+
+  return wrap;
+}
+
+function viewArtistDetail(item) {
+  const close = () => bg.remove();
+  const modal = el('div', { class: 'modal' },
+    el('h2', {}, item.artist_name),
+    el('div', { class: 'artist-detail-grid' },
+      el('div', {}, el('strong', {}, 'Phone: '), item.artist_phone || '—'),
+      el('div', {}, el('strong', {}, 'Email: '), item.artist_email || '—'),
+      el('div', {}, el('strong', {}, 'Genre: '), item.genre || '—'),
+      el('div', {}, el('strong', {}, 'Service: '), item.service_interest || '—'),
+      el('div', {}, el('strong', {}, 'Budget: '), item.budget_range || '—'),
+      el('div', {}, el('strong', {}, 'Source: '), item.source || '—'),
+      el('div', {}, el('strong', {}, 'Status: '), item.status || '—'),
+      el('div', {}, el('strong', {}, 'Since: '), new Date(item.created_at).toLocaleDateString()),
+      item.notes ? el('div', { style: 'grid-column:1/-1' }, el('strong', {}, 'Notes: '), item.notes) : null
+    ),
+    el('div', { class: 'row', style: 'justify-content:flex-end; gap:8px; margin-top:16px' },
+      item.artist_phone ? el('a', { class: 'btn ghost', href: 'tel:' + item.artist_phone }, 'Call') : null,
+      el('button', { class: 'btn', onclick: () => { close(); openBookSessionModal(item); } }, 'Book Session'),
+      el('button', { class: 'btn ghost', onclick: close }, 'Close')
+    )
+  );
+  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
+  document.body.appendChild(bg);
+}
+
+function openArtistInquiryModal() {
+  const name = el('input', { placeholder: 'Artist name' });
+  const phone = el('input', { placeholder: '+15551234567' });
+  const email = el('input', { placeholder: 'artist@example.com' });
+  const genre = el('select', {},
+    el('option', { value: '' }, '— Select genre —'),
+    ...['R&B', 'Hip Hop', 'Gospel', 'Pop', 'Rock', 'Jazz', 'Country', 'Electronic', 'Other'].map(g =>
+      el('option', { value: g }, g))
+  );
+  const serviceInterest = el('select', {},
+    el('option', { value: '' }, '— Select service —'),
+    ...['Recording', 'Mixing', 'Mastering', 'Full Production', 'Other'].map(s =>
+      el('option', { value: s }, s))
+  );
+  const budget = el('select', {},
+    el('option', { value: '' }, '— Budget range —'),
+    ...['Under $500', '$500–$1,000', '$1,000–$2,500', '$2,500–$5,000', '$5,000+'].map(b =>
+      el('option', { value: b }, b))
+  );
+  const notes = el('textarea', { rows: 3, placeholder: 'Notes...' });
+
+  const close = () => bg.remove();
+  const save = async () => {
+    if (!name.value.trim()) { toast('Artist name required', true); return; }
+    try {
+      await api('/api/portal/artist?action=inquiries', { method: 'POST', body: {
+        artist_name: name.value.trim(),
+        artist_phone: phone.value.trim() || null,
+        artist_email: email.value.trim() || null,
+        genre: genre.value || null,
+        service_interest: serviceInterest.value || null,
+        budget_range: budget.value || null,
+        notes: notes.value.trim() || null
+      }});
+      close(); toast('Inquiry added'); render();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  const modal = el('div', { class: 'modal' },
+    el('h2', {}, 'New Artist Inquiry'),
+    el('div', { class: 'field' }, el('label', {}, 'Artist Name'), name),
+    el('div', { class: 'grid-2' },
+      el('div', { class: 'field' }, el('label', {}, 'Phone'), phone),
+      el('div', { class: 'field' }, el('label', {}, 'Email'), email)
+    ),
+    el('div', { class: 'grid-2' },
+      el('div', { class: 'field' }, el('label', {}, 'Genre'), genre),
+      el('div', { class: 'field' }, el('label', {}, 'Service Interest'), serviceInterest)
+    ),
+    el('div', { class: 'field' }, el('label', {}, 'Budget Range'), budget),
+    el('div', { class: 'field' }, el('label', {}, 'Notes'), notes),
+    el('div', { class: 'row', style: 'justify-content:flex-end; gap:8px' },
+      el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+      el('button', { class: 'btn', onclick: save }, 'Save')
+    )
+  );
+  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
+  document.body.appendChild(bg);
+}
+
+function openBookSessionModal(inquiry) {
+  const dateInput = el('input', { type: 'datetime-local' });
+  const serviceType = el('select', {},
+    ...['Recording', 'Mixing', 'Mastering', 'Full Production', 'Other'].map(s =>
+      el('option', { value: s, selected: s === (inquiry?.service_interest || '') }, s))
+  );
+  const duration = el('input', { type: 'number', min: '0.5', step: '0.5', value: '2' });
+  const rate = el('input', { type: 'number', min: '0', step: '25', value: '150' });
+  const totalDisplay = el('div', { class: 'booking-total' }, '$300.00');
+  const notes = el('textarea', { rows: 2, placeholder: 'Session notes...' });
+
+  const updateTotal = () => {
+    const t = (parseFloat(duration.value) || 0) * (parseFloat(rate.value) || 0);
+    totalDisplay.textContent = '$' + t.toFixed(2);
+  };
+  duration.addEventListener('input', updateTotal);
+  rate.addEventListener('input', updateTotal);
+
+  const close = () => bg.remove();
+  const save = async () => {
+    if (!dateInput.value) { toast('Select a date and time', true); return; }
+    try {
+      await api('/api/portal/artist?action=bookings', { method: 'POST', body: {
+        artist_inquiry_id: inquiry?.id || null,
+        artist_name: inquiry?.artist_name || 'Unknown',
+        phone: inquiry?.artist_phone || null,
+        email: inquiry?.artist_email || null,
+        service_type: serviceType.value,
+        session_date: new Date(dateInput.value).toISOString(),
+        duration_hours: parseFloat(duration.value) || 1,
+        rate_per_hour: parseFloat(rate.value) || 0,
+        notes: notes.value.trim() || null
+      }});
+      close(); toast('Session booked! SMS sent to artist.'); render();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  const modal = el('div', { class: 'modal' },
+    el('h2', {}, 'Book Session — ' + (inquiry?.artist_name || 'Artist')),
+    el('div', { class: 'field' }, el('label', {}, 'Date & Time'), dateInput),
+    el('div', { class: 'field' }, el('label', {}, 'Service Type'), serviceType),
+    el('div', { class: 'grid-2' },
+      el('div', { class: 'field' }, el('label', {}, 'Duration (hours)'), duration),
+      el('div', { class: 'field' }, el('label', {}, 'Rate per hour ($)'), rate)
+    ),
+    el('div', { class: 'field' }, el('label', {}, 'Total'), totalDisplay),
+    el('div', { class: 'field' }, el('label', {}, 'Notes'), notes),
+    el('div', { class: 'row', style: 'justify-content:flex-end; gap:8px' },
+      el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+      el('button', { class: 'btn', onclick: save }, 'Confirm Booking')
+    )
+  );
+  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
+  document.body.appendChild(bg);
+}
+
+// ============================================================
 // DASHBOARD (mobile-first overview of leads / bookings / calls)
 // ============================================================
 function statusBadge(status) {
@@ -1462,6 +1796,9 @@ function startOfMonthISO() {
 }
 
 async function viewDashboard() {
+  // iSlay Studios gets a custom dashboard
+  if (isIslayClient()) return viewIslayDashboard();
+
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Dashboard'),
@@ -1472,6 +1809,14 @@ async function viewDashboard() {
   const cards = el('div', { class: 'cards' });
   wrap.appendChild(cards);
   cards.appendChild(skeleton(1));
+
+  // ---- Conversion pipeline (tier-gated) ----
+  if (hasTierAccess('custom')) {
+    // Generic pipeline placeholder for non-islay clients
+  } else {
+    wrap.appendChild(tierLock('Conversion Pipeline', 'custom',
+      'Upgrade to Custom to unlock conversion tracking'));
+  }
 
   // ---- Recent leads ----
   const leadsPanel = el('div', { class: 'panel' },
@@ -1627,6 +1972,125 @@ async function viewDashboard() {
 }
 
 // ============================================================
+// ISLAY STUDIOS DASHBOARD (Part 5)
+// ============================================================
+async function viewIslayDashboard() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Dashboard'),
+    el('div', { class: 'muted' }, 'iSlay Studios')
+  ));
+
+  // ── Top Stats (4 cards) ──
+  const statsCards = el('div', { class: 'cards' });
+  wrap.appendChild(statsCards);
+  statsCards.appendChild(skeleton(1));
+
+  // ── Artist Conversion Pipeline ──
+  const pipelineWrap = el('div', {});
+  wrap.appendChild(pipelineWrap);
+  pipelineWrap.appendChild(skeleton(3));
+
+  // ── Upcoming Sessions Today ──
+  const todayPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Sessions Today'),
+      el('span', { class: 'muted small' }, new Date().toLocaleDateString())
+    ),
+    skeleton(2)
+  );
+  wrap.appendChild(todayPanel);
+
+  // ── Recent Inquiries ──
+  const recentPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Recent Inquiries'),
+      el('span', { class: 'muted small' }, 'Latest 5')
+    ),
+    skeleton(3)
+  );
+  wrap.appendChild(recentPanel);
+
+  try {
+    const dashR = await api('/api/portal/artist?action=dashboard');
+    const stats = dashR.stats;
+
+    // ── Stats Cards ──
+    statsCards.innerHTML = '';
+    statsCards.appendChild(card('New Inquiries', stats.new_inquiries, 'This month', 'accent'));
+    statsCards.appendChild(card('Sessions Booked', stats.sessions_booked, 'This month'));
+    statsCards.appendChild(card(conversionLabel(), stats.conversions,
+      stats.conversion_rate + '% rate'));
+    statsCards.appendChild(card('Revenue', '$' + stats.revenue.toFixed(0), 'This month'));
+
+    // ── Pipeline ──
+    pipelineWrap.innerHTML = '';
+    const pipelineView = await viewArtistPipeline();
+    pipelineWrap.appendChild(pipelineView);
+
+    // ── Today's Sessions ──
+    todayPanel.innerHTML = '';
+    todayPanel.appendChild(el('div', { class: 'panel-head' },
+      el('h2', {}, 'Sessions Today'),
+      el('span', { class: 'muted small' }, new Date().toLocaleDateString())
+    ));
+    if (!dashR.today_sessions.length) {
+      todayPanel.appendChild(emptyState('No sessions scheduled today.'));
+    } else {
+      const list = el('div', { class: 'lead-list' });
+      for (const s of dashR.today_sessions) {
+        const time = new Date(s.session_date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        list.appendChild(el('div', { class: 'lead-row' },
+          el('div', { class: 'lead-main' },
+            el('div', { class: 'lead-name' }, s.artist_name),
+            el('div', { class: 'lead-meta muted' },
+              [s.service_type, s.duration_hours + 'h', time].filter(Boolean).join(' · ')
+            )
+          ),
+          el('div', { class: 'lead-side' },
+            statusBadge(s.status),
+            el('div', { class: 'lead-time muted' }, '$' + (Number(s.total_amount) || 0).toFixed(0))
+          )
+        ));
+      }
+      todayPanel.appendChild(list);
+    }
+
+    // ── Recent Inquiries ──
+    recentPanel.innerHTML = '';
+    recentPanel.appendChild(el('div', { class: 'panel-head' },
+      el('h2', {}, 'Recent Inquiries'),
+      el('span', { class: 'muted small' }, 'Latest 5')
+    ));
+    if (!dashR.recent_inquiries.length) {
+      recentPanel.appendChild(emptyState('No inquiries yet. They will appear here as artists reach out.'));
+    } else {
+      const list = el('div', { class: 'lead-list' });
+      for (const i of dashR.recent_inquiries) {
+        list.appendChild(el('div', { class: 'lead-row' },
+          el('div', { class: 'lead-main' },
+            el('div', { class: 'lead-name' }, i.artist_name || '—'),
+            el('div', { class: 'lead-meta muted' },
+              [i.source, i.genre].filter(Boolean).join(' · ')
+            )
+          ),
+          el('div', { class: 'lead-side' },
+            statusBadge(i.status),
+            el('div', { class: 'lead-time muted' }, new Date(i.created_at).toLocaleDateString())
+          )
+        ));
+      }
+      recentPanel.appendChild(list);
+    }
+  } catch (e) {
+    statsCards.innerHTML = '';
+    statsCards.appendChild(el('div', { class: 'err' }, e.message));
+  }
+
+  return wrap;
+}
+
+// ============================================================
 // LEADS
 // ============================================================
 async function viewLeads() {
@@ -1713,29 +2177,47 @@ async function viewCalls() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Calls'),
-    el('div', { class: 'muted' }, 'AI voice answer log')
+    el('div', { class: 'muted' }, isIslayClient() ? 'Call log' : 'AI voice answer log')
   ));
   const panel = el('div', { class: 'panel' });
   panel.appendChild(skeleton(5));
   wrap.appendChild(panel);
 
   try {
-    const r = await api('/api/portal/crm?action=calls');
+    // Fetch calls and artist inquiries in parallel for phone→name matching
+    const [callsR, artistR] = await Promise.all([
+      api('/api/portal/crm?action=calls'),
+      isIslayClient()
+        ? api('/api/portal/artist?action=inquiries').catch(() => ({ inquiries: [] }))
+        : Promise.resolve({ inquiries: [] })
+    ]);
+
+    // Build phone→artist_name lookup for iSlay
+    const phoneToArtist = {};
+    if (isIslayClient()) {
+      for (const a of (artistR.inquiries || [])) {
+        if (a.artist_phone) phoneToArtist[a.artist_phone] = a.artist_name;
+      }
+    }
+
     panel.innerHTML = '';
-    if (!r.calls.length) {
+    if (!callsR.calls.length) {
       panel.appendChild(emptyState('No calls yet. Once Vapi handles a call it will show up here with the transcript.'));
       return wrap;
     }
     const list = el('div', { class: 'call-list' });
-    for (const c of r.calls) {
+    for (const c of callsR.calls) {
       const mins = Math.floor((c.duration_seconds || 0) / 60);
       const secs = (c.duration_seconds || 0) % 60;
       const dur = `${mins}:${String(secs).padStart(2, '0')}`;
+      // Show artist name instead of phone if we have a match
+      const displayName = phoneToArtist[c.caller_phone] || c.caller_phone || 'Unknown caller';
+      const showPhone = phoneToArtist[c.caller_phone] ? c.caller_phone : null;
       const row = el('div', { class: 'call-row' },
         el('div', { class: 'call-main' },
-          el('div', { class: 'call-phone' }, c.caller_phone || 'Unknown caller'),
+          el('div', { class: 'call-phone' }, displayName),
           el('div', { class: 'call-meta muted' },
-            new Date(c.created_at).toLocaleString() + ' · ' + dur
+            [showPhone, new Date(c.created_at).toLocaleString(), dur].filter(Boolean).join(' · ')
           )
         ),
         el('div', { class: 'call-side' }, statusBadge(c.outcome))
@@ -2253,6 +2735,12 @@ async function viewAnalytics() {
     el('h1', {}, 'Analytics'),
     el('div', { class: 'muted' }, 'Performance overview')
   ));
+
+  // Tier gate: funnel conversion rates locked for starter
+  if (!hasTierAccess('growth')) {
+    wrap.appendChild(tierLock('Funnel Conversion Rates', 'growth',
+      'Upgrade to Growth to unlock funnel analytics and conversion tracking.'));
+  }
 
   // Overview cards
   const cards = el('div', { class: 'cards' });
@@ -2779,6 +3267,27 @@ function ge8BuildRealtimeChannel(sb, clientId) {
         console.log('[realtime] booking INSERT', b);
         const when = b.starts_at ? new Date(b.starts_at).toLocaleString() : 'soon';
         notify('New booking', `Confirmed for ${when}`);
+        if (state.view === 'dashboard') {
+          try { render(); } catch {}
+        }
+      })
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'artist_inquiries', filter: `client_id=eq.${clientId}` },
+      (payload) => {
+        const a = payload.new || {};
+        console.log('[realtime] artist_inquiry INSERT', a);
+        notify('New Artist Inquiry', `${a.artist_name || 'Someone'} just reached out`);
+        if (state.view === 'dashboard') {
+          try { render(); } catch {}
+        }
+      })
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'studio_bookings', filter: `client_id=eq.${clientId}` },
+      (payload) => {
+        const b = payload.new || {};
+        console.log('[realtime] studio_booking INSERT', b);
+        const when = b.session_date ? new Date(b.session_date).toLocaleString() : 'soon';
+        notify('Studio Session Booked', `${b.artist_name || 'Artist'} booked for ${when}`);
         if (state.view === 'dashboard') {
           try { render(); } catch {}
         }
