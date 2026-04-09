@@ -3,7 +3,7 @@
 // Bump CACHE_NAME whenever the asset strategy changes — the activate
 // handler deletes any cache that doesn't match the current name, which
 // is how stale assets get evicted on the next page load.
-const CACHE_NAME = 'goelev8-portal-v5';
+const CACHE_NAME = 'goelev8-portal-v6';
 const OFFLINE_URL = '/offline.html';
 
 // Only truly static, rarely-changing assets get pre-cached. Anything
@@ -81,6 +81,24 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request).catch(() =>
         new Response(JSON.stringify({ error: 'Offline - no data available' }), {
+          headers: { 'Content-Type': 'application/json' }
+        })
+      )
+    );
+    return;
+  }
+
+  // Same-origin portal API routes (/api/*): network-only, never cache.
+  // Without this guard, GET /api/portal/me and GET /api/portal/crm?...
+  // would fall through to the cache-first "everything else" branch below
+  // and pin the first response, leaving Coach Kenny staring at frozen
+  // lead counts until the SW cache expired. API responses are private
+  // per-client data — they must hit the network on every request.
+  if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) {
+    event.respondWith(
+      fetch(request).catch(() =>
+        new Response(JSON.stringify({ error: 'offline' }), {
+          status: 503,
           headers: { 'Content-Type': 'application/json' }
         })
       )
