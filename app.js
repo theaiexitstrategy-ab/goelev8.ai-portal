@@ -257,8 +257,10 @@ function tabIcon(name) {
   };
   switch (name) {
     case 'home':   return svg(['M3 12 12 4l9 8', 'M5 10v10h14V10']);
+    case 'dollar': return svg(['M12 1v22', 'M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6']);
     case 'phone':  return svg(['M5 4h4l2 5-3 2a14 14 0 0 0 5 5l2-3 5 2v4a2 2 0 0 1-2 2A18 18 0 0 1 3 6a2 2 0 0 1 2-2z']);
     case 'chat':   return svg(['M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z']);
+    case 'chart':  return svg(['M18 20V10', 'M12 20V4', 'M6 20v-6']);
     case 'person': return svg(['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z']);
     case 'gear':   return svg([
       'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
@@ -271,9 +273,10 @@ function tabIcon(name) {
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: 'home'   },
+  { id: 'sales',     label: 'Sales',     icon: 'dollar' },
   { id: 'calls',     label: 'Calls',     icon: 'phone'  },
   { id: 'messages',  label: 'Messages',  icon: 'chat'   },
-  { id: 'contacts',  label: 'Contacts',  icon: 'person' },
+  { id: 'analytics', label: 'Analytics', icon: 'chart'  },
   { id: 'settings',  label: 'Settings',  icon: 'gear'   }
 ];
 
@@ -1757,6 +1760,678 @@ async function viewCalls() {
 }
 
 // ============================================================
+// SALES TRACKER
+// ============================================================
+function timeAgo(ts) {
+  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+  return new Date(ts).toLocaleDateString();
+}
+
+async function viewSales() {
+  ge8Track('tab_viewed', { tab_name: 'sales' });
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Sales'),
+    el('button', { class: 'btn', onclick: () => openAddProductModal() }, '+ Add Product')
+  ));
+
+  // Overview stat cards
+  const cards = el('div', { class: 'cards' });
+  wrap.appendChild(cards);
+  cards.appendChild(skeleton(1));
+
+  // Products section
+  const productsPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Products'),
+      el('button', { class: 'btn sm', onclick: () => openAddProductModal() }, '+ Add Product')
+    ),
+    skeleton(2)
+  );
+  wrap.appendChild(productsPanel);
+
+  // Sales table section
+  const salesPanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Recent Sales'),
+    skeleton(5)
+  );
+  wrap.appendChild(salesPanel);
+
+  try {
+    const [statsR, productsR, salesR] = await Promise.all([
+      api('/api/portal/sales?action=stats'),
+      api('/api/portal/products'),
+      api('/api/portal/sales?action=list')
+    ]);
+
+    // ---- Overview Cards ----
+    cards.innerHTML = '';
+    cards.appendChild(card('Total Revenue', '$' + statsR.total_revenue.toFixed(2), 'all time', 'accent'));
+    cards.appendChild(card('Total Sales', statsR.total_count, 'all time'));
+    const arrow = statsR.month_change >= 0 ? '\u2191' : '\u2193';
+    cards.appendChild(card('This Month', '$' + statsR.this_month_revenue.toFixed(2),
+      `vs last month ${arrow} ${Math.abs(statsR.month_change)}%`));
+    cards.appendChild(card('Today', `$${statsR.today_revenue.toFixed(2)} (${statsR.today_count})`,
+      `last updated ${new Date(statsR.last_updated).toLocaleTimeString()}`));
+
+    // ---- Products Grid ----
+    productsPanel.innerHTML = '';
+    productsPanel.appendChild(el('div', { class: 'panel-head' },
+      el('h2', {}, 'Products'),
+      el('button', { class: 'btn sm', onclick: () => openAddProductModal() }, '+ Add Product')
+    ));
+
+    if (!productsR.products.length) {
+      productsPanel.appendChild(el('div', { class: 'empty-state' },
+        el('div', { class: 'empty-icon' }, '$'),
+        el('div', { class: 'empty-msg' }, 'No products yet'),
+        el('div', { class: 'muted', style: 'margin-top:8px' }, 'Add your first product to start tracking sales'),
+        el('button', { class: 'btn', style: 'margin-top:12px', onclick: () => openAddProductModal() }, '+ Add Product')
+      ));
+    } else {
+      const grid = el('div', { class: 'products-grid' });
+      for (const p of productsR.products) {
+        const productCard = el('div', { class: 'product-card' },
+          p.image_url
+            ? el('div', { class: 'product-img' }, el('img', { src: p.image_url, alt: p.name }))
+            : el('div', { class: 'product-img placeholder' }, el('span', {}, '$')),
+          el('div', { class: 'product-info' },
+            el('div', { class: 'product-name-row' },
+              el('div', { class: 'product-name' }, p.name),
+              el('span', { class: 'badge ' + (p.is_active ? 'green' : 'red') }, p.is_active ? 'Active' : 'Inactive')
+            ),
+            el('div', { class: 'product-price' }, '$' + Number(p.price).toFixed(2)),
+            el('div', { class: 'product-stats muted' },
+              `${p.sales_count} sales  \u00b7  $${p.total_revenue.toFixed(2)}`
+            ),
+            p.show_in_funnel && p.funnel_pages?.length
+              ? el('div', { class: 'product-funnel muted' }, 'Funnel: ' + p.funnel_pages.join(', '))
+              : null,
+            el('div', { class: 'product-actions' },
+              el('button', { class: 'btn sm', onclick: () => openEditProductModal(p) }, 'Edit'),
+              el('button', { class: 'btn sm', onclick: () => {
+                state.salesProductFilter = p.id;
+                render();
+              }}, 'View Sales'),
+              p.stripe_payment_link
+                ? el('button', { class: 'btn sm', onclick: () => {
+                    navigator.clipboard.writeText(p.stripe_payment_link);
+                    toast('Payment link copied!');
+                  }}, 'Share')
+                : null
+            )
+          )
+        );
+        grid.appendChild(productCard);
+      }
+      productsPanel.appendChild(grid);
+    }
+
+    // ---- Sales Table ----
+    salesPanel.innerHTML = '';
+    salesPanel.appendChild(el('h2', {}, 'Recent Sales'));
+
+    // Filter bar
+    const filterBar = el('div', { class: 'sales-filters' });
+
+    // Product filter
+    const productFilter = el('select', { class: 'sales-select',
+      onchange: () => loadSalesTable()
+    },
+      el('option', { value: 'all' }, 'All Products'),
+      ...productsR.products.map(p => el('option', { value: p.id }, p.name))
+    );
+
+    // Period filter
+    const periodFilter = el('select', { class: 'sales-select',
+      onchange: () => loadSalesTable()
+    },
+      el('option', { value: 'all' }, 'All Time'),
+      el('option', { value: 'today' }, 'Today'),
+      el('option', { value: 'this_month', selected: true }, 'This Month'),
+      el('option', { value: 'last_month' }, 'Last Month')
+    );
+
+    // Status filter
+    const statusFilter = el('select', { class: 'sales-select',
+      onchange: () => loadSalesTable()
+    },
+      el('option', { value: 'all' }, 'All Status'),
+      el('option', { value: 'paid' }, 'Paid'),
+      el('option', { value: 'failed' }, 'Failed'),
+      el('option', { value: 'refunded' }, 'Refunded')
+    );
+
+    // Search
+    const searchInput = el('input', {
+      class: 'sales-search',
+      type: 'text',
+      placeholder: 'Search customers...',
+      oninput: () => {
+        clearTimeout(searchInput._debounce);
+        searchInput._debounce = setTimeout(() => loadSalesTable(), 300);
+      }
+    });
+
+    filterBar.appendChild(productFilter);
+    filterBar.appendChild(periodFilter);
+    filterBar.appendChild(statusFilter);
+    filterBar.appendChild(searchInput);
+    salesPanel.appendChild(filterBar);
+
+    const salesHost = el('div', {});
+    salesPanel.appendChild(salesHost);
+
+    let currentPage = 1;
+
+    async function loadSalesTable(page = 1) {
+      currentPage = page;
+      salesHost.innerHTML = '';
+      salesHost.appendChild(skeleton(3));
+
+      const params = new URLSearchParams({
+        action: 'list',
+        page: String(page),
+        product: productFilter.value,
+        period: periodFilter.value,
+        status: statusFilter.value
+      });
+      if (searchInput.value.trim()) params.set('search', searchInput.value.trim());
+
+      try {
+        const r = await api('/api/portal/sales?' + params.toString());
+        salesHost.innerHTML = '';
+
+        if (!r.sales.length) {
+          if (statsR.total_count === 0) {
+            // True empty state
+            salesHost.appendChild(el('div', { class: 'empty-state' },
+              el('div', { class: 'empty-icon' }, '$'),
+              el('div', { class: 'empty-msg' }, 'No sales yet'),
+              el('div', { class: 'muted', style: 'margin-top:8px' }, 'Share your product link to get your first sale'),
+              productsR.products[0]?.stripe_payment_link
+                ? el('button', { class: 'btn', style: 'margin-top:12px', onclick: () => {
+                    navigator.clipboard.writeText(productsR.products[0].stripe_payment_link);
+                    toast('Payment link copied!');
+                  }}, 'Copy Payment Link')
+                : null
+            ));
+          } else {
+            salesHost.appendChild(el('div', { class: 'muted', style: 'padding:24px;text-align:center' },
+              'No sales match the current filters.'));
+          }
+          return;
+        }
+
+        // Desktop table
+        const table = el('table', { class: 'sales-table' },
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Customer'),
+            el('th', {}, 'Product'),
+            el('th', {}, 'Amount'),
+            el('th', {}, 'Source'),
+            el('th', {}, 'Date'),
+            el('th', {}, 'Status')
+          )),
+          el('tbody', {}, ...r.sales.map(s => {
+            const amtClass = s.payment_status === 'paid' ? 'sale-paid' : 'sale-failed';
+            const row = el('tr', { class: 'sale-row' },
+              el('td', {},
+                el('div', { class: 'sale-customer' }, s.customer_name || 'Unknown'),
+                el('div', { class: 'muted small' }, s.customer_email || '')
+              ),
+              el('td', {}, s.products?.name || '—'),
+              el('td', { class: amtClass }, '$' + Number(s.amount).toFixed(2)),
+              el('td', {}, el('span', { class: 'badge source-badge' }, s.source || 'direct')),
+              el('td', { class: 'muted' }, timeAgo(s.created_at)),
+              el('td', {}, statusBadge(s.payment_status === 'paid' ? 'Paid' : s.payment_status === 'failed' ? 'Failed' : 'Refunded'))
+            );
+            row.addEventListener('click', () => {
+              const next = row.nextSibling;
+              if (next?.classList?.contains('sale-detail-row')) { next.remove(); return; }
+              const detail = el('tr', { class: 'sale-detail-row' },
+                el('td', { colspan: 6 },
+                  el('div', { class: 'sale-detail' },
+                    el('div', {}, el('strong', {}, 'Name: '), s.customer_name || '—'),
+                    el('div', {}, el('strong', {}, 'Email: '), s.customer_email || '—'),
+                    el('div', {}, el('strong', {}, 'Phone: '), s.customer_phone || '—'),
+                    el('div', {}, el('strong', {}, 'Stripe Session: '), el('code', {}, s.stripe_session_id || '—')),
+                    el('div', {}, el('strong', {}, 'Source: '), s.source || '—'),
+                    el('div', {}, el('strong', {}, 'Date: '), new Date(s.created_at).toLocaleString())
+                  )
+                )
+              );
+              row.after(detail);
+            });
+            return row;
+          }))
+        );
+        salesHost.appendChild(table);
+
+        // Mobile cards
+        const mobileCards = el('div', { class: 'sales-cards-mobile' });
+        for (const s of r.sales) {
+          const amtClass = s.payment_status === 'paid' ? 'sale-paid' : 'sale-failed';
+          mobileCards.appendChild(el('div', { class: 'sale-card-mobile' },
+            el('div', { class: 'sale-card-top' },
+              el('div', {},
+                el('div', { class: 'sale-customer' }, s.customer_name || 'Unknown'),
+                el('div', { class: 'muted small' }, s.customer_email || '')
+              ),
+              el('div', { class: amtClass + ' sale-amount' }, '$' + Number(s.amount).toFixed(2))
+            ),
+            el('div', { class: 'sale-card-bottom' },
+              el('span', { class: 'badge source-badge' }, s.source || 'direct'),
+              el('span', {}, s.products?.name || '—'),
+              el('span', { class: 'muted' }, timeAgo(s.created_at)),
+              statusBadge(s.payment_status === 'paid' ? 'Paid' : s.payment_status === 'failed' ? 'Failed' : 'Refunded')
+            )
+          ));
+        }
+        salesHost.appendChild(mobileCards);
+
+        // Pagination
+        if (r.pages > 1) {
+          const pag = el('div', { class: 'pagination' });
+          for (let i = 1; i <= r.pages; i++) {
+            pag.appendChild(el('button', {
+              class: 'btn sm' + (i === currentPage ? ' active' : ' ghost'),
+              onclick: () => loadSalesTable(i)
+            }, String(i)));
+          }
+          salesHost.appendChild(pag);
+        }
+      } catch (e) {
+        salesHost.innerHTML = '';
+        salesHost.appendChild(el('div', { class: 'err' }, e.message));
+      }
+    }
+
+    loadSalesTable();
+
+  } catch (e) {
+    cards.innerHTML = '';
+    cards.appendChild(el('div', { class: 'err' }, e.message));
+  }
+  return wrap;
+}
+
+// ============================================================
+// ADD / EDIT PRODUCT MODAL
+// ============================================================
+function openAddProductModal() { openProductModal(null); }
+function openEditProductModal(product) { openProductModal(product); }
+
+function openProductModal(existing) {
+  const isEdit = !!existing;
+  let step = 1;
+
+  // Form fields
+  const nameInput = el('input', { value: existing?.name || '', placeholder: 'Product name' });
+  const descInput = el('textarea', { rows: 3, placeholder: 'Product description' }, existing?.description || '');
+  const priceInput = el('input', { type: 'number', step: '0.01', min: '0', value: existing?.price || '', placeholder: '0.00' });
+  const imageUrlInput = el('input', { value: existing?.image_url || '', placeholder: 'Image URL (or upload below)' });
+  const paymentLinkInput = el('input', { value: existing?.stripe_payment_link || '', placeholder: 'https://buy.stripe.com/...' });
+  const priceIdInput = el('input', { value: existing?.stripe_price_id || '', placeholder: 'price_... (optional)' });
+
+  const showInFunnel = el('input', { type: 'checkbox' });
+  showInFunnel.checked = existing?.show_in_funnel || false;
+
+  const FUNNEL_PAGES = [
+    { value: 'thank-you', label: 'Thank You Page (/thank-you)' },
+    { value: 'rs2', label: 'RS2 Page (/rs2)' },
+    { value: 'fit', label: 'Fit Page (/fit)' },
+    { value: '/', label: 'Main Website (/)' }
+  ];
+  const funnelChecks = FUNNEL_PAGES.map(fp => {
+    const cb = el('input', { type: 'checkbox', value: fp.value });
+    cb.checked = (existing?.funnel_pages || []).includes(fp.value);
+    return { cb, label: fp.label, value: fp.value };
+  });
+
+  const funnelSection = el('div', { class: 'funnel-checks', style: showInFunnel.checked ? '' : 'display:none' });
+  for (const fc of funnelChecks) {
+    funnelSection.appendChild(el('label', { class: 'toggle-row' }, fc.cb, el('span', {}, fc.label)));
+  }
+  showInFunnel.addEventListener('change', () => {
+    funnelSection.style.display = showInFunnel.checked ? '' : 'none';
+  });
+
+  const stepHost = el('div', {});
+  const errBox = el('div', {});
+
+  const renderStep = () => {
+    stepHost.innerHTML = '';
+    errBox.innerHTML = '';
+
+    if (step === 1) {
+      stepHost.appendChild(el('h3', {}, 'Product Details'));
+      stepHost.appendChild(el('div', { class: 'field' }, el('label', {}, 'Product name'), nameInput));
+      stepHost.appendChild(el('div', { class: 'field' }, el('label', {}, 'Description'), descInput));
+      stepHost.appendChild(el('div', { class: 'field' }, el('label', {}, 'Price ($)'), priceInput));
+      stepHost.appendChild(el('div', { class: 'field' }, el('label', {}, 'Image URL'), imageUrlInput));
+    } else if (step === 2) {
+      stepHost.appendChild(el('h3', {}, 'Stripe Connection'));
+      stepHost.appendChild(el('p', { class: 'muted' }, 'Paste your existing Stripe payment link'));
+      stepHost.appendChild(el('div', { class: 'field' }, el('label', {}, 'Stripe Payment Link'), paymentLinkInput));
+      stepHost.appendChild(el('div', { class: 'field' }, el('label', {}, 'Stripe Price ID (optional)'), priceIdInput));
+      stepHost.appendChild(el('div', { class: 'muted', style: 'margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:var(--r-sm)' },
+        el('strong', {}, 'Coming Soon: '), 'Create new product in Stripe directly (requires Stripe Connect)'
+      ));
+    } else if (step === 3) {
+      stepHost.appendChild(el('h3', {}, 'Funnel Settings'));
+      stepHost.appendChild(el('label', { class: 'toggle-row' }, showInFunnel, el('span', {}, 'Show in client funnel')));
+      stepHost.appendChild(funnelSection);
+    } else if (step === 4) {
+      stepHost.appendChild(el('h3', {}, 'Review & Save'));
+      stepHost.appendChild(el('div', { class: 'product-review' },
+        el('div', {}, el('strong', {}, 'Name: '), nameInput.value || '—'),
+        el('div', {}, el('strong', {}, 'Price: '), '$' + (parseFloat(priceInput.value) || 0).toFixed(2)),
+        el('div', {}, el('strong', {}, 'Description: '), descInput.value || '—'),
+        el('div', {}, el('strong', {}, 'Payment Link: '), paymentLinkInput.value || '—'),
+        el('div', {}, el('strong', {}, 'Funnel: '),
+          showInFunnel.checked
+            ? funnelChecks.filter(fc => fc.cb.checked).map(fc => fc.label).join(', ') || 'None selected'
+            : 'Off'
+        )
+      ));
+    }
+  };
+
+  renderStep();
+
+  const close = () => bg.remove();
+  const save = async () => {
+    if (!nameInput.value.trim()) { errBox.innerHTML = '<div class="err">Product name is required</div>'; return; }
+    const body = {
+      name: nameInput.value.trim(),
+      description: descInput.value.trim() || null,
+      price: parseFloat(priceInput.value) || 0,
+      stripe_payment_link: paymentLinkInput.value.trim() || null,
+      stripe_price_id: priceIdInput.value.trim() || null,
+      image_url: imageUrlInput.value.trim() || null,
+      show_in_funnel: showInFunnel.checked,
+      funnel_pages: showInFunnel.checked ? funnelChecks.filter(fc => fc.cb.checked).map(fc => fc.value) : []
+    };
+    if (isEdit) body.id = existing.id;
+
+    try {
+      await api('/api/portal/products', {
+        method: isEdit ? 'PATCH' : 'POST',
+        body
+      });
+      // Trigger funnel sync if show_in_funnel
+      if (body.show_in_funnel) {
+        api('/api/products/sync', { method: 'POST' }).catch(() => {});
+      }
+      close();
+      toast(isEdit ? 'Product updated' : 'Product saved');
+      render();
+    } catch (e) {
+      errBox.innerHTML = `<div class="err">${e.message}</div>`;
+    }
+  };
+
+  const modal = el('div', { class: 'modal product-modal' },
+    el('h2', {}, isEdit ? 'Edit Product' : 'Add Product'),
+    el('div', { class: 'step-indicator' },
+      ...[1, 2, 3, 4].map(s => el('div', { class: 'step-dot' + (s === step ? ' active' : s < step ? ' done' : '') }, String(s)))
+    ),
+    errBox,
+    stepHost,
+    el('div', { class: 'row', style: 'justify-content:flex-end; gap:8px; margin-top:16px' },
+      el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+      step > 1 ? el('button', { class: 'btn ghost', onclick: () => { step--; renderStep(); modal.querySelector('.step-indicator').innerHTML = ''; for (let s = 1; s <= 4; s++) modal.querySelector('.step-indicator').appendChild(el('div', { class: 'step-dot' + (s === step ? ' active' : s < step ? ' done' : '') }, String(s))); }}, 'Back') : null,
+      step < 4
+        ? el('button', { class: 'btn', onclick: () => { step++; renderStep(); modal.querySelector('.step-indicator').innerHTML = ''; for (let s = 1; s <= 4; s++) modal.querySelector('.step-indicator').appendChild(el('div', { class: 'step-dot' + (s === step ? ' active' : s < step ? ' done' : '') }, String(s))); }}, 'Next')
+        : el('button', { class: 'btn', onclick: save }, 'Save Product')
+    )
+  );
+  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
+  document.body.appendChild(bg);
+}
+
+// ============================================================
+// ANALYTICS
+// ============================================================
+function miniBarChart(data, color, height = 120) {
+  const entries = Object.entries(data);
+  if (!entries.length) return el('div', { class: 'muted' }, 'No data');
+  const max = Math.max(...entries.map(([, v]) => v), 1);
+  const chart = el('div', { class: 'mini-chart', style: `height:${height}px` });
+  for (const [label, value] of entries) {
+    const pct = (value / max * 100).toFixed(1);
+    const bar = el('div', { class: 'chart-bar', style: `height:${pct}%; background:${color}`, title: `${label}: ${typeof value === 'number' ? value.toFixed(value % 1 ? 2 : 0) : value}` });
+    const col = el('div', { class: 'chart-col' }, bar);
+    chart.appendChild(col);
+  }
+  return chart;
+}
+
+function miniLineChart(data, color, height = 120) {
+  const entries = Object.entries(data);
+  if (!entries.length) return el('div', { class: 'muted' }, 'No data');
+  const values = entries.map(([, v]) => v);
+  const max = Math.max(...values, 1);
+  const min = 0;
+  const w = 100;
+  const h = height;
+  const points = values.map((v, i) => {
+    const x = (i / Math.max(entries.length - 1, 1)) * w;
+    const y = h - ((v - min) / (max - min)) * h;
+    return `${x},${y}`;
+  }).join(' ');
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('class', 'line-chart-svg');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  const polyline = document.createElementNS(ns, 'polyline');
+  polyline.setAttribute('points', points);
+  polyline.setAttribute('fill', 'none');
+  polyline.setAttribute('stroke', color);
+  polyline.setAttribute('stroke-width', '1.5');
+  polyline.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(polyline);
+  // Fill area
+  const area = document.createElementNS(ns, 'polygon');
+  area.setAttribute('points', `0,${h} ${points} ${w},${h}`);
+  area.setAttribute('fill', color);
+  area.setAttribute('opacity', '0.1');
+  svg.appendChild(area);
+  return el('div', { class: 'line-chart-wrap', style: `height:${height}px` }, svg);
+}
+
+async function viewAnalytics() {
+  ge8Track('tab_viewed', { tab_name: 'analytics' });
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Analytics'),
+    el('div', { class: 'muted' }, 'Performance overview')
+  ));
+
+  // Overview cards
+  const cards = el('div', { class: 'cards' });
+  wrap.appendChild(cards);
+  cards.appendChild(skeleton(1));
+
+  // Leads chart
+  const leadsChartPanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Leads — Last 30 Days'),
+    skeleton(3)
+  );
+  wrap.appendChild(leadsChartPanel);
+
+  // Leads by source
+  const sourcePanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Leads by Source'),
+    skeleton(2)
+  );
+  wrap.appendChild(sourcePanel);
+
+  // Funnel performance
+  const funnelPanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Funnel Performance'),
+    skeleton(2)
+  );
+  wrap.appendChild(funnelPanel);
+
+  // Sales chart
+  const salesChartPanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Revenue — Last 30 Days'),
+    skeleton(3)
+  );
+  wrap.appendChild(salesChartPanel);
+
+  // Top sources
+  const topSourcesPanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Top Lead Sources'),
+    skeleton(2)
+  );
+  wrap.appendChild(topSourcesPanel);
+
+  // Recent activity
+  const activityPanel = el('div', { class: 'panel' },
+    el('h2', {}, 'Recent Activity'),
+    skeleton(5)
+  );
+  wrap.appendChild(activityPanel);
+
+  try {
+    const [analyticsR, ga4R] = await Promise.all([
+      api('/api/portal/analytics'),
+      api('/api/analytics/ga4').catch(() => ({ unavailable: true }))
+    ]);
+
+    // ---- Overview Cards ----
+    cards.innerHTML = '';
+    const leadsArrow = analyticsR.overview.leads_change >= 0 ? '\u2191' : '\u2193';
+    cards.appendChild(card('Total Leads', analyticsR.overview.total_leads,
+      `this month ${leadsArrow} ${Math.abs(analyticsR.overview.leads_change)}%`, 'accent'));
+    cards.appendChild(card('Bookings', analyticsR.overview.bookings_this_month, 'confirmed this month'));
+    cards.appendChild(card('Revenue', '$' + analyticsR.overview.revenue_this_month.toFixed(2), 'this month'));
+    cards.appendChild(card('Portal Logins',
+      ga4R.unavailable ? 'N/A' : (ga4R.active_today || 0),
+      ga4R.unavailable ? 'GA4 unavailable' : 'active today'));
+
+    // ---- Leads Line Chart ----
+    leadsChartPanel.innerHTML = '';
+    leadsChartPanel.appendChild(el('h2', {}, 'Leads \u2014 Last 30 Days'));
+    leadsChartPanel.appendChild(miniLineChart(analyticsR.leads_by_day, '#2DD4BF', 140));
+    // Chart legend
+    const leadsTotal = Object.values(analyticsR.leads_by_day).reduce((a, b) => a + b, 0);
+    leadsChartPanel.appendChild(el('div', { class: 'chart-legend muted' },
+      `${leadsTotal} total leads over 30 days`));
+
+    // ---- Leads by Source Bar Chart ----
+    sourcePanel.innerHTML = '';
+    sourcePanel.appendChild(el('h2', {}, 'Leads by Source'));
+    const sourceEntries = Object.entries(analyticsR.leads_by_source);
+    if (sourceEntries.length) {
+      sourcePanel.appendChild(miniBarChart(analyticsR.leads_by_source, '#2DD4BF', 100));
+      const sourceLabels = el('div', { class: 'source-labels' });
+      for (const [src, count] of sourceEntries.sort((a, b) => b[1] - a[1])) {
+        sourceLabels.appendChild(el('div', { class: 'source-label-row' },
+          el('span', { class: 'source-dot', style: 'background:#2DD4BF' }),
+          el('span', {}, src),
+          el('span', { class: 'muted' }, String(count))
+        ));
+      }
+      sourcePanel.appendChild(sourceLabels);
+    } else {
+      sourcePanel.appendChild(emptyState('No lead source data yet.'));
+    }
+
+    // ---- Funnel Performance ----
+    funnelPanel.innerHTML = '';
+    funnelPanel.appendChild(el('h2', {}, 'Funnel Performance'));
+    const funnelPages = [
+      { path: '/fit', label: 'Fit Funnel' },
+      { path: '/rs2', label: 'RS2 Page' },
+      { path: '/', label: 'Main Site' }
+    ];
+    const funnelGrid = el('div', { class: 'funnel-grid' });
+    for (const fp of funnelPages) {
+      const visits = ga4R.unavailable ? 'N/A' : (ga4R.funnel_pages?.[fp.path] || 0);
+      const submissions = analyticsR.funnel_leads?.[fp.path] || analyticsR.funnel_leads?.[fp.path.slice(1)] || 0;
+      let rate = 'N/A';
+      let rateClass = '';
+      if (!ga4R.unavailable && typeof visits === 'number' && visits > 0) {
+        const pct = (submissions / visits * 100);
+        rate = pct.toFixed(1) + '%';
+        rateClass = pct > 5 ? 'conversion-green' : pct >= 2 ? 'conversion-yellow' : 'conversion-red';
+      }
+      funnelGrid.appendChild(el('div', { class: 'funnel-card' },
+        el('div', { class: 'funnel-card-path' }, fp.label),
+        el('div', { class: 'funnel-card-row' },
+          el('span', {}, 'Visits'), el('span', {}, String(visits))),
+        el('div', { class: 'funnel-card-row' },
+          el('span', {}, 'Submissions'), el('span', {}, String(submissions))),
+        el('div', { class: 'funnel-card-row' },
+          el('span', {}, 'Conversion'),
+          el('span', { class: rateClass }, rate))
+      ));
+    }
+    funnelPanel.appendChild(funnelGrid);
+
+    // ---- Sales Bar Chart ----
+    salesChartPanel.innerHTML = '';
+    salesChartPanel.appendChild(el('h2', {}, 'Revenue \u2014 Last 30 Days'));
+    salesChartPanel.appendChild(miniBarChart(analyticsR.sales_by_day, '#F5C518', 140));
+    const revTotal = Object.values(analyticsR.sales_by_day).reduce((a, b) => a + b, 0);
+    salesChartPanel.appendChild(el('div', { class: 'chart-legend muted' },
+      `$${revTotal.toFixed(2)} total revenue over 30 days`));
+
+    // ---- Top Sources Table ----
+    topSourcesPanel.innerHTML = '';
+    topSourcesPanel.appendChild(el('h2', {}, 'Top Lead Sources'));
+    if (analyticsR.top_sources.length) {
+      const tbl = el('div', { class: 'top-sources-list' });
+      analyticsR.top_sources.forEach((s, i) => {
+        tbl.appendChild(el('div', { class: 'top-source-row' },
+          el('span', { class: 'top-source-rank' }, '#' + (i + 1)),
+          el('span', { class: 'top-source-name' }, s.source),
+          el('span', { class: 'muted' }, `${s.count} leads`)
+        ));
+      });
+      topSourcesPanel.appendChild(tbl);
+    } else {
+      topSourcesPanel.appendChild(emptyState('No source data yet.'));
+    }
+
+    // ---- Recent Activity Feed ----
+    activityPanel.innerHTML = '';
+    activityPanel.appendChild(el('h2', {}, 'Recent Activity'));
+    if (analyticsR.recent_activity.length) {
+      const feed = el('div', { class: 'feed' });
+      for (const ev of analyticsR.recent_activity) {
+        const dotClass = ev.type === 'lead' ? 'lead' : ev.type === 'booking' ? 'booking' : ev.type === 'sale' ? 'sale' : 'call';
+        feed.appendChild(el('div', { class: 'feed-row' },
+          el('div', { class: 'feed-type ' + dotClass }, ev.type),
+          el('div', { class: 'feed-body' },
+            el('div', { class: 'feed-label' }, `${ev.name || 'Unknown'} ${ev.action}`),
+            el('div', { class: 'feed-sub muted' }, `via ${ev.source || 'unknown'}`)
+          ),
+          el('div', { class: 'feed-time muted' }, timeAgo(ev.ts))
+        ));
+      }
+      activityPanel.appendChild(feed);
+    } else {
+      activityPanel.appendChild(emptyState('No activity yet \u2014 analytics will populate as leads and activity come in.'));
+    }
+  } catch (e) {
+    cards.innerHTML = '';
+    cards.appendChild(el('div', { class: 'err' }, e.message));
+  }
+
+  return wrap;
+}
+
+// ============================================================
 // ROUTER / RENDER
 // ============================================================
 async function render() {
@@ -1804,19 +2479,22 @@ async function render() {
     leads:     'dashboard',
     bookings:  'dashboard',
     billing:   'settings',
-    connect:   'settings'
+    connect:   'settings',
+    contacts:  'settings'
   };
   if (LEGACY_REDIRECTS[state.view]) state.view = LEGACY_REDIRECTS[state.view];
 
   let view;
   try {
     switch (state.view) {
-      case 'admin':     view = await viewAdmin();    break;
+      case 'admin':     view = await viewAdmin();     break;
       case 'dashboard': view = await viewDashboard(); break;
-      case 'calls':     view = await viewCalls();    break;
-      case 'messages':  view = await viewMessages(); break;
-      case 'contacts':  view = await viewContacts(); break;
-      case 'settings':  view = await viewSettings(); break;
+      case 'sales':     view = await viewSales();     break;
+      case 'calls':     view = await viewCalls();     break;
+      case 'messages':  view = await viewMessages();  break;
+      case 'analytics': view = await viewAnalytics(); break;
+      case 'contacts':  view = await viewContacts();  break;
+      case 'settings':  view = await viewSettings();  break;
       default:          view = await viewDashboard();
     }
   } catch (e) {
@@ -2102,6 +2780,20 @@ function ge8BuildRealtimeChannel(sb, clientId) {
         const when = b.starts_at ? new Date(b.starts_at).toLocaleString() : 'soon';
         notify('New booking', `Confirmed for ${when}`);
         if (state.view === 'dashboard') {
+          try { render(); } catch {}
+        }
+      })
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'sales', filter: `client_id=eq.${clientId}` },
+      (payload) => {
+        const s = payload.new || {};
+        console.log('[realtime] sale INSERT', s);
+        if (s.payment_status === 'paid') {
+          notify('New Sale!', `$${Number(s.amount || 0).toFixed(2)} — ${s.customer_name || 'New customer'}`);
+          state.newSaleIds = state.newSaleIds || new Set();
+          state.newSaleIds.add(s.id);
+        }
+        if (state.view === 'sales' || state.view === 'dashboard' || state.view === 'analytics') {
           try { render(); } catch {}
         }
       })

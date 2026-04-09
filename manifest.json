@@ -28,6 +28,13 @@
       "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     },
     {
+      "name": "Sales",
+      "short_name": "Sales",
+      "description": "Products and sales tracker",
+      "url": "/?view=sales",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
       "name": "Calls",
       "short_name": "Calls",
       "description": "AI voice answer log",
@@ -39,6 +46,13 @@
       "short_name": "Messages",
       "description": "SMS conversations",
       "url": "/?view=messages",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Analytics",
+      "short_name": "Analytics",
+      "description": "Performance metrics and funnel data",
+      "url": "/?view=analytics",
       "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
     }
   ]
