@@ -2039,33 +2039,104 @@ async function notify(title, body) {
   else new Notification(title, opts);
 }
 
-async function startRealtime() {
-  if (realtimeChannel || !state.client?.id) return;
-  const sb = await ensureSupabaseBrowser();
-  if (!sb) return;
-  const clientId = state.client.id;
-  realtimeChannel = sb.channel('portal-' + clientId)
+// Build the actual channel. Extracted so we can rebuild it on foreground
+// without duplicating the handler wiring.
+function ge8BuildRealtimeChannel(sb, clientId) {
+  // Unique channel name per subscription (suffix with Date.now) so that a
+  // previous, half-dead channel on the Supabase server can't collide with
+  // the fresh one we're about to subscribe.
+  return sb.channel(`portal-${clientId}-${Date.now()}`)
     .on('postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'leads', filter: `client_id=eq.${clientId}` },
       (payload) => {
         const l = payload.new || {};
+        console.log('[realtime] lead INSERT', l);
         notify('New lead', `${l.name || 'Someone'} just came in${l.source ? ' via ' + l.source : ''}`);
+        // If the user is currently on a view that lists leads, re-run
+        // the view so the new row appears without waiting for a manual
+        // refresh. Cheap: viewDashboard/viewLeads just re-hit the same
+        // REST endpoints the dashboard already polls on mount.
+        if (state.view === 'dashboard' || state.view === 'leads') {
+          try { render(); } catch {}
+        }
       })
     .on('postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'bookings', filter: `client_id=eq.${clientId}` },
       (payload) => {
         const b = payload.new || {};
+        console.log('[realtime] booking INSERT', b);
         const when = b.starts_at ? new Date(b.starts_at).toLocaleString() : 'soon';
         notify('New booking', `Confirmed for ${when}`);
+        if (state.view === 'dashboard') {
+          try { render(); } catch {}
+        }
       })
-    .subscribe();
+    .subscribe((status) => {
+      console.log('[realtime] channel status:', status);
+    });
+}
+
+async function startRealtime() {
+  if (!state.client?.id) return;
+  const sb = await ensureSupabaseBrowser();
+  if (!sb) return;
+  const clientId = state.client.id;
+
+  // Always tear down any existing channel before subscribing fresh. This
+  // is what makes the PWA recover from a backgrounded/killed WebSocket —
+  // iOS and Android kill the socket when the app is backgrounded and
+  // don't restore it on foreground, so we can't just reuse the stale
+  // channel object. Removing it first avoids leaking a dead channel on
+  // the Supabase server.
+  if (realtimeChannel) {
+    try { sb.removeChannel(realtimeChannel); } catch {}
+    realtimeChannel = null;
+  }
+
+  realtimeChannel = ge8BuildRealtimeChannel(sb, clientId);
 }
 
 function stopRealtime() {
   if (realtimeChannel && supabaseBrowser) {
-    supabaseBrowser.removeChannel(realtimeChannel);
+    try { supabaseBrowser.removeChannel(realtimeChannel); } catch {}
     realtimeChannel = null;
   }
+}
+
+// CRITICAL for PWAs: iOS and Android kill WebSockets when the app is
+// backgrounded and don't restore them on foreground. Without the handlers
+// below, the dashboard would silently stop receiving live lead/booking
+// events until the user killed and reopened the PWA. We resubscribe when:
+//   - visibilitychange → visible (standard page-lifecycle)
+//   - pageshow with e.persisted=true (iOS back-forward cache restore,
+//     which doesn't fire visibilitychange)
+//   - online (network dropped and came back)
+// On each of these we also re-render the current view, which refetches
+// the leads list via /api/portal/crm so any rows that arrived while
+// we were backgrounded show up even if Realtime missed them.
+let ge8LifecycleBound = false;
+function ge8BindLifecycleHandlers() {
+  if (ge8LifecycleBound) return;
+  ge8LifecycleBound = true;
+
+  const resync = (reason) => {
+    if (!state.token || !state.client?.id) return;
+    console.log('[realtime]', reason, '— resubscribing + refetching');
+    startRealtime();
+    // Re-run the current view so list data refreshes. Cheap — hits the
+    // existing REST endpoints that the view already uses on mount.
+    if (state.view === 'dashboard' || state.view === 'leads') {
+      try { render(); } catch {}
+    }
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') resync('visible');
+  });
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) resync('pageshow-bfcache');
+  });
+  window.addEventListener('online', () => resync('online'));
 }
 
 // Patch auth lifecycle to start/stop the realtime subscription. We rebind
@@ -2074,7 +2145,10 @@ function stopRealtime() {
 const _origLoadMe = loadMe;
 loadMe = async function patchedLoadMe() {  // eslint-disable-line no-func-assign
   await _origLoadMe();
-  if (state.client?.id) startRealtime();
+  if (state.client?.id) {
+    startRealtime();
+    ge8BindLifecycleHandlers();
+  }
 };
 const _origLogout = logout;
 logout = function patchedLogout() {  // eslint-disable-line no-func-assign
@@ -2084,4 +2158,9 @@ logout = function patchedLogout() {  // eslint-disable-line no-func-assign
 
 // If the user is already signed in on first load, kick off realtime once
 // the initial render finishes hydrating state.client.
-setTimeout(() => { if (state.client?.id) startRealtime(); }, 1500);
+setTimeout(() => {
+  if (state.client?.id) {
+    startRealtime();
+    ge8BindLifecycleHandlers();
+  }
+}, 1500);
