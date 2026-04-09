@@ -1733,18 +1733,26 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
 .sidebar-footer a:hover { color: #00CFFF; border-bottom-color: #00CFFF; }
 
 /* Client logo override — a client logo is usually full-color/photo, so
-   strip the brand gradient background and let it sit on a neutral pad. */
+   strip the brand gradient background and let it sit on a neutral pad.
+   Selectors are made extra-specific (matching .mobile-header explicitly
+   for the mobile-brand variant) so these rules reliably beat the
+   gradient-background rule in the @media (max-width: 880px) block. */
 .brand .logo.client-logo,
-.mobile-brand .logo.client-logo {
-  background: rgba(255, 255, 255, 0.06);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+.mobile-header .mobile-brand .logo.client-logo {
+  background: rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+  /* Make sure a zero-width image child can't collapse the parent before
+     the cross-origin client logo finishes loading on a cold PWA start. */
+  min-width: 32px;
+  min-height: 32px;
 }
 .brand .logo.client-logo img,
-.mobile-brand .logo.client-logo img {
+.mobile-header .mobile-brand .logo.client-logo img {
   width: 80%;
   height: 80%;
   object-fit: contain;
   filter: none;
+  display: block;
 }
 
 /* Panel head: title + small right-aligned hint */

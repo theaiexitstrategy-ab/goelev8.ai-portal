@@ -295,9 +295,43 @@ function shell(content) {
   const clientLogo  = state.client?.logo_url            || meta?.logo_url            || null;
 
   // Header brand: client logo when in a client context, GoElev8 logo otherwise.
-  const makeBrandLogo = () => inClientContext && clientLogo
-    ? el('div', { class: 'logo client-logo' }, el('img', { src: clientLogo, alt: clientName || 'Client logo' }))
-    : el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: 'GoElev8.AI' }));
+  //
+  // The client logo img is intentionally built with:
+  //   - explicit width + height HTML attributes so the browser reserves
+  //     the 32px box even before the cross-origin image finishes loading.
+  //     Without this the <img> briefly collapses to 0×0 on mobile PWAs
+  //     while flex layout is still resolving, and some iOS WebViews never
+  //     re-layout once the image arrives, leaving an invisible logo.
+  //   - loading="eager" + decoding="async" so iOS doesn't defer the
+  //     cross-origin Supabase Storage fetch behind lazy-load heuristics.
+  //   - an onerror fallback that swaps in the GoElev8 brand logo if the
+  //     client logo URL 404s or fails cross-origin, so the header never
+  //     looks broken even if a tenant's logo_url is misconfigured.
+  const makeBrandLogo = () => {
+    if (inClientContext && clientLogo) {
+      const img = el('img', {
+        src: clientLogo,
+        alt: clientName || 'Client logo',
+        width: 32,
+        height: 32,
+        loading: 'eager',
+        decoding: 'async'
+      });
+      img.addEventListener('error', () => {
+        img.src = '/logo.png';
+        img.parentElement?.classList.remove('client-logo');
+      });
+      return el('div', { class: 'logo client-logo' }, img);
+    }
+    return el('div', { class: 'logo' }, el('img', {
+      src: '/logo.png',
+      alt: 'GoElev8.AI',
+      width: 32,
+      height: 32,
+      loading: 'eager',
+      decoding: 'async'
+    }));
+  };
   const brandName = inClientContext ? (clientName || 'GoElev8.AI') : 'GoElev8.AI';
 
   // Install pill — sits in the mobile header next to the brand.

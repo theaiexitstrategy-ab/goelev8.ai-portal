@@ -70,8 +70,14 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
 
-  // Supabase: network only, never cache.
-  if (url.hostname.includes('supabase.co')) {
+  // Supabase APIs (rest / auth / realtime): network-only with a JSON
+  // error fallback when offline. We deliberately EXCLUDE /storage/
+  // requests from this handler — storage is where client logos live,
+  // and wrapping an image request in a JSON error Response on a network
+  // hiccup makes the client logo silently render as a broken icon in
+  // the mobile PWA header. For storage URLs we fall through to the
+  // normal cache-first image strategy below.
+  if (url.hostname.includes('supabase.co') && !url.pathname.startsWith('/storage/')) {
     event.respondWith(
       fetch(request).catch(() =>
         new Response(JSON.stringify({ error: 'Offline - no data available' }), {
