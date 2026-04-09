@@ -44,6 +44,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { requireUser, methodGuard, readJson } from '../lib/auth.js';
 import { sendWelcomeForEvent } from '../lib/welcome.js';
 import { sendArtistInquirySms, notifyOwnerNewInquiry } from '../lib/islay-sms.js';
+import { scheduleNudgeSequence } from '../lib/nudge-sms.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -387,12 +388,30 @@ async function handleLead(req, res) {
     }
   }
 
+  // ── Nudge sequence: fire the 5-message SMS drip for new leads ──
+  let nudgeResult = { sent: false, reason: 'skipped' };
+  if (phone) {
+    try {
+      const { data: fullClient } = await supabaseAdmin
+        .from('clients').select('*').eq('id', client.id).single();
+      if (fullClient) {
+        nudgeResult = await scheduleNudgeSequence({
+          client: fullClient,
+          lead: { name, phone, email, source, funnel }
+        });
+      }
+    } catch (e) {
+      nudgeResult = { sent: false, reason: 'exception: ' + (e.message || e) };
+    }
+  }
+
   return res.status(200).json({
     ok: true,
     lead_id: inserted?.id,
     artist_inquiry_id: artistInquiryId,
     client_id: client.id,
     tags,
+    nudge: nudgeResult,
     notification: {
       title: 'New Lead',
       body: `${insertRow.name} just came in${source ? ' from ' + source : ''}`,
