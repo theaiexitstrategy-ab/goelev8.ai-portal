@@ -3,7 +3,7 @@
 // Bump CACHE_NAME whenever the asset strategy changes — the activate
 // handler deletes any cache that doesn't match the current name, which
 // is how stale assets get evicted on the next page load.
-const CACHE_NAME = 'goelev8-portal-v6';
+const CACHE_NAME = 'goelev8-portal-v7';
 const OFFLINE_URL = '/offline.html';
 
 // Only truly static, rarely-changing assets get pre-cached. Anything
@@ -174,11 +174,16 @@ self.addEventListener('push', (event) => {
 // Notification click: open relevant page
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.url || '/';
+  const rawUrl = event.notification.data?.url || '/';
+  // Convert shorthand paths like "/sales" to "/?view=sales" for the SPA router
+  const viewMatch = rawUrl.match(/^\/(\w+)$/);
+  const targetUrl = viewMatch && viewMatch[1] !== 'index'
+    ? `/?view=${viewMatch[1]}`
+    : rawUrl;
   event.waitUntil(
     clients.matchAll({ type: 'window' }).then((clientList) => {
       for (const client of clientList) {
-        if (client.url === targetUrl && 'focus' in client) return client.focus();
+        if ('focus' in client) return client.focus();
       }
       if (clients.openWindow) return clients.openWindow(targetUrl);
     })

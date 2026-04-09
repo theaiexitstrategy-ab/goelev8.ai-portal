@@ -1,6 +1,7 @@
 import { stripe } from '../../lib/stripe.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getPack } from '../../lib/credits.js';
+import webpush from 'web-push';
 
 // Disable Vercel body parsing — Stripe needs the raw body for signature verification
 export const config = { api: { bodyParser: false } };
@@ -9,6 +10,39 @@ async function rawBody(req) {
   const chunks = [];
   for await (const c of req) chunks.push(typeof c === 'string' ? Buffer.from(c) : c);
   return Buffer.concat(chunks);
+}
+
+// Send push notification to all subscribed devices for a client
+async function sendPushToClient(clientId, title, body, url = '/sales') {
+  try {
+    if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return;
+    webpush.setVapidDetails(
+      'mailto:support@goelev8.ai',
+      process.env.VAPID_PUBLIC_KEY,
+      process.env.VAPID_PRIVATE_KEY
+    );
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('endpoint, p256dh, auth')
+      .eq('client_id', clientId);
+    if (!subs?.length) return;
+    const payload = JSON.stringify({ title, body, url });
+    for (const sub of subs) {
+      try {
+        await webpush.sendNotification({
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.p256dh, auth: sub.auth }
+        }, payload);
+      } catch (e) {
+        // Remove stale subscriptions (410 Gone or 404)
+        if (e.statusCode === 410 || e.statusCode === 404) {
+          await supabaseAdmin.from('push_subscriptions').delete().eq('endpoint', sub.endpoint);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('push notification error', e);
+  }
 }
 
 export default async function handler(req, res) {
@@ -29,6 +63,8 @@ export default async function handler(req, res) {
         const clientId = session.metadata?.client_id;
         const packId = session.metadata?.pack;
         const pack = getPack(packId);
+
+        // Credit pack purchase
         if (clientId && pack) {
           await supabaseAdmin.rpc('add_credits', { p_client_id: clientId, p_amount: pack.credits });
           await supabaseAdmin.from('credit_ledger').insert({
@@ -39,6 +75,85 @@ export default async function handler(req, res) {
             pack: pack.id,
             amount_cents: pack.priceCents
           });
+        }
+
+        // Product sale — look up by metadata.client or stripe_connected_account_id
+        const saleClientId = session.metadata?.client
+          || session.metadata?.client_id;
+        let resolvedClientId = saleClientId;
+
+        // If no explicit client in metadata, try to match via connected account
+        if (!resolvedClientId && event.account) {
+          const { data: client } = await supabaseAdmin
+            .from('clients').select('id').eq('stripe_connected_account_id', event.account).maybeSingle();
+          if (client) resolvedClientId = client.id;
+        }
+
+        if (resolvedClientId && session.amount_total > 0) {
+          // Look up product by stripe_price_id if available
+          let productId = null;
+          let productName = 'Product';
+          const lineItems = session.line_items?.data || [];
+          const priceId = lineItems[0]?.price?.id || session.metadata?.price_id;
+          if (priceId) {
+            const { data: product } = await supabaseAdmin
+              .from('products')
+              .select('id, name')
+              .eq('client_id', resolvedClientId)
+              .eq('stripe_price_id', priceId)
+              .maybeSingle();
+            if (product) {
+              productId = product.id;
+              productName = product.name;
+            }
+          }
+
+          const amount = session.amount_total / 100;
+          const saleData = {
+            client_id: resolvedClientId,
+            product_id: productId,
+            stripe_session_id: session.id,
+            amount,
+            currency: session.currency || 'usd',
+            customer_name: session.customer_details?.name,
+            customer_email: session.customer_details?.email,
+            customer_phone: session.customer_details?.phone,
+            payment_status: 'paid',
+            source: session.metadata?.source || 'direct'
+          };
+
+          const { data: sale } = await supabaseAdmin
+            .from('sales').insert(saleData).select('id').single();
+
+          if (sale) {
+            await supabaseAdmin.from('sales_events').insert({
+              sale_id: sale.id,
+              event_type: 'created',
+              metadata: { stripe_session_id: session.id }
+            });
+          }
+
+          // GA4 server-side event (fire-and-forget)
+          if (process.env.GA4_MEASUREMENT_ID && process.env.GA4_API_SECRET) {
+            fetch(`https://www.google-analytics.com/mp/collect?measurement_id=${process.env.GA4_MEASUREMENT_ID}&api_secret=${process.env.GA4_API_SECRET}`, {
+              method: 'POST',
+              body: JSON.stringify({
+                client_id: resolvedClientId,
+                events: [{
+                  name: 'purchase',
+                  params: { value: amount, currency: session.currency || 'usd', transaction_id: session.id }
+                }]
+              })
+            }).catch(() => {});
+          }
+
+          // Push notification to client
+          await sendPushToClient(
+            resolvedClientId,
+            'New Sale!',
+            `${productName} — $${amount.toFixed(2)}`,
+            '/sales'
+          );
         }
         break;
       }
@@ -57,6 +172,33 @@ export default async function handler(req, res) {
               ref_id: pi.id,
               pack: pack.id,
               amount_cents: pack.priceCents
+            });
+          }
+        }
+        break;
+      }
+      case 'payment_intent.payment_failed': {
+        // Log failed payment to sales table
+        const pi = event.data.object;
+        const clientId = pi.metadata?.client || pi.metadata?.client_id;
+        if (clientId) {
+          const { data: sale } = await supabaseAdmin.from('sales').insert({
+            client_id: clientId,
+            amount: (pi.amount || 0) / 100,
+            currency: pi.currency || 'usd',
+            customer_email: pi.receipt_email,
+            payment_status: 'failed',
+            source: pi.metadata?.source || 'direct'
+          }).select('id').single();
+
+          if (sale) {
+            await supabaseAdmin.from('sales_events').insert({
+              sale_id: sale.id,
+              event_type: 'failed',
+              metadata: {
+                payment_intent: pi.id,
+                error: pi.last_payment_error?.message
+              }
             });
           }
         }
