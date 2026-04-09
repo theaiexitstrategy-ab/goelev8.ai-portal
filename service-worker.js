@@ -27,19 +27,29 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// Activate: clear old caches AND force any controlled tabs to navigate to
-// themselves. This is what unsticks users whose previous service worker was
-// cache-first and pinned an old broken styles.css/app.js — the new SW takes
-// over via clients.claim(), purges the old cache, then reloads each open
-// tab so it picks up the freshly-fetched assets without the user having to
-// manually hard-refresh.
+// Activate: clear old caches AND, on an upgrade, force any controlled tabs
+// to navigate to themselves. This is what unsticks users whose previous
+// service worker was cache-first and pinned an old broken styles.css/app.js
+// — the new SW takes over via clients.claim(), purges the old cache, then
+// reloads each open tab so it picks up the freshly-fetched assets without
+// the user having to manually hard-refresh.
+//
+// CRITICAL: we MUST distinguish "first install" from "upgrade". On a first
+// install (fresh PWA, no prior SW) there's nothing stale to unstick, and
+// forcing a navigate() here reloads the page mid-interaction while the user
+// is tapping the login form. On iOS PWA standalone that race is exactly the
+// "can't tap the login fields until I force-quit the app" symptom. We detect
+// an upgrade by looking for any cache keys that don't match the current
+// CACHE_NAME — if there are none, this is a first install and we skip the
+// reload entirely.
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const cacheNames = await caches.keys();
-    await Promise.all(
-      cacheNames.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name))
-    );
+    const oldCaches = cacheNames.filter((name) => name !== CACHE_NAME);
+    const isUpgrade = oldCaches.length > 0;
+    await Promise.all(oldCaches.map((name) => caches.delete(name)));
     await self.clients.claim();
+    if (!isUpgrade) return;
     const wins = await self.clients.matchAll({ type: 'window' });
     for (const win of wins) {
       try { await win.navigate(win.url); } catch { /* navigate may be unsupported */ }

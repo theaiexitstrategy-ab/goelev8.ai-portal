@@ -708,6 +708,16 @@ tbody tr:last-child td { border-bottom: none; }
   font-size: 13.5px;
 }
 .login .field { margin-bottom: 14px; }
+.login .field label {
+  /* cursor: pointer + explicit touch-action tells iOS PWA standalone
+     WebView to treat the label as an immediately-clickable element.
+     Without these hints, the first tap after a cold PWA launch is
+     silently eaten on iOS while WKWebView decides whether the element
+     is "interactive". */
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.login .field input { touch-action: manipulation; }
 .login .err {
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.3);

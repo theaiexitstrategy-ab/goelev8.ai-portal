@@ -125,6 +125,9 @@ function renderLogin() {
   const box = el('div', { class: 'box' });
   const errBox = el('div');
   // iOS-friendly input attributes:
+  //   - id + matching <label for> is what makes a tap on the label
+  //     natively focus the input on iOS. Using a JS onclick handler on
+  //     a plain <div> loses the first tap in PWA standalone mode.
   //   - inputmode + autocapitalize/autocorrect avoid the keyboard
   //     fighting with the form
   //   - autocomplete hints let the keychain pre-fill
@@ -134,6 +137,7 @@ function renderLogin() {
   //     during page transition is exactly the race that makes the
   //     keyboard never appear on the first tap on iOS PWA standalone.
   const emailInput = el('input', {
+    id: 'ge8-login-email',
     type: 'email',
     name: 'email',
     placeholder: 'you@example.com',
@@ -146,6 +150,7 @@ function renderLogin() {
     style: 'touch-action: manipulation;'
   });
   const pwInput = el('input', {
+    id: 'ge8-login-password',
     type: 'password',
     name: 'password',
     placeholder: '••••••••',
@@ -156,11 +161,6 @@ function renderLogin() {
     spellcheck: 'false',
     style: 'touch-action: manipulation;'
   });
-
-  // Tapping anywhere on the email field group should focus the input.
-  // Also catches the case where the field <label> is tapped.
-  const focusEmail = () => { try { emailInput.focus(); } catch {} };
-  const focusPw    = () => { try { pwInput.focus();    } catch {} };
 
   const form = el('form', {
     autocomplete: 'on',
@@ -193,12 +193,12 @@ function renderLogin() {
       )
     ),
     errBox,
-    el('div', { class: 'field', onclick: focusEmail },
-      el('label', { onclick: focusEmail }, 'Email'),
+    el('div', { class: 'field' },
+      el('label', { for: 'ge8-login-email' }, 'Email'),
       emailInput
     ),
-    el('div', { class: 'field', onclick: focusPw },
-      el('label', { onclick: focusPw }, 'Password'),
+    el('div', { class: 'field' },
+      el('label', { for: 'ge8-login-password' }, 'Password'),
       pwInput
     ),
     el('button', { class: 'btn', type: 'submit' }, 'Sign in →'),
