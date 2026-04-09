@@ -43,6 +43,7 @@ import crypto from 'node:crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireUser, methodGuard, readJson } from '../lib/auth.js';
 import { sendWelcomeForEvent } from '../lib/welcome.js';
+import { sendArtistInquirySms, notifyOwnerNewInquiry } from '../lib/islay-sms.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -353,9 +354,43 @@ async function handleLead(req, res) {
   // notification + toast to every connected client tab. No extra
   // server-side push fan-out needed.
 
+  // ── iSlay Studios: also create an artist_inquiry row and send SMS ──
+  let artistInquiryId = null;
+  if (slug === 'islay-studios') {
+    try {
+      const { data: inquiry } = await supabaseAdmin.from('artist_inquiries').insert({
+        client_id: client.id,
+        artist_name: (name || 'Unknown').toString().slice(0, 200),
+        artist_phone: phone ? String(phone).slice(0, 32) : null,
+        artist_email: email ? String(email).slice(0, 200) : null,
+        genre: metadata?.genre || null,
+        service_interest: metadata?.service_interest || null,
+        budget_range: metadata?.budget || null,
+        status: 'New',
+        source: source || 'islaystudiosllc.com'
+      }).select('id, artist_name, artist_phone, service_interest').single();
+
+      if (inquiry) {
+        artistInquiryId = inquiry.id;
+        // Load full client for SMS
+        const { data: fullClient } = await supabaseAdmin
+          .from('clients').select('*').eq('id', client.id).single();
+        if (fullClient) {
+          // Send welcome SMS to artist (deduped)
+          sendArtistInquirySms({ client: fullClient, inquiry }).catch(() => {});
+          // Notify owner
+          notifyOwnerNewInquiry({ client: fullClient, inquiry }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.error('[lead/islay] artist_inquiry insert failed:', e.message);
+    }
+  }
+
   return res.status(200).json({
     ok: true,
     lead_id: inserted?.id,
+    artist_inquiry_id: artistInquiryId,
     client_id: client.id,
     tags,
     notification: {

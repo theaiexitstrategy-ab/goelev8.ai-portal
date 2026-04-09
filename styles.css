@@ -2140,3 +2140,192 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
   .sales-search { min-width: unset; }
 }
 
+/* ============================================================
+   TIER FEATURE LOCKING (Part 12)
+   ============================================================ */
+.tier-lock {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 24px;
+  background: var(--bg-glass);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  margin-bottom: 16px;
+}
+.tier-lock-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+.tier-lock-text { flex: 1; }
+.tier-lock-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.tier-lock-desc {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.tier-lock-btn {
+  flex-shrink: 0;
+  background: var(--brand-grad) !important;
+  font-size: 13px !important;
+  padding: 8px 16px !important;
+  text-decoration: none;
+}
+@media (max-width: 600px) {
+  .tier-lock { flex-direction: column; text-align: center; }
+  .tier-lock-btn { width: 100%; text-align: center; }
+}
+
+/* ============================================================
+   ARTIST CONVERSION PIPELINE (Part 4)
+   ============================================================ */
+.pipeline {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.pipeline-stage {
+  min-width: 200px;
+  flex: 1;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  transition: border-color 0.2s;
+}
+.pipeline-stage.drag-over {
+  border-color: var(--brand-1);
+  background: rgba(0, 207, 255, 0.05);
+}
+.pipeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.pipeline-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+}
+.pipeline-count { display: flex; align-items: baseline; gap: 4px; }
+.pipeline-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.pipeline-value { font-size: 12px; }
+.pipeline-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 40px;
+}
+
+/* Stage header color accents */
+.stage-new .pipeline-title { color: var(--info); }
+.stage-contacted .pipeline-title { color: var(--warning); }
+.stage-booked .pipeline-title { color: #a855f7; }
+.stage-in-studio .pipeline-title { color: var(--brand-1); }
+.stage-converted .pipeline-title { color: var(--success); }
+.stage-lost .pipeline-title { color: var(--danger); }
+
+/* Artist cards */
+.artist-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  cursor: grab;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.artist-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+.artist-card:active { cursor: grabbing; }
+.artist-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.artist-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.artist-card-service,
+.artist-card-budget {
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.artist-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.artist-card-actions {
+  display: flex;
+  gap: 4px;
+}
+.artist-card-actions .btn {
+  font-size: 11px !important;
+  padding: 3px 8px !important;
+}
+
+/* Genre badges */
+.genre-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+/* Artist detail grid */
+.artist-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  font-size: 14px;
+  margin-top: 12px;
+}
+@media (max-width: 600px) {
+  .artist-detail-grid { grid-template-columns: 1fr; }
+}
+
+/* Booking total display */
+.booking-total {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--success);
+  padding: 8px 0;
+}
+
+/* Pipeline panel */
+.pipeline-panel { overflow: visible; }
+
+@media (max-width: 767px) {
+  .pipeline {
+    flex-direction: column;
+  }
+  .pipeline-stage {
+    min-width: unset;
+  }
+}
+

@@ -7,7 +7,8 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 const PATCH_SELECT =
   'id, name, slug, twilio_phone_number, credit_balance, billing_paused, ' +
   'auto_reload_enabled, auto_reload_threshold, auto_reload_pack, ' +
-  'stripe_connected_account_id, welcome_sms_enabled, welcome_sms_template';
+  'stripe_connected_account_id, welcome_sms_enabled, welcome_sms_template, ' +
+  'business_name, conversion_label, tier, vapi_assistant_id, logo_url, brand_color';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'PATCH'])) return;
@@ -57,6 +58,7 @@ export default async function handler(req, res) {
     if (t.length > 1600) return res.status(400).json({ error: 'template_too_long' });
     patch.welcome_sms_template = t || null;
   }
+  if (typeof body.conversion_label === 'string') patch.conversion_label = body.conversion_label.trim() || null;
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ error: 'nothing_to_update' });
   }
