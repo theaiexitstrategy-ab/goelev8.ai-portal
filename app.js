@@ -1,3 +1,4 @@
+// © 2026 GoElev8.ai | Aaron Bryant. All rights reserved. Unauthorized use prohibited.
 // GoElev8.ai Portal — vanilla JS SPA
 // State + router + views.
 
@@ -88,6 +89,7 @@ function renderLogin() {
         localStorage.setItem('ge8_token', r.access_token);
         state.token = r.access_token;
         await loadMe();
+        if (typeof gtag === 'function') gtag('event', 'client_login', { client_name: state.client?.name || '' });
         render();
       } catch (err) {
         errBox.innerHTML = `<div class="err">${err.message || 'Login failed'}</div>`;
@@ -133,7 +135,8 @@ const TAB_LABELS = {
   connect:   'Payments (Connect)',
   settings:  'Settings',
   blasts:    'SMS Blasts',
-  nudges:    'Nudges'
+  nudges:    'Nudges',
+  analytics: 'Analytics'
 };
 
 const TAB_ICONS = {
@@ -148,7 +151,8 @@ const TAB_ICONS = {
   connect:   '💰',
   settings:  '⚙️',
   blasts:    '📣',
-  nudges:    '⚡'
+  nudges:    '⚡',
+  analytics: '📈'
 };
 
 const DEFAULT_TABS = ['overview','activity','messages','contacts','leads','calls','bookings','billing','connect','settings'];
@@ -176,7 +180,9 @@ function shell(content) {
     : null;
 
   const tabs = state.client?.portal_tabs || DEFAULT_TABS;
-  const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
+  const isGlobalAdmin = state.user?.email === 'ab@goelev8.ai';
+  const sidebarTabs = isGlobalAdmin ? [...tabs, 'analytics'] : tabs;
+  const navButtons = sidebarTabs.map(id => navBtn(id, TAB_LABELS[id] || id));
 
   const logoSrc = state.client?.logo_url || '/logo.png';
   const brandName = state.client?.portal_tabs ? (state.client.name || 'Client Portal') : 'GoElev8.AI';
@@ -414,6 +420,7 @@ function openContactModal(initial = null) {
 // BOOKINGS
 // ============================================================
 async function viewBookings() {
+  if (typeof gtag === 'function') gtag('event', 'booking_viewed', { client_name: state.client?.name || '' });
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Bookings'),
@@ -493,6 +500,7 @@ async function openBookingModal() {
 // LEADS
 // ============================================================
 async function viewLeads() {
+  if (typeof gtag === 'function') gtag('event', 'lead_viewed', { client_name: state.client?.name || '' });
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Leads'),
@@ -538,6 +546,7 @@ async function viewLeads() {
 // VOICE CALLS (Vapi)
 // ============================================================
 async function viewCalls() {
+  if (typeof gtag === 'function') gtag('event', 'call_log_viewed', { client_name: state.client?.name || '' });
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Voice Calls'),
@@ -1392,6 +1401,89 @@ async function viewAdmin() {
 }
 
 // ============================================================
+// ANALYTICS (admin-only — ab@goelev8.ai)
+// ============================================================
+function viewAnalytics() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Analytics'),
+    el('div', { class: 'muted' }, 'Portal usage tracked by Google Analytics GA4')
+  ));
+
+  // Event summary cards
+  const events = [
+    { label: 'Leads Viewed',     event: 'lead_viewed',     icon: '👥' },
+    { label: 'Bookings Viewed',  event: 'booking_viewed',  icon: '📅' },
+    { label: 'Call Logs Viewed',  event: 'call_log_viewed', icon: '📞' },
+    { label: 'Client Logins',    event: 'client_login',    icon: '🔐' }
+  ];
+
+  const cards = el('div', { class: 'cards' });
+  events.forEach(e => {
+    const card = el('div', { class: 'card' },
+      el('div', { class: 'label' }, e.icon + ' ' + e.label),
+      el('div', { class: 'value', id: 'ga-' + e.event }, '—'),
+      el('div', { class: 'sub muted' }, 'Event: ' + e.event)
+    );
+    cards.appendChild(card);
+  });
+  wrap.appendChild(cards);
+
+  // Sessions & Page Views panel
+  const metricsPanel = el('div', { class: 'panel' });
+  metricsPanel.appendChild(el('h2', {}, 'Sessions & Page Views'));
+  metricsPanel.appendChild(el('p', { class: 'muted' },
+    'Real-time data available in your ',
+    el('a', { href: 'https://analytics.google.com/analytics/web/#/p/G-07Y6KTRES2', target: '_blank', style: 'color: var(--accent, #2D9CDB)' }, 'Google Analytics dashboard'),
+    '. Custom events are sent on each page view and interaction.'
+  ));
+
+  const metricsGrid = el('div', { class: 'cards', style: 'margin-top:16px' });
+  metricsGrid.appendChild(el('div', { class: 'card' },
+    el('div', { class: 'label' }, '📊 Total Sessions'),
+    el('div', { class: 'value' }, '—'),
+    el('div', { class: 'sub muted' }, 'See GA4 dashboard')
+  ));
+  metricsGrid.appendChild(el('div', { class: 'card' },
+    el('div', { class: 'label' }, '📄 Page Views'),
+    el('div', { class: 'value' }, '—'),
+    el('div', { class: 'sub muted' }, 'See GA4 dashboard')
+  ));
+  metricsPanel.appendChild(metricsGrid);
+  wrap.appendChild(metricsPanel);
+
+  // Client breakdown panel
+  const clientPanel = el('div', { class: 'panel' });
+  clientPanel.appendChild(el('h2', {}, 'Event Tracking by Client'));
+  const trackingTable = el('table', {},
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'Event'),
+      el('th', {}, 'Parameter'),
+      el('th', {}, 'Description')
+    )),
+    el('tbody', {},
+      ...events.map(e => el('tr', {},
+        el('td', {}, el('code', { style: 'color:var(--accent,#2D9CDB)' }, e.event)),
+        el('td', {}, 'client_name'),
+        el('td', {}, e.label + ' — sent with the active client name for per-tenant breakdown')
+      ))
+    )
+  );
+  clientPanel.appendChild(trackingTable);
+  clientPanel.appendChild(el('p', { class: 'muted', style: 'margin-top:12px;font-size:0.8rem' },
+    'Use GA4 → Explore → Free Form to build reports filtering by client_name parameter.'
+  ));
+  wrap.appendChild(clientPanel);
+
+  // Powered by
+  wrap.appendChild(el('div', { style: 'text-align:center;padding:24px 0;font-size:0.75rem;color:var(--text-dim,#94a3b8)' },
+    'Powered by Google Analytics'
+  ));
+
+  return wrap;
+}
+
+// ============================================================
 // ROUTER / RENDER
 // ============================================================
 async function render() {
@@ -1436,6 +1528,7 @@ async function render() {
       case 'blasts':    view = await viewBlasts(); break;
       case 'nudges':    view = await viewNudges(); break;
       case 'settings':  view = viewSettings(); break;
+      case 'analytics': view = state.user?.email === 'ab@goelev8.ai' ? viewAnalytics() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
   } catch (e) {
