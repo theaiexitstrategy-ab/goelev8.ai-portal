@@ -31,6 +31,29 @@
 <body>
 <div id="app"></div>
 <script>
+// Force-clear stale service worker caches on every load
+(function(){
+  var APP_VERSION = 10;
+  var vKey = 'ge8_app_v';
+  var lastV = parseInt(localStorage.getItem(vKey) || '0', 10);
+  if (lastV < APP_VERSION) {
+    localStorage.setItem(vKey, String(APP_VERSION));
+    // Nuke all caches
+    if ('caches' in window) {
+      caches.keys().then(function(names) {
+        names.forEach(function(n) { caches.delete(n); });
+      });
+    }
+    // Unregister all service workers
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        regs.forEach(function(r) { r.unregister(); });
+      });
+    }
+    // Hard reload to fetch fresh everything
+    if (lastV > 0) { window.location.reload(true); return; }
+  }
+})();
 // Client routing: redirect /islaystudios to the iSlay portal
 (function() {
   var path = window.location.pathname;
