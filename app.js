@@ -166,7 +166,30 @@ function shell(content) {
   const logoSrc = state.client?.logo_url || '/logo.png';
   const brandName = state.client?.portal_tabs ? (state.client.name || 'Client Portal') : 'GoElev8.AI';
 
-  return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') },
+  // Bottom nav buttons for mobile
+  const bottomNav = state.client
+    ? el('nav', { class: 'bottom-nav' },
+        ...tabs.map(id => {
+          const label = TAB_LABELS[id] || id;
+          return el('button', {
+            class: 'bnav-btn' + (state.view === id ? ' active' : ''),
+            onclick: () => { state.view = id; render(); }
+          }, el('div', { class: 'bnav-dot' }), label);
+        })
+      )
+    : null;
+
+  // iOS install banner
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const installBanner = (isIOS && !isStandalone && !sessionStorage.getItem('pwa_dismissed'))
+    ? el('div', { class: 'install-banner' },
+        el('span', {}, 'Tap ', el('strong', {}, '⎙ Share'), ' then ', el('strong', {}, 'Add to Home Screen')),
+        el('button', { class: 'btn', onclick: () => { sessionStorage.setItem('pwa_dismissed', '1'); render(); } }, '✕')
+      )
+    : null;
+
+  return el('div', { class: 'app has-bottom-nav' + (state.isAdmin ? ' is-admin' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
         el('div', { class: 'logo' }, el('img', { src: logoSrc, alt: '' })),
@@ -185,7 +208,9 @@ function shell(content) {
       adminSection,
       el('button', { class: 'signout', onclick: logout }, 'Sign out')
     ),
-    el('main', { class: 'main' }, banner, content)
+    el('main', { class: 'main' }, banner, content),
+    bottomNav,
+    installBanner
   );
 }
 
