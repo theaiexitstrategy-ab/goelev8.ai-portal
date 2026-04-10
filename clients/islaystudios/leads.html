@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>iSlay Studios — Leads</title>
 <link rel="icon" href="/icon-192.png" />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./portal.css" />
 </head>
 <body>
@@ -15,16 +14,47 @@
   <div class="main">
     <div class="topbar">
       <div>
-        <h1>Leads</h1>
-        <div class="sub">Manage your incoming leads</div>
+        <h1>LEADS</h1>
+        <div class="sub">Artist inquiries</div>
       </div>
     </div>
 
-    <div class="panel">
-      <div id="leads-table">
-        <div class="skeleton" style="height:300px"></div>
+    <!-- Stats strip -->
+    <div class="stats-strip" id="stats-strip">
+      <div class="stat-col">
+        <div class="stat-value" id="stat-views">—</div>
+        <div class="stat-label">PAGE VIEWS</div>
+      </div>
+      <div class="stat-col">
+        <div class="stat-value" id="stat-submissions">—</div>
+        <div class="stat-label">SUBMISSIONS</div>
+      </div>
+      <div class="stat-col">
+        <div class="stat-value" id="stat-conversion">—</div>
+        <div class="stat-label">CONVERSION</div>
       </div>
     </div>
+
+    <!-- Filter pills -->
+    <div class="filter-pills" id="filter-pills">
+      <button class="pill active" data-filter="all" onclick="setFilter('all')">All</button>
+      <button class="pill" data-filter="New" onclick="setFilter('New')">New</button>
+      <button class="pill" data-filter="Contacted" onclick="setFilter('Contacted')">Contacted</button>
+      <button class="pill" data-filter="Booked" onclick="setFilter('Booked')">Booked</button>
+    </div>
+
+    <!-- Lead list -->
+    <div id="lead-list">
+      <div class="skeleton" style="height:300px;border-radius:12px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Lead detail drawer -->
+<div id="drawer-overlay" class="drawer-overlay" style="display:none" onclick="closeDrawer()">
+  <div class="drawer" onclick="event.stopPropagation()">
+    <div class="drawer-handle"></div>
+    <div id="drawer-content"></div>
   </div>
 </div>
 
@@ -33,6 +63,38 @@
 initShell('leads');
 
 var allLeads = [];
+var activeFilter = 'all';
+var viewCount = 0;
+
+// Load leads + stats in parallel
+(async function init() {
+  await Promise.all([loadLeads(), loadStats()]);
+})();
+
+async function loadStats() {
+  try {
+    var data = await api('/api/portal/dashboard');
+    var submissions = data.totalLeads || 0;
+    document.getElementById('stat-submissions').textContent = submissions;
+
+    // Load funnel views (auth-scoped, no client_id param needed)
+    try {
+      var viewRes = await api('/api/portal/funnel-views');
+      viewCount = viewRes.count || 0;
+    } catch(e) { /* funnel_views table may not exist yet */ }
+
+    document.getElementById('stat-views').textContent = viewCount || '—';
+
+    if (viewCount > 0 && submissions > 0) {
+      document.getElementById('stat-conversion').textContent =
+        ((submissions / viewCount) * 100).toFixed(1) + '%';
+    } else {
+      document.getElementById('stat-conversion').textContent = '—';
+    }
+  } catch (err) {
+    // Stats strip stays at defaults
+  }
+}
 
 async function loadLeads() {
   try {
@@ -40,65 +102,157 @@ async function loadLeads() {
     allLeads = data.leads || [];
     renderLeads();
   } catch (err) {
-    document.getElementById('leads-table').innerHTML =
+    document.getElementById('lead-list').innerHTML =
       '<div class="empty">Failed to load leads.</div>';
   }
 }
 
-function statusBadge(status) {
-  var cls = 'badge';
+function setFilter(filter) {
+  activeFilter = filter;
+  var pills = document.querySelectorAll('.pill');
+  pills.forEach(function(p) {
+    p.className = p.getAttribute('data-filter') === filter ? 'pill active' : 'pill';
+  });
+  renderLeads();
+}
+
+function getFilteredLeads() {
+  if (activeFilter === 'all') return allLeads;
+  return allLeads.filter(function(l) {
+    return (l.lead_status || '').toLowerCase() === activeFilter.toLowerCase();
+  });
+}
+
+function statusBadgeClass(status) {
   switch ((status || '').toLowerCase()) {
-    case 'new':       cls += ' gold'; break;
-    case 'contacted': cls += ' blue'; break;
-    case 'booked':    cls += ' green'; break;
-    case 'no show':   cls += ' red'; break;
+    case 'new':       return 'badge-new';
+    case 'contacted': return 'badge-contacted';
+    case 'booked':    return 'badge-booked';
+    default:          return '';
   }
-  return '<span class="' + cls + '">' + (status || '—') + '</span>';
 }
 
 function renderLeads() {
+  var leads = getFilteredLeads();
+
   if (!allLeads.length) {
-    document.getElementById('leads-table').innerHTML =
-      '<div class="empty">No leads yet.</div>';
+    document.getElementById('lead-list').innerHTML =
+      '<div class="leads-empty">' +
+        '<div class="leads-empty-icon">🎵</div>' +
+        '<div class="leads-empty-title">No artist inquiries yet.</div>' +
+        '<div class="leads-empty-sub">Share your booking link to start capturing leads.</div>' +
+        '<div class="leads-empty-url" onclick="copyFunnelUrl()">' +
+          '<span>islaystudiosllc.com</span>' +
+          '<span class="copy-icon">📋</span>' +
+        '</div>' +
+      '</div>';
     return;
   }
 
-  var rows = allLeads.map(function(l) {
-    return '<tr data-id="' + l.id + '">' +
-      '<td>' + formatDateTime(l.date_entered || l.created_at) + '</td>' +
-      '<td>' + (l.full_name || '—') + '</td>' +
-      '<td>' + (l.phone || '—') + '</td>' +
-      '<td>' + (l.email || '—') + '</td>' +
-      '<td>' + (l.artist_selected || '—') + '</td>' +
-      '<td>' + (l.lead_source || '—') + '</td>' +
-      '<td>' + statusBadge(l.lead_status) + '</td>' +
-      '<td>' +
-        '<select class="status-select" onchange="changeStatus(\'' + l.id + '\', this.value)">' +
-          '<option value="">Change...</option>' +
-          '<option value="New"' + (l.lead_status === 'New' ? ' selected' : '') + '>New</option>' +
-          '<option value="Contacted"' + (l.lead_status === 'Contacted' ? ' selected' : '') + '>Contacted</option>' +
-          '<option value="Booked"' + (l.lead_status === 'Booked' ? ' selected' : '') + '>Booked</option>' +
-          '<option value="No Show"' + (l.lead_status === 'No Show' ? ' selected' : '') + '>No Show</option>' +
-        '</select> ' +
-        '<button class="btn btn-danger btn-sm" onclick="deleteLead(\'' + l.id + '\')">Delete</button>' +
-      '</td>' +
-    '</tr>';
+  if (!leads.length) {
+    document.getElementById('lead-list').innerHTML =
+      '<div class="empty">No leads match this filter.</div>';
+    return;
+  }
+
+  var html = leads.map(function(l) {
+    var badgeCls = statusBadgeClass(l.lead_status);
+    return '<div class="lead-row" onclick="openDrawer(\'' + l.id + '\')">' +
+      '<div class="lead-row-left">' +
+        '<div class="lead-name">' + (l.full_name || 'Unknown') + '</div>' +
+        '<div class="lead-phone">' + (l.phone || 'No phone') + '</div>' +
+      '</div>' +
+      '<div class="lead-row-right">' +
+        '<div class="lead-date">' + formatDate(l.date_entered || l.created_at) + '</div>' +
+        '<span class="lead-badge ' + badgeCls + '">' + (l.lead_status || '—') + '</span>' +
+      '</div>' +
+    '</div>';
   }).join('');
 
-  document.getElementById('leads-table').innerHTML =
-    '<table><thead><tr>' +
-      '<th>When</th><th>Name</th><th>Phone</th><th>Email</th><th>Artist</th><th>Source</th><th>Status</th><th>Actions</th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table>';
+  document.getElementById('lead-list').innerHTML = html;
+}
+
+function copyFunnelUrl() {
+  navigator.clipboard.writeText('islaystudiosllc.com').then(function() {
+    toast('URL copied!');
+  }).catch(function() {});
+}
+
+// --- Drawer ---
+function openDrawer(id) {
+  var lead = allLeads.find(function(l) { return l.id === id; });
+  if (!lead) return;
+
+  var statuses = ['New', 'Contacted', 'Booked'];
+  var statusHtml = statuses.map(function(s) {
+    var active = (lead.lead_status || '').toLowerCase() === s.toLowerCase();
+    var cls = 'drawer-status-btn' + (active ? ' active' : '');
+    return '<button class="' + cls + '" onclick="changeStatus(\'' + id + '\', \'' + s + '\')">' + s + '</button>';
+  }).join('');
+
+  document.getElementById('drawer-content').innerHTML =
+    '<div class="drawer-name">' + (lead.full_name || 'Unknown') + '</div>' +
+    '<div class="drawer-details">' +
+      '<div class="drawer-detail-row"><span class="drawer-label">Phone</span><span>' + (lead.phone || '—') + '</span></div>' +
+      '<div class="drawer-detail-row"><span class="drawer-label">Email</span><span>' + (lead.email || '—') + '</span></div>' +
+      '<div class="drawer-detail-row"><span class="drawer-label">Date</span><span>' + formatDate(lead.date_entered || lead.created_at) + '</span></div>' +
+      (lead.artist_selected ? '<div class="drawer-detail-row"><span class="drawer-label">Artist</span><span>' + lead.artist_selected + '</span></div>' : '') +
+      (lead.lead_source ? '<div class="drawer-detail-row"><span class="drawer-label">Source</span><span>' + lead.lead_source + '</span></div>' : '') +
+    '</div>' +
+    '<div class="drawer-section">' +
+      '<div class="drawer-section-label">STATUS</div>' +
+      '<div class="drawer-status-group">' + statusHtml + '</div>' +
+    '</div>' +
+    '<div class="drawer-section" id="drawer-nudges">' +
+      '<div class="drawer-section-label">NUDGE SEQUENCE</div>' +
+      '<div class="drawer-nudge-list" id="nudge-status-list"><div class="skeleton" style="height:60px;border-radius:6px"></div></div>' +
+    '</div>' +
+    '<button class="btn btn-primary drawer-msg-btn" onclick="goToMessages(\'' + id + '\')" style="font-family:var(--font-heading);letter-spacing:1px">' +
+      'SEND MESSAGE →' +
+    '</button>';
+
+  document.getElementById('drawer-overlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+
+  // Load nudge status for this lead
+  loadNudgeStatus(id);
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+async function loadNudgeStatus(leadId) {
+  var container = document.getElementById('nudge-status-list');
+  try {
+    // Try nudge_log — may not have data yet
+    var data = await api('/api/portal/nudges');
+    var nudges = data.nudges || [];
+    if (!nudges.length) {
+      container.innerHTML = '<div style="color:var(--muted);font-size:0.75rem">No nudge sequence configured.</div>';
+      return;
+    }
+    var html = nudges.map(function(n) {
+      // We don't have per-lead nudge log data yet, show template status
+      return '<div class="nudge-status-row">' +
+        '<span class="nudge-dot">⏳</span>' +
+        '<span class="nudge-msg-label">Message ' + n.message_number + '</span>' +
+        '<span class="nudge-msg-status">Pending</span>' +
+      '</div>';
+    }).join('');
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = '<div style="color:var(--muted);font-size:0.75rem">Unable to load nudge status.</div>';
+  }
 }
 
 async function changeStatus(id, status) {
-  if (!status) return;
   try {
     await api('/api/portal/leads', {
       method: 'PATCH',
       body: { id: id, lead_status: status }
     });
-    // Update local data
     for (var i = 0; i < allLeads.length; i++) {
       if (allLeads[i].id === id) {
         allLeads[i].lead_status = status;
@@ -106,41 +260,222 @@ async function changeStatus(id, status) {
       }
     }
     renderLeads();
+    openDrawer(id); // Re-render drawer with updated status
     toast('Status updated');
   } catch (err) {
     toast(err.message, true);
   }
 }
 
-async function deleteLead(id) {
-  if (!confirm('Delete this lead?')) return;
-  try {
-    await api('/api/portal/leads', {
-      method: 'DELETE',
-      body: { id: id }
-    });
-    allLeads = allLeads.filter(function(l) { return l.id !== id; });
-    renderLeads();
-    toast('Lead deleted');
-  } catch (err) {
-    toast(err.message, true);
-  }
+function goToMessages(leadId) {
+  closeDrawer();
+  window.location.href = '/islaystudios/messages?lead_id=' + leadId;
 }
-
-loadLeads();
 </script>
 <style>
-.status-select {
-  background: #1a2236;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  font-size: 0.7rem;
-  padding: 4px 6px;
-  outline: none;
-  cursor: pointer;
+/* Stats strip */
+.stats-strip {
+  display:grid;
+  grid-template-columns:1fr 1fr 1fr;
+  gap:1px;
+  background:var(--border);
+  border:1px solid var(--border);
+  border-radius:12px;
+  overflow:hidden;
+  margin-bottom:20px;
 }
-.status-select:focus { border-color: var(--gold); }
+.stat-col {
+  background:var(--card);
+  padding:16px 12px;
+  text-align:center;
+}
+.stat-value {
+  font-family:var(--font-heading);
+  font-size:2rem;
+  color:var(--gold);
+  line-height:1;
+}
+.stat-label {
+  font-family:var(--font-body);
+  font-size:0.65rem;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:0.5px;
+  margin-top:4px;
+}
+
+/* Filter pills */
+.filter-pills {
+  display:flex;
+  gap:8px;
+  margin-bottom:16px;
+  flex-wrap:wrap;
+}
+.pill {
+  padding:6px 16px;
+  border-radius:20px;
+  border:1px solid var(--border);
+  background:var(--card);
+  color:var(--muted);
+  font-size:0.8rem;
+  font-weight:500;
+  cursor:pointer;
+  transition:all 0.15s;
+  font-family:var(--font-body);
+}
+.pill:hover { border-color:var(--gold); color:var(--text); }
+.pill.active {
+  background:var(--gold);
+  color:#000;
+  border-color:var(--gold);
+  font-weight:600;
+}
+
+/* Lead rows */
+.lead-row {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:14px 16px;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:10px;
+  margin-bottom:8px;
+  cursor:pointer;
+  transition:border-color 0.15s;
+}
+.lead-row:hover { border-color:var(--gold); }
+.lead-row:active { background:rgba(201,168,76,0.06); }
+.lead-row-left { min-width:0; flex:1; }
+.lead-name { font-weight:600; font-size:0.9rem; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.lead-phone { font-size:0.75rem; color:var(--muted); margin-top:2px; }
+.lead-row-right { text-align:right; flex-shrink:0; margin-left:12px; }
+.lead-date { font-size:0.7rem; color:var(--muted); margin-bottom:4px; }
+.lead-badge { display:inline-block; padding:2px 10px; border-radius:6px; font-size:0.65rem; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; }
+.badge-new { background:rgba(245,158,11,0.15); color:#F59E0B; }
+.badge-contacted { background:rgba(0,212,255,0.15); color:#00d4ff; }
+.badge-booked { background:rgba(201,168,76,0.15); color:var(--gold); }
+
+/* Empty state */
+.leads-empty {
+  text-align:center;
+  padding:60px 20px;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:12px;
+}
+.leads-empty-icon { font-size:3rem; margin-bottom:16px; }
+.leads-empty-title { font-size:1rem; font-weight:600; margin-bottom:6px; }
+.leads-empty-sub { font-size:0.8rem; color:var(--muted); margin-bottom:20px; }
+.leads-empty-url {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 16px;
+  background:#1a2236;
+  border:1px solid var(--border);
+  border-radius:8px;
+  font-size:0.8rem;
+  color:var(--gold);
+  cursor:pointer;
+  transition:border-color 0.15s;
+}
+.leads-empty-url:hover { border-color:var(--gold); }
+.copy-icon { font-size:0.9rem; }
+
+/* Drawer */
+.drawer-overlay {
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.6);
+  z-index:999;
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+}
+.drawer {
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:16px 16px 0 0;
+  width:100%;
+  max-width:480px;
+  max-height:85vh;
+  overflow-y:auto;
+  padding:16px 20px 24px;
+  animation:slideUp 0.25s ease;
+}
+@keyframes slideUp {
+  from { transform:translateY(100%); }
+  to { transform:translateY(0); }
+}
+.drawer-handle {
+  width:40px;
+  height:4px;
+  background:var(--border);
+  border-radius:2px;
+  margin:0 auto 16px;
+}
+.drawer-name {
+  font-family:var(--font-heading);
+  font-size:1.5rem;
+  color:var(--text);
+  letter-spacing:0.5px;
+  margin-bottom:16px;
+}
+.drawer-details { margin-bottom:20px; }
+.drawer-detail-row {
+  display:flex;
+  justify-content:space-between;
+  padding:8px 0;
+  border-bottom:1px solid rgba(255,255,255,0.04);
+  font-size:0.8rem;
+}
+.drawer-label { color:var(--muted); }
+.drawer-section { margin-bottom:20px; }
+.drawer-section-label {
+  font-size:0.65rem;
+  font-weight:600;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:0.5px;
+  margin-bottom:10px;
+}
+.drawer-status-group { display:flex; gap:8px; }
+.drawer-status-btn {
+  flex:1;
+  padding:8px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:transparent;
+  color:var(--muted);
+  font-size:0.75rem;
+  font-weight:600;
+  cursor:pointer;
+  transition:all 0.15s;
+  font-family:var(--font-body);
+}
+.drawer-status-btn:hover { border-color:var(--gold); color:var(--text); }
+.drawer-status-btn.active {
+  background:var(--gold);
+  color:#000;
+  border-color:var(--gold);
+}
+.nudge-status-row {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 0;
+  font-size:0.75rem;
+}
+.nudge-dot { font-size:0.8rem; }
+.nudge-msg-label { flex:1; color:var(--text); }
+.nudge-msg-status { color:var(--muted); font-size:0.7rem; }
+.drawer-msg-btn {
+  width:100%;
+  padding:12px;
+  font-size:0.95rem;
+  margin-top:8px;
+}
 </style>
 </body>
 </html>
