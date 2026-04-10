@@ -4,7 +4,7 @@
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { sendSms } from '../../lib/twilio.js';
+import { twilioForClient } from '../../lib/twilio.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -51,9 +51,9 @@ export default async function handler(req, res) {
   if (!recipients.length) return res.status(400).json({ error: 'no_recipients_with_phone' });
 
   // Credit gate: check balance BEFORE sending
-  const { data: client } = await supabaseAdmin
-    .from('clients').select('credit_balance').eq('id', clientId).single();
-  const balance = client?.credit_balance ?? 0;
+  const { data: clientRow } = await supabaseAdmin
+    .from('clients').select('credit_balance, twilio_phone_number, twilio_subaccount_sid, twilio_auth_token').eq('id', clientId).single();
+  const balance = clientRow?.credit_balance ?? 0;
   if (balance < recipients.length) {
     return res.status(402).json({
       error: 'insufficient_credits',
@@ -70,10 +70,12 @@ export default async function handler(req, res) {
   let finalMessage = message;
   if (promoCode) finalMessage += `\n\nUse code: ${promoCode}`;
 
+  const tw = twilioForClient(clientRow);
+  const fromNumber = clientRow?.twilio_phone_number;
   let sent = 0, failed = 0;
   for (const lead of recipients) {
     try {
-      await sendSms(lead.phone, finalMessage, clientId);
+      await tw.messages.create({ to: lead.phone, from: fromNumber, body: finalMessage });
       sent++;
     } catch {
       failed++;
