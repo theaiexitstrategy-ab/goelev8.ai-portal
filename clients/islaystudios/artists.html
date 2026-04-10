@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Artists</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css" />
+<style>
+.artist-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:16px; }
+.artist-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; display:flex; flex-direction:column; align-items:center; text-align:center; }
+.artist-card img { width:80px; height:80px; border-radius:50%; object-fit:cover; margin-bottom:12px; border:2px solid var(--border); }
+.artist-avatar-placeholder { width:80px; height:80px; border-radius:50%; background:var(--border); display:flex; align-items:center; justify-content:center; font-size:2rem; margin-bottom:12px; color:var(--muted); }
+.artist-card h3 { font-size:1rem; font-weight:700; margin-bottom:4px; }
+.artist-card .specialty { font-size:0.8rem; color:var(--muted); margin-bottom:8px; }
+.artist-card .booking-link { font-size:0.75rem; color:var(--gold); text-decoration:none; margin-bottom:12px; word-break:break-all; }
+.artist-card .booking-link:hover { text-decoration:underline; }
+.artist-actions { display:flex; gap:6px; margin-top:auto; }
+</style>
+</head>
+<body>
+<button id="menu-toggle">&#9776;</button>
+<div class="portal">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>Artist Roster</h1>
+        <div class="sub">Manage your team of artists</div>
+      </div>
+      <button class="btn btn-primary" onclick="openModal()">+ Add Artist</button>
+    </div>
+
+    <div class="artist-grid" id="artist-grid">
+      <div class="stat-card skeleton" style="height:220px"></div>
+      <div class="stat-card skeleton" style="height:220px"></div>
+      <div class="stat-card skeleton" style="height:220px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-bg" id="modal-bg" style="display:none" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2 id="modal-title">Add Artist</h2>
+    <div class="form-group">
+      <label>Name</label>
+      <input type="text" id="f-name" placeholder="Artist name" />
+    </div>
+    <div class="form-group">
+      <label>Specialty</label>
+      <input type="text" id="f-specialty" placeholder="e.g. Braids, Color, Cuts" />
+    </div>
+    <div class="form-group">
+      <label>Booking URL</label>
+      <input type="url" id="f-booking" placeholder="https://..." />
+    </div>
+    <div class="form-group">
+      <label>Photo URL</label>
+      <input type="url" id="f-photo" placeholder="https://..." />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
+      <button class="btn btn-primary" id="modal-save" onclick="saveArtist()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('artists');
+
+var editingId = null;
+
+async function loadArtists() {
+  try {
+    var data = await api('/api/portal/artists');
+    var artists = data.artists || [];
+    var grid = document.getElementById('artist-grid');
+    if (!artists.length) {
+      grid.innerHTML = '<div class="empty">No artists yet. Click "Add Artist" to get started.</div>';
+      return;
+    }
+    grid.innerHTML = artists.map(function(a) {
+      var avatar = a.photo_url
+        ? '<img src="' + a.photo_url + '" alt="' + a.name + '" />'
+        : '<div class="artist-avatar-placeholder">&#9986;</div>';
+      var link = a.booking_url
+        ? '<a class="booking-link" href="' + a.booking_url + '" target="_blank">Book Now &#8594;</a>'
+        : '';
+      return '<div class="artist-card">' +
+        avatar +
+        '<h3>' + (a.name || '') + '</h3>' +
+        '<div class="specialty">' + (a.specialty || '') + '</div>' +
+        link +
+        '<div class="artist-actions">' +
+          '<button class="btn btn-ghost btn-sm" onclick="editArtist(' + JSON.stringify(JSON.stringify(a)) + ')">Edit</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteArtist(\'' + a.id + '\')">Delete</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch (err) {
+    document.getElementById('artist-grid').innerHTML =
+      '<div class="empty">Failed to load artists.</div>';
+  }
+}
+
+function openModal() {
+  editingId = null;
+  document.getElementById('modal-title').textContent = 'Add Artist';
+  document.getElementById('f-name').value = '';
+  document.getElementById('f-specialty').value = '';
+  document.getElementById('f-booking').value = '';
+  document.getElementById('f-photo').value = '';
+  document.getElementById('modal-bg').style.display = 'flex';
+}
+
+function editArtist(jsonStr) {
+  var a = JSON.parse(jsonStr);
+  editingId = a.id;
+  document.getElementById('modal-title').textContent = 'Edit Artist';
+  document.getElementById('f-name').value = a.name || '';
+  document.getElementById('f-specialty').value = a.specialty || '';
+  document.getElementById('f-booking').value = a.booking_url || '';
+  document.getElementById('f-photo').value = a.photo_url || '';
+  document.getElementById('modal-bg').style.display = 'flex';
+}
+
+function hideModal() {
+  document.getElementById('modal-bg').style.display = 'none';
+  editingId = null;
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modal-bg')) hideModal();
+}
+
+async function saveArtist() {
+  var body = {
+    name: document.getElementById('f-name').value.trim(),
+    specialty: document.getElementById('f-specialty').value.trim(),
+    booking_url: document.getElementById('f-booking').value.trim(),
+    photo_url: document.getElementById('f-photo').value.trim()
+  };
+  if (!body.name) { toast('Name is required', true); return; }
+  try {
+    if (editingId) {
+      body.id = editingId;
+      await api('/api/portal/artists', { method: 'PATCH', body: body });
+      toast('Artist updated');
+    } else {
+      await api('/api/portal/artists', { method: 'POST', body: body });
+      toast('Artist added');
+    }
+    hideModal();
+    loadArtists();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function deleteArtist(id) {
+  if (!confirm('Delete this artist?')) return;
+  try {
+    await api('/api/portal/artists', { method: 'DELETE', body: { id: id } });
+    toast('Artist deleted');
+    loadArtists();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+loadArtists();
+</script>
+</body>
+</html>

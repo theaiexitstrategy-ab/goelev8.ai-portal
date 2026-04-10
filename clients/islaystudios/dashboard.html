@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Dashboard</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css" />
+</head>
+<body>
+<button id="menu-toggle">&#9776;</button>
+<div class="portal">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>Dashboard</h1>
+        <div class="sub">Welcome back to your portal</div>
+      </div>
+    </div>
+
+    <!-- Stat cards -->
+    <div class="cards" id="stat-cards">
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+    </div>
+
+    <!-- SMS Credit Packs -->
+    <div class="panel">
+      <h2>Buy SMS Credits</h2>
+      <div class="pack-cards">
+        <div class="pack-card">
+          <div class="pack-label">Starter</div>
+          <div class="pack-price">$25</div>
+          <div class="pack-credits">250 credits</div>
+          <div class="pack-rate">$0.10 / SMS</div>
+          <button class="btn btn-ghost btn-sm" onclick="buyPack('starter')">Buy</button>
+        </div>
+        <div class="pack-card featured">
+          <div class="pack-label">Growth</div>
+          <div class="pack-price">$50</div>
+          <div class="pack-credits">625 credits</div>
+          <div class="pack-rate">$0.08 / SMS</div>
+          <button class="btn btn-primary btn-sm" onclick="buyPack('growth')">Buy</button>
+        </div>
+        <div class="pack-card">
+          <div class="pack-label">Pro</div>
+          <div class="pack-price">$100</div>
+          <div class="pack-credits">2,000 credits</div>
+          <div class="pack-rate">$0.05 / SMS</div>
+          <button class="btn btn-ghost btn-sm" onclick="buyPack('pro')">Buy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Leads -->
+    <div class="panel">
+      <h2>Recent Leads</h2>
+      <div id="leads-table">
+        <div class="skeleton" style="height:200px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('dashboard');
+
+(async function loadDashboard() {
+  try {
+    var data = await api('/api/portal/dashboard');
+    var creditWarn = (data.creditBalance || 0) < 50 ? ' warn' : '';
+    document.getElementById('stat-cards').innerHTML =
+      '<div class="stat-card">' +
+        '<div class="icon">👥</div>' +
+        '<div class="value">' + (data.totalLeads || 0) + '</div>' +
+        '<div class="label">Total Leads</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">🆕</div>' +
+        '<div class="value">' + (data.newThisWeek || 0) + '</div>' +
+        '<div class="label">New This Week</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">📅</div>' +
+        '<div class="value">' + (data.bookingsConfirmed || 0) + '</div>' +
+        '<div class="label">Bookings</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">📱</div>' +
+        '<div class="value">' + (data.smsSent || 0) + '</div>' +
+        '<div class="label">SMS Sent</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">📞</div>' +
+        '<div class="value">' + (data.callsThisMonth || 0) + '</div>' +
+        '<div class="label">Voice Calls</div>' +
+      '</div>' +
+      '<div class="stat-card' + creditWarn + '">' +
+        '<div class="icon">💳</div>' +
+        '<div class="value">' + (data.creditBalance || 0) + '</div>' +
+        '<div class="label">Credit Balance</div>' +
+      '</div>';
+  } catch (err) {
+    document.getElementById('stat-cards').innerHTML =
+      '<div class="empty">Failed to load stats.</div>';
+  }
+
+  try {
+    var ld = await api('/api/portal/leads?limit=10');
+    var leads = ld.leads || [];
+    if (!leads.length) {
+      document.getElementById('leads-table').innerHTML =
+        '<div class="empty">No leads yet.</div>';
+      return;
+    }
+    var rows = leads.map(function(l) {
+      return '<tr>' +
+        '<td>' + formatDateTime(l.date_entered || l.created_at) + '</td>' +
+        '<td>' + (l.full_name || '—') + '</td>' +
+        '<td>' + (l.phone || '—') + '</td>' +
+        '<td>' + (l.artist_selected || '—') + '</td>' +
+        '<td><span class="badge">' + (l.lead_status || '—') + '</span></td>' +
+      '</tr>';
+    }).join('');
+    document.getElementById('leads-table').innerHTML =
+      '<table><thead><tr>' +
+        '<th>When</th><th>Name</th><th>Phone</th><th>Artist</th><th>Status</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+  } catch (err) {
+    document.getElementById('leads-table').innerHTML =
+      '<div class="empty">Failed to load leads.</div>';
+  }
+})();
+
+async function buyPack(pack) {
+  try {
+    var data = await api('/api/portal/credits?action=checkout', {
+      method: 'POST',
+      body: { pack: pack }
+    });
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      toast('No checkout URL returned', true);
+    }
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+</script>
+</body>
+</html>

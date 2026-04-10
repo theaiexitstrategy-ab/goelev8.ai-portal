@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — SMS Blasts</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css" />
+</head>
+<body>
+<div class="portal">
+  <button id="menu-toggle">☰</button>
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>SMS Blasts</h1>
+        <div class="sub">Send promotional messages to your client segments</div>
+      </div>
+      <button class="btn btn-primary" onclick="openModal()">📱 New Blast</button>
+    </div>
+
+    <div class="panel">
+      <h2>Past Blasts</h2>
+      <div id="blasts-table"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- New Blast Modal -->
+<div id="blast-modal" class="modal-bg" style="display:none">
+  <div class="modal">
+    <h2>New SMS Blast</h2>
+    <div class="form-group">
+      <label>Blast Name</label>
+      <input type="text" id="blast-name" placeholder="e.g. Spring Promo" />
+    </div>
+    <div class="form-group">
+      <label>Message Body</label>
+      <textarea id="blast-message" rows="4" placeholder="Your message..."></textarea>
+    </div>
+    <div class="form-group">
+      <label>Promo Code (optional)</label>
+      <input type="text" id="blast-promo" placeholder="e.g. SPRING25" />
+    </div>
+    <div class="form-group">
+      <label>Segment</label>
+      <select id="blast-segment" onchange="toggleArtistFilter()">
+        <option value="all">All Leads</option>
+        <option value="first_timers">First Timers</option>
+        <option value="returning">Returning</option>
+        <option value="no_shows">No Shows</option>
+        <option value="by_artist">By Artist</option>
+      </select>
+    </div>
+    <div class="form-group" id="artist-filter-group" style="display:none">
+      <label>Artist Name</label>
+      <input type="text" id="blast-artist" placeholder="Artist name" />
+    </div>
+    <div id="blast-result" style="margin-top:12px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="send-btn" onclick="sendBlast()">Send Blast</button>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('blasts');
+
+function openModal() {
+  document.getElementById('blast-modal').style.display = 'flex';
+  document.getElementById('blast-result').innerHTML = '';
+  document.getElementById('blast-name').value = '';
+  document.getElementById('blast-message').value = '';
+  document.getElementById('blast-promo').value = '';
+  document.getElementById('blast-segment').value = 'all';
+  document.getElementById('blast-artist').value = '';
+  document.getElementById('artist-filter-group').style.display = 'none';
+  document.getElementById('send-btn').disabled = false;
+}
+
+function closeModal() {
+  document.getElementById('blast-modal').style.display = 'none';
+}
+
+function toggleArtistFilter() {
+  var seg = document.getElementById('blast-segment').value;
+  document.getElementById('artist-filter-group').style.display = seg === 'by_artist' ? 'block' : 'none';
+}
+
+async function sendBlast() {
+  var name = document.getElementById('blast-name').value.trim();
+  var message = document.getElementById('blast-message').value.trim();
+  var promoCode = document.getElementById('blast-promo').value.trim();
+  var segment = document.getElementById('blast-segment').value;
+  var artistFilter = document.getElementById('blast-artist').value.trim();
+
+  if (!name || !message) {
+    toast('Name and message are required', true);
+    return;
+  }
+
+  var btn = document.getElementById('send-btn');
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+  document.getElementById('blast-result').innerHTML = '';
+
+  try {
+    var body = { name: name, message: message, segment: segment };
+    if (promoCode) body.promoCode = promoCode;
+    if (segment === 'by_artist' && artistFilter) body.artistFilter = artistFilter;
+
+    var data = await api('/api/portal/blasts', { method: 'POST', body: body });
+    var sent = data.sent || 0;
+    var failed = data.failed || 0;
+    document.getElementById('blast-result').innerHTML =
+      '<div style="padding:12px;border-radius:8px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.25);font-size:0.85rem">' +
+      '<strong>Blast sent!</strong><br>' +
+      '<span style="color:var(--success)">Sent: ' + sent + '</span> &nbsp; ' +
+      '<span style="color:var(--error)">Failed: ' + failed + '</span>' +
+      '</div>';
+    toast('Blast sent successfully');
+    loadBlasts();
+  } catch (err) {
+    document.getElementById('blast-result').innerHTML =
+      '<div style="padding:12px;border-radius:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);font-size:0.85rem;color:var(--error)">' +
+      'Error: ' + err.message + '</div>';
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send Blast';
+  }
+}
+
+async function loadBlasts() {
+  var container = document.getElementById('blasts-table');
+  try {
+    var data = await api('/api/portal/blasts');
+    var blasts = data.blasts || [];
+    if (!blasts.length) {
+      container.innerHTML = '<div class="empty">No blasts sent yet. Click "New Blast" to get started.</div>';
+      return;
+    }
+    var html = '<table><thead><tr>' +
+      '<th>Sent At</th><th>Name</th><th>Message</th><th>Recipients</th><th>Delivered</th><th>Failed</th><th>Status</th>' +
+      '</tr></thead><tbody>';
+    blasts.forEach(function(b) {
+      var statusClass = b.status === 'completed' ? 'green' : (b.status === 'failed' ? 'red' : 'gold');
+      var msgPreview = (b.message || '').length > 60 ? b.message.substring(0, 60) + '...' : (b.message || '');
+      html += '<tr>' +
+        '<td>' + formatDateTime(b.sent_at || b.created_at) + '</td>' +
+        '<td>' + (b.name || '—') + '</td>' +
+        '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (b.message || '').replace(/"/g, '&quot;') + '">' + msgPreview + '</td>' +
+        '<td>' + (b.recipients != null ? b.recipients : '—') + '</td>' +
+        '<td>' + (b.delivered != null ? b.delivered : '—') + '</td>' +
+        '<td>' + (b.failed != null ? b.failed : '—') + '</td>' +
+        '<td><span class="badge ' + statusClass + '">' + (b.status || 'pending') + '</span></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch (err) {
+    container.innerHTML = '<div class="empty" style="color:var(--error)">Failed to load blasts: ' + err.message + '</div>';
+  }
+}
+
+// Click outside modal to close
+document.getElementById('blast-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+loadBlasts();
+</script>
+</body>
+</html>

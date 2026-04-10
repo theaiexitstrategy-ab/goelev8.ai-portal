@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Credits & Billing</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css" />
+</head>
+<body>
+<button id="menu-toggle">&#9776;</button>
+<div class="portal">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>Credits & Billing</h1>
+        <div class="sub">Manage your SMS credit balance</div>
+      </div>
+    </div>
+
+    <!-- Credit Balance -->
+    <div class="cards" id="balance-card">
+      <div class="stat-card skeleton" style="height:110px"></div>
+    </div>
+
+    <!-- Buy Credit Packs -->
+    <div class="panel">
+      <h2>Buy SMS Credits</h2>
+      <div class="pack-cards">
+        <div class="pack-card">
+          <div class="pack-label">Starter</div>
+          <div class="pack-price">$25</div>
+          <div class="pack-credits">250 credits</div>
+          <div class="pack-rate">$0.10 / SMS</div>
+          <button class="btn btn-ghost btn-sm" onclick="buyPack('starter')">Buy</button>
+        </div>
+        <div class="pack-card featured">
+          <div class="pack-label">Growth</div>
+          <div class="pack-price">$50</div>
+          <div class="pack-credits">625 credits</div>
+          <div class="pack-rate">$0.08 / SMS</div>
+          <button class="btn btn-primary btn-sm" onclick="buyPack('growth')">Buy</button>
+        </div>
+        <div class="pack-card">
+          <div class="pack-label">Pro</div>
+          <div class="pack-price">$100</div>
+          <div class="pack-credits">2,000 credits</div>
+          <div class="pack-rate">$0.05 / SMS</div>
+          <button class="btn btn-ghost btn-sm" onclick="buyPack('pro')">Buy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Auto-Reload Settings -->
+    <div class="panel">
+      <h2>Auto-Reload Settings</h2>
+      <p style="color:var(--muted);font-size:0.8rem;margin-bottom:16px;">Automatically purchase credits when your balance drops below a threshold.</p>
+      <div class="form-group">
+        <label>Auto-Reload</label>
+        <select id="ar-enabled">
+          <option value="false">Disabled</option>
+          <option value="true">Enabled</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Threshold (credits)</label>
+        <input type="number" id="ar-threshold" placeholder="50" min="1" />
+      </div>
+      <div class="form-group">
+        <label>Pack to Purchase</label>
+        <select id="ar-pack">
+          <option value="starter">Starter — $25 / 250 credits</option>
+          <option value="growth">Growth — $50 / 625 credits</option>
+          <option value="pro">Pro — $100 / 2,000 credits</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="saveAutoReload()">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('credits');
+
+// Check for success redirect
+(function checkSuccess() {
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('credits') === 'success') {
+    toast('Credits purchased successfully!');
+    // Clean URL
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+})();
+
+// Load credit balance
+(async function loadBalance() {
+  try {
+    var data = await api('/api/portal/dashboard');
+    var bal = data.creditBalance || 0;
+    var warn = bal < 50 ? ' warn' : '';
+    document.getElementById('balance-card').innerHTML =
+      '<div class="stat-card' + warn + '">' +
+        '<div class="icon">💳</div>' +
+        '<div class="value">' + bal + '</div>' +
+        '<div class="label">Credit Balance' + (bal < 50 ? ' — Low balance!' : '') + '</div>' +
+      '</div>';
+  } catch (err) {
+    document.getElementById('balance-card').innerHTML =
+      '<div class="empty">Failed to load balance.</div>';
+  }
+})();
+
+async function buyPack(pack) {
+  try {
+    var data = await api('/api/portal/credits?action=checkout', {
+      method: 'POST',
+      body: { pack: pack }
+    });
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      toast('No checkout URL returned', true);
+    }
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function saveAutoReload() {
+  try {
+    var enabled = document.getElementById('ar-enabled').value === 'true';
+    var threshold = parseInt(document.getElementById('ar-threshold').value, 10);
+    var pack = document.getElementById('ar-pack').value;
+    if (enabled && (!threshold || threshold < 1)) {
+      toast('Enter a valid threshold', true);
+      return;
+    }
+    await api('/api/portal/credits?action=auto-reload', {
+      method: 'POST',
+      body: { enabled: enabled, threshold: threshold || 0, pack: pack }
+    });
+    toast('Auto-reload settings saved');
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+</script>
+</body>
+</html>

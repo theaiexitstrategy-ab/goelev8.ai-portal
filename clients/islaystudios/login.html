@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Login</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --gold: #C9A84C;
+  --gold-light: #E2C068;
+  --bg: #0a0e1a;
+  --card: #111827;
+  --border: #1f2937;
+  --text: #f3f4f6;
+  --muted: #9ca3af;
+  --error: #ef4444;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; }
+.login-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:40px; width:100%; max-width:400px; }
+.brand { text-align:center; margin-bottom:28px; }
+.brand h1 { font-size:1.5rem; font-weight:700; color:var(--gold); margin-bottom:4px; }
+.brand p { color:var(--muted); font-size:0.875rem; }
+.field { margin-bottom:16px; }
+.field label { display:block; font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted); margin-bottom:6px; }
+.field input { width:100%; padding:10px 12px; background:#1a2236; border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:0.875rem; outline:none; }
+.field input:focus { border-color:var(--gold); }
+.btn { width:100%; padding:12px; background:var(--gold); color:#000; font-weight:700; font-size:0.875rem; border:none; border-radius:8px; cursor:pointer; margin-top:8px; }
+.btn:hover { background:var(--gold-light); }
+.err { color:var(--error); font-size:0.8rem; margin-top:8px; text-align:center; }
+.footer { text-align:center; margin-top:24px; font-size:0.7rem; color:var(--muted); }
+.footer a { color:var(--gold); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="login-box">
+  <div class="brand">
+    <h1>iSlay Studios</h1>
+    <p>Sign in to your portal</p>
+  </div>
+  <form id="login-form">
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="email" placeholder="you@example.com" required />
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="password" placeholder="••••••••" required />
+    </div>
+    <div id="error-box"></div>
+    <button class="btn" type="submit">Sign in →</button>
+  </form>
+  <div class="footer">Powered by <a href="https://goelev8.ai">GoElev8.AI</a></div>
+</div>
+<script>
+document.getElementById('login-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var errBox = document.getElementById('error-box');
+  errBox.innerHTML = '';
+  try {
+    var res = await fetch('/api/auth?action=login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: document.getElementById('email').value,
+        password: document.getElementById('password').value
+      })
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Login failed');
+    localStorage.setItem('ge8_token', data.access_token);
+    window.location.href = '/islaystudios/dashboard';
+  } catch(err) {
+    errBox.innerHTML = '<div class="err">' + err.message + '</div>';
+  }
+});
+// If already authenticated, skip to dashboard
+if (localStorage.getItem('ge8_token')) {
+  window.location.replace('/islaystudios/dashboard');
+}
+</script>
+</body>
+</html>
