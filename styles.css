@@ -157,9 +157,9 @@ h2 { font-size: 17px; font-weight: 600; }
   margin-bottom: 8px;
 }
 .brand .logo {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
   background: var(--brand-grad);
   display: grid;
   place-items: center;
@@ -171,8 +171,8 @@ h2 { font-size: 17px; font-weight: 600; }
   overflow: hidden;
 }
 .brand .logo img {
-  width: 70%;
-  height: 70%;
+  width: 85%;
+  height: 85%;
   object-fit: contain;
   display: block;
   filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
@@ -994,16 +994,16 @@ tbody tr:last-child td { border-bottom: none; }
     font-size: 15px;
   }
   .mobile-header .mobile-brand .logo {
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
     background: var(--brand-grad);
     display: grid;
     place-items: center;
     box-shadow: var(--brand-glow);
     flex-shrink: 0;
   }
-  .mobile-header .mobile-brand .logo img { width: 80%; height: 80%; object-fit: contain; }
+  .mobile-header .mobile-brand .logo img { width: 88%; height: 88%; object-fit: contain; }
 
   /* Main content. Padding honors safe-area insets so nothing sits under
      the notch in landscape / the home indicator at the bottom. */
@@ -1742,13 +1742,13 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
   /* Make sure a zero-width image child can't collapse the parent before
      the cross-origin client logo finishes loading on a cold PWA start. */
-  min-width: 32px;
-  min-height: 32px;
+  min-width: 48px;
+  min-height: 48px;
 }
 .brand .logo.client-logo img,
 .mobile-header .mobile-brand .logo.client-logo img {
-  width: 80%;
-  height: 80%;
+  width: 88%;
+  height: 88%;
   object-fit: contain;
   filter: none;
   display: block;
