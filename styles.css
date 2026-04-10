@@ -1738,8 +1738,8 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
    gradient-background rule in the @media (max-width: 880px) block. */
 .brand .logo.client-logo,
 .mobile-header .mobile-brand .logo.client-logo {
-  background: rgba(255, 255, 255, 0.06) !important;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+  background: #000 !important;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
   /* Make sure a zero-width image child can't collapse the parent before
      the cross-origin client logo finishes loading on a cold PWA start. */
   min-width: 48px;
