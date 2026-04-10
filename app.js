@@ -136,6 +136,21 @@ const TAB_LABELS = {
   nudges:    'Nudges'
 };
 
+const TAB_ICONS = {
+  overview:  '📊',
+  activity:  '🔔',
+  messages:  '💬',
+  contacts:  '📇',
+  leads:     '👥',
+  calls:     '📞',
+  bookings:  '📅',
+  billing:   '💳',
+  connect:   '💰',
+  settings:  '⚙️',
+  blasts:    '📣',
+  nudges:    '⚡'
+};
+
 const DEFAULT_TABS = ['overview','activity','messages','contacts','leads','calls','bookings','billing','connect','settings'];
 
 function shell(content) {
@@ -171,10 +186,11 @@ function shell(content) {
     ? el('nav', { class: 'bottom-nav' },
         ...tabs.map(id => {
           const label = TAB_LABELS[id] || id;
+          const icon = TAB_ICONS[id] || '•';
           return el('button', {
             class: 'bnav-btn' + (state.view === id ? ' active' : ''),
             onclick: () => { state.view = id; render(); }
-          }, el('div', { class: 'bnav-dot' }), label);
+          }, el('span', { class: 'bnav-icon' }, icon), label);
         })
       )
     : null;
