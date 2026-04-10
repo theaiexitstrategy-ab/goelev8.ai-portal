@@ -136,7 +136,8 @@ const TAB_LABELS = {
   settings:  'Settings',
   blasts:    'SMS Blasts',
   nudges:    'Nudges',
-  analytics: 'Analytics'
+  analytics: 'Analytics',
+  admin:     'Master Admin'
 };
 
 const TAB_ICONS = {
@@ -152,23 +153,21 @@ const TAB_ICONS = {
   settings:  '⚙️',
   blasts:    '📣',
   nudges:    '⚡',
-  analytics: '📈'
+  analytics: '📈',
+  admin:     '🛡️'
 };
 
-const DEFAULT_TABS = ['overview','activity','messages','contacts','leads','calls','bookings','billing','connect','settings'];
+const DEFAULT_TABS = ['overview','leads','messages','billing','settings'];
+const ADMIN_TABS = ['admin','activity','analytics'];
 
 function shell(content) {
   const navBtn = (id, label) =>
     el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; render(); } }, label);
 
-  const adminSection = state.isAdmin
+  const adminSection = state.isAdmin && state.impersonating
     ? el('div', { class: 'admin-section' },
-        el('div', { class: 'admin-label' }, 'ADMIN'),
-        navBtn('admin', 'Master Admin'),
-        state.impersonating
-          ? el('button', { class: 'btn-stop-impersonate', onclick: () => { setImpersonation(null); render(); } },
-              '× Stop impersonating')
-          : null
+        el('button', { class: 'btn-stop-impersonate', onclick: () => { setImpersonation(null); render(); } },
+          '× Stop impersonating')
       )
     : null;
 
@@ -179,10 +178,19 @@ function shell(content) {
         el('button', { class: 'link', onclick: () => { setImpersonation(null); render(); } }, 'Exit'))
     : null;
 
-  const tabs = state.client?.portal_tabs || DEFAULT_TABS;
   const isGlobalAdmin = state.user?.email === 'ab@goelev8.ai';
-  const sidebarTabs = isGlobalAdmin ? [...tabs, 'analytics'] : tabs;
-  const navButtons = sidebarTabs.map(id => navBtn(id, TAB_LABELS[id] || id));
+  let tabs;
+  if (state.isAdmin && !state.impersonating) {
+    // Admin view — no client selected
+    tabs = ADMIN_TABS;
+  } else if (state.client?.portal_tabs) {
+    // Client has custom tabs
+    tabs = isGlobalAdmin ? [...state.client.portal_tabs, 'analytics'] : state.client.portal_tabs;
+  } else {
+    // Default client tabs
+    tabs = isGlobalAdmin ? [...DEFAULT_TABS, 'analytics'] : DEFAULT_TABS;
+  }
+  const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
 
   const logoSrc = state.client?.logo_url || '/logo.png';
   const brandName = state.client?.portal_tabs ? (state.client.name || 'Client Portal') : 'GoElev8.AI';
@@ -1500,8 +1508,10 @@ async function render() {
     window.location.replace(CLIENT_PORTALS[state.client.slug]);
     return;
   }
-  // Admins land on the admin view by default unless they pick a client.
-  if (state.isAdmin && !state.impersonating && state.view !== 'admin') {
+  // Admins land on the admin view by default — but allow switching to
+  // other admin-accessible tabs (activity, analytics).
+  const ADMIN_VIEWS = ['admin', 'activity', 'analytics'];
+  if (state.isAdmin && !state.impersonating && !ADMIN_VIEWS.includes(state.view)) {
     state.view = 'admin';
   }
   // Reload client context when impersonation toggles.
