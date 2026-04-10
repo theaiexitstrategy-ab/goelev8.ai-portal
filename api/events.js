@@ -392,16 +392,16 @@ async function handleVapi(req, res) {
 // Called by embed/track.js when a form is submitted on a client website.
 // No signature required — the slug + secret in the body is the auth.
 async function handleLead(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ error: 'method_not_allowed' });
-  }
-
   // CORS — the beacon fires from the client's own domain
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GoElev8-Secret');
   if (req.method === 'OPTIONS') return res.status(204).end();
+
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST, OPTIONS');
+    return res.status(405).json({ error: 'method_not_allowed' });
+  }
 
   const raw = await readRaw(req);
   let body;
