@@ -3,7 +3,7 @@
 // Bump CACHE_NAME whenever the asset strategy changes — the activate
 // handler deletes any cache that doesn't match the current name, which
 // is how stale assets get evicted on the next page load.
-const CACHE_NAME = 'goelev8-portal-v9';
+const CACHE_NAME = 'goelev8-portal-v10';
 const OFFLINE_URL = '/offline.html';
 
 // Only truly static, rarely-changing assets get pre-cached. Anything
