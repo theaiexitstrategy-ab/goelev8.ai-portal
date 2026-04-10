@@ -1141,7 +1141,7 @@ async function render() {
     try { await loadMe(); } catch { logout(); return; }
   }
   // Client-specific portal redirect: send branded clients to their portal
-  const CLIENT_PORTALS = { 'islay-studios': '/islaystudios/dashboard' };
+  const CLIENT_PORTALS = { 'islay-studios': '/islaystudios/leads' };
   if (!state.isAdmin && state.client?.slug && CLIENT_PORTALS[state.client.slug]) {
     window.location.replace(CLIENT_PORTALS[state.client.slug]);
     return;

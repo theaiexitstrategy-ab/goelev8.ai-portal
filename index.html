@@ -39,9 +39,9 @@
       window.location.replace('/islaystudios/login');
       return;
     }
-    // If authenticated and on bare /islaystudios, go to dashboard
+    // If authenticated and on bare /islaystudios, go to leads
     if (token && (path === '/islaystudios' || path === '/islaystudios/')) {
-      window.location.replace('/islaystudios/dashboard');
+      window.location.replace('/islaystudios/leads');
       return;
     }
   }

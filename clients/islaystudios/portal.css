@@ -1,4 +1,5 @@
 /* iSlay Studios Portal — shared styles */
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;500;600;700&display=swap');
 :root {
   --gold: #C9A84C;
   --gold-light: #E2C068;
@@ -11,9 +12,11 @@
   --error: #ef4444;
   --warn: #f59e0b;
   --accent: #00CFFF;
+  --font-heading: 'Bebas Neue', sans-serif;
+  --font-body: 'Outfit', sans-serif;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); }
+body { font-family:var(--font-body); background:var(--bg); color:var(--text); }
 
 /* Layout */
 .portal { display:flex; min-height:100vh; }
@@ -23,6 +26,7 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); 
 /* Sidebar */
 .sb-brand { padding:20px 16px 12px; border-bottom:1px solid var(--border); }
 .sb-logo { font-size:1.1rem; font-weight:700; color:var(--gold); }
+.sb-logo-img { height:36px; width:auto; object-fit:contain; display:block; }
 .sb-sub { font-size:0.7rem; color:var(--muted); margin-top:2px; }
 .sb-nav { flex:1; padding:12px 8px; display:flex; flex-direction:column; gap:2px; }
 .sb-link { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:8px; color:var(--muted); text-decoration:none; font-size:0.825rem; font-weight:500; transition:all 0.15s; }
@@ -36,7 +40,7 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); 
 
 /* Topbar */
 .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; }
-.topbar h1 { font-size:1.5rem; font-weight:700; }
+.topbar h1 { font-family:var(--font-heading); font-size:1.75rem; font-weight:400; letter-spacing:1px; }
 .topbar .sub { color:var(--muted); font-size:0.85rem; }
 
 /* Cards grid */
