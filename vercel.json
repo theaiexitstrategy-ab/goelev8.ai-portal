@@ -15,7 +15,8 @@
     { "source": "/islaystudios/credits", "destination": "/clients/islaystudios/credits.html" },
     { "source": "/islaystudios/analytics", "destination": "/clients/islaystudios/analytics.html" },
     { "source": "/islaystudios/artists", "destination": "/clients/islaystudios/artists.html" },
-    { "source": "/islaystudios/:file(.*\\.(js|css|png|jpg|svg|ico|json))", "destination": "/clients/islaystudios/:file" },
+    { "source": "/islaystudios/shell.js", "destination": "/clients/islaystudios/shell.js" },
+    { "source": "/islaystudios/portal.css", "destination": "/clients/islaystudios/portal.css" },
     { "source": "/islaystudios", "destination": "/clients/islaystudios/leads.html" },
     { "source": "/((?!api/|clients/).*)", "destination": "/index.html" }
   ],
