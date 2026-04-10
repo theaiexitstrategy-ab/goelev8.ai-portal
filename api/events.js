@@ -388,6 +388,55 @@ async function handleVapi(req, res) {
   });
 }
 
+// ── Lead webhook (POST /api/webhooks/lead → ?action=lead) ──────────
+// Called by embed/track.js when a form is submitted on a client website.
+// No signature required — the slug + secret in the body is the auth.
+async function handleLead(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'method_not_allowed' });
+  }
+
+  // CORS — the beacon fires from the client's own domain
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GoElev8-Secret');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+
+  const raw = await readRaw(req);
+  let body;
+  try { body = raw ? JSON.parse(raw) : {}; }
+  catch { return res.status(400).json({ error: 'invalid_json' }); }
+
+  const slug = body.slug;
+  if (!slug) return res.status(400).json({ error: 'missing_slug' });
+
+  // Resolve client
+  const { data: client } = await supabaseAdmin
+    .from('clients').select('id').eq('slug', slug).maybeSingle();
+  if (!client) return res.status(422).json({ error: 'unknown_client' });
+
+  const name  = body.name  || null;
+  const phone = body.phone || null;
+  const email = body.email || null;
+  if (!name && !phone && !email) return res.status(400).json({ error: 'no_contact_info' });
+
+  const { data: lead, error } = await supabaseAdmin.from('leads').insert({
+    client_id: client.id,
+    name:   name,
+    phone:  phone,
+    email:  email,
+    source: body.source || 'web_form',
+    funnel: body.funnel || null,
+    status: 'New',
+    tags:   body.funnel ? [body.funnel] : []
+  }).select('id').single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  return res.status(200).json({ ok: true, lead_id: lead?.id || null });
+}
+
 export default async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   const action = url.searchParams.get('action');
@@ -395,6 +444,7 @@ export default async function handler(req, res) {
     if (action === 'ingest') return await handleIngest(req, res);
     if (action === 'list')   return await handleList(req, res);
     if (action === 'vapi')   return await handleVapi(req, res);
+    if (action === 'lead')   return await handleLead(req, res);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message || 'internal_error' });
