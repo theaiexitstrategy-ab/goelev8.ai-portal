@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Nudges</title>
+<link rel="icon" href="/icon-192.png" />
+<link rel="stylesheet" href="./portal.css" />
+</head>
+<body>
+<button id="menu-toggle">&#9776;</button>
+<div class="portal">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>NUDGES</h1>
+        <div class="sub">Automated 5-message SMS drip for new leads</div>
+      </div>
+    </div>
+
+    <p style="color:var(--muted);font-size:0.8rem;margin-bottom:20px;">
+      When a new lead comes in, these messages are sent automatically on a schedule.
+      Customize each message below. Variables: <code style="color:var(--gold)">[first_name]</code>, <code style="color:var(--gold)">[business_name]</code>, <code style="color:var(--gold)">[funnel_url]</code>
+    </p>
+
+    <div id="nudge-slots">
+      <div class="skeleton" style="height:400px;border-radius:12px"></div>
+    </div>
+
+    <div style="margin-top:20px;text-align:right">
+      <button class="btn btn-primary" id="save-all-btn" onclick="saveAll()" style="font-family:var(--font-heading);font-size:1rem;letter-spacing:1px;padding:10px 28px">
+        SAVE ALL NUDGES
+      </button>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('nudges');
+
+var nudges = [];
+var DELAY_OPTIONS = {
+  1: [{ v: 0, l: 'Immediately' }],
+  2: [{ v: 30, l: '30 min' }, { v: 60, l: '1 hour' }, { v: 120, l: '2 hours' }, { v: 240, l: '4 hours' }],
+  3: [{ v: 720, l: '12 hours' }, { v: 1440, l: '1 day' }, { v: 2880, l: '2 days' }],
+  4: [{ v: 1440, l: '1 day' }, { v: 2880, l: '2 days' }, { v: 4320, l: '3 days' }],
+  5: [{ v: 4320, l: '3 days' }, { v: 7200, l: '5 days' }, { v: 10080, l: '7 days' }]
+};
+
+async function loadNudges() {
+  try {
+    var data = await api('/api/portal/nudges');
+    nudges = data.nudges || [];
+    renderNudges();
+  } catch (err) {
+    document.getElementById('nudge-slots').innerHTML =
+      '<div class="empty">Failed to load nudges: ' + err.message + '</div>';
+  }
+}
+
+function renderNudges() {
+  var html = '';
+  for (var i = 1; i <= 5; i++) {
+    var n = nudges.find(function(x) { return x.message_number === i; });
+    var body = n ? n.message_body : '';
+    var delay = n ? n.delay_minutes : 0;
+    var active = n ? n.is_active !== false : true;
+    var charLen = body.length;
+    var charClass = charLen > 150 ? 'red' : charLen > 130 ? 'amber' : '';
+
+    var delayOpts = DELAY_OPTIONS[i] || [];
+    var delayHtml = delayOpts.map(function(o) {
+      var sel = o.v === delay ? ' selected' : '';
+      return '<option value="' + o.v + '"' + sel + '>' + o.l + '</option>';
+    }).join('');
+
+    html +=
+      '<div class="nudge-card' + (active ? '' : ' inactive') + '">' +
+        '<div class="nudge-header">' +
+          '<div class="nudge-number">' + i + '</div>' +
+          '<div class="nudge-title">Message ' + i + (i === 1 ? ' — Welcome' : '') + '</div>' +
+          '<label class="nudge-toggle">' +
+            '<input type="checkbox" id="nudge-active-' + i + '"' + (active ? ' checked' : '') + ' onchange="toggleActive(' + i + ')" />' +
+            '<span>' + (active ? 'Active' : 'Off') + '</span>' +
+          '</label>' +
+        '</div>' +
+        '<div class="nudge-body">' +
+          '<textarea id="nudge-body-' + i + '" rows="3" maxlength="160" oninput="updateCount(' + i + ')">' + escapeHtml(body) + '</textarea>' +
+          '<div class="nudge-meta">' +
+            '<span class="msg-char-count ' + charClass + '" id="nudge-count-' + i + '">' + charLen + '/160</span>' +
+            '<select id="nudge-delay-' + i + '">' + delayHtml + '</select>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+  document.getElementById('nudge-slots').innerHTML = html;
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function updateCount(num) {
+  var textarea = document.getElementById('nudge-body-' + num);
+  var counter = document.getElementById('nudge-count-' + num);
+  if (!textarea || !counter) return;
+  var len = textarea.value.length;
+  counter.textContent = len + '/160';
+  counter.className = 'msg-char-count' + (len > 150 ? ' red' : len > 130 ? ' amber' : '');
+}
+
+function toggleActive(num) {
+  var cb = document.getElementById('nudge-active-' + num);
+  var card = cb.closest('.nudge-card');
+  var label = cb.parentElement.querySelector('span');
+  if (cb.checked) {
+    card.classList.remove('inactive');
+    label.textContent = 'Active';
+  } else {
+    card.classList.add('inactive');
+    label.textContent = 'Off';
+  }
+}
+
+async function saveAll() {
+  var btn = document.getElementById('save-all-btn');
+  btn.disabled = true;
+  btn.textContent = 'SAVING...';
+
+  var payload = [];
+  for (var i = 1; i <= 5; i++) {
+    payload.push({
+      message_number: i,
+      message_body: document.getElementById('nudge-body-' + i).value,
+      delay_minutes: parseInt(document.getElementById('nudge-delay-' + i).value, 10),
+      is_active: document.getElementById('nudge-active-' + i).checked
+    });
+  }
+
+  try {
+    var data = await api('/api/portal/nudges', {
+      method: 'PUT',
+      body: { nudges: payload }
+    });
+    nudges = data.nudges || nudges;
+    renderNudges();
+    toast('Nudges saved');
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'SAVE ALL NUDGES';
+  }
+}
+
+loadNudges();
+</script>
+<style>
+.nudge-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:16px; transition:opacity 0.2s; }
+.nudge-card.inactive { opacity:0.5; }
+.nudge-header { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.nudge-number { width:28px; height:28px; border-radius:50%; background:var(--gold); color:#000; font-family:var(--font-heading); font-size:1rem; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.nudge-title { flex:1; font-weight:600; font-size:0.9rem; }
+.nudge-toggle { display:flex; align-items:center; gap:6px; font-size:0.75rem; color:var(--muted); cursor:pointer; }
+.nudge-toggle input { accent-color:var(--gold); }
+.nudge-body textarea { width:100%; padding:10px 12px; background:#1a2236; border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:0.8rem; line-height:1.5; outline:none; resize:none; font-family:var(--font-body); }
+.nudge-body textarea:focus { border-color:var(--gold); }
+.nudge-meta { display:flex; justify-content:space-between; align-items:center; margin-top:8px; }
+.nudge-meta select { background:#1a2236; border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:0.75rem; padding:4px 8px; outline:none; font-family:var(--font-body); }
+.nudge-meta select:focus { border-color:var(--gold); }
+</style>
+</body>
+</html>
