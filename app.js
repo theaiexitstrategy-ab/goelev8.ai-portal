@@ -189,6 +189,23 @@ function shell(content) {
       )
     : null;
 
+  const toggleNav = () => document.body.classList.toggle('nav-open');
+  const closeNav = () => document.body.classList.remove('nav-open');
+
+  // Mobile header (hamburger + brand)
+  const mobileHeader = el('div', { class: 'mobile-header' },
+    el('button', { class: 'nav-toggle', onclick: toggleNav },
+      el('span'), el('span'), el('span')
+    ),
+    el('div', { class: 'mobile-brand' },
+      el('div', { class: 'logo' }, el('img', { src: logoSrc, alt: '' })),
+      brandName
+    )
+  );
+
+  // Backdrop behind slide-in nav drawer
+  const navBackdrop = el('div', { class: 'nav-backdrop', onclick: closeNav });
+
   return el('div', { class: 'app has-bottom-nav' + (state.isAdmin ? ' is-admin' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
@@ -206,9 +223,10 @@ function shell(content) {
         ? el('div', { class: 'nav' }, ...navButtons)
         : null,
       adminSection,
-      el('button', { class: 'signout', onclick: logout }, 'Sign out')
+      el('button', { class: 'signout', onclick: () => { closeNav(); logout(); } }, 'Sign out')
     ),
-    el('main', { class: 'main' }, banner, content),
+    navBackdrop,
+    el('main', { class: 'main' }, mobileHeader, banner, content),
     bottomNav,
     installBanner
   );
