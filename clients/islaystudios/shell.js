@@ -102,12 +102,14 @@ function initShell(activePage) {
 
   // Render immediately with known tabs, then update if client config differs
   renderSidebar(sidebar, activePage, DEFAULT_TABS, null);
+  renderBottomTabs(activePage, DEFAULT_TABS);
 
   // Fetch client config and re-render with portal_tabs if set
   getClientConfig().then(function(client) {
     if (client) {
       var tabs = client.portal_tabs || DEFAULT_TABS;
       renderSidebar(sidebar, activePage, tabs, client);
+      renderBottomTabs(activePage, tabs);
     }
   });
 
@@ -118,6 +120,9 @@ function initShell(activePage) {
       sidebar.classList.toggle('open');
     });
   }
+
+  // PWA install banner
+  showInstallBanner();
 }
 
 function renderSidebar(sidebar, activePage, tabs, client) {
@@ -153,4 +158,83 @@ function renderSidebar(sidebar, activePage, tabs, client) {
       '<button onclick="logout()" class="sb-signout">Sign out</button>' +
       '<div class="sb-powered">Powered by GoElev8.AI</div>' +
     '</div>';
+}
+
+// Mobile bottom tab bar
+function renderBottomTabs(activePage, tabs) {
+  var existing = document.getElementById('bottom-tabs');
+  if (existing) existing.remove();
+
+  var bar = document.createElement('nav');
+  bar.id = 'bottom-tabs';
+  bar.className = 'bottom-tabs';
+
+  tabs.forEach(function(key) {
+    var tab = TAB_CATALOG[key];
+    if (!tab) return;
+    var cls = key === activePage ? 'btab active' : 'btab';
+    var a = document.createElement('a');
+    a.href = '/islaystudios/' + key;
+    a.className = cls;
+    a.innerHTML = '<span class="btab-icon">' + tab.icon + '</span>' + tab.label;
+    bar.appendChild(a);
+  });
+
+  document.body.appendChild(bar);
+}
+
+// PWA install banner
+var deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  deferredPrompt = e;
+});
+
+function showInstallBanner() {
+  // Don't show if already installed as PWA
+  if (window.matchMedia('(display-mode: standalone)').matches) return;
+  if (window.navigator.standalone === true) return;
+  // Don't show if user dismissed it
+  if (sessionStorage.getItem('pwa_dismissed')) return;
+
+  var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  var banner = document.createElement('div');
+  banner.className = 'pwa-banner';
+  banner.id = 'pwa-banner';
+
+  if (isIOS) {
+    banner.innerHTML =
+      '<div class="pwa-banner-text">' +
+        '<strong>Add to Home Screen</strong><br>' +
+        'Tap <span style="font-size:1.1rem">⎙</span> then "Add to Home Screen" for the best experience.' +
+      '</div>' +
+      '<button class="btn-dismiss" onclick="dismissInstall()">✕</button>';
+  } else if (deferredPrompt) {
+    banner.innerHTML =
+      '<div class="pwa-banner-text">' +
+        '<strong>Install App</strong><br>' +
+        'Add to your home screen for quick access.' +
+      '</div>' +
+      '<button class="btn-install" onclick="installPWA()">Install</button>' +
+      '<button class="btn-dismiss" onclick="dismissInstall()">✕</button>';
+  } else {
+    // No install prompt available and not iOS — don't show
+    return;
+  }
+
+  document.body.appendChild(banner);
+}
+
+function installPWA() {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function() { deferredPrompt = null; });
+  }
+  dismissInstall();
+}
+
+function dismissInstall() {
+  var banner = document.getElementById('pwa-banner');
+  if (banner) banner.remove();
+  sessionStorage.setItem('pwa_dismissed', '1');
 }
