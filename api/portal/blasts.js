@@ -29,6 +29,8 @@ export default async function handler(req, res) {
   // Build lead query based on segment
   let query = supabaseAdmin.from('leads').select('*').eq('client_id', clientId);
   switch (segment) {
+    case 'new':          query = query.eq('lead_status', 'New'); break;
+    case 'booked':       query = query.eq('lead_status', 'Booked'); break;
     case 'first_timers': query = query.eq('booking_confirmed', false); break;
     case 'returning':    query = query.eq('booking_confirmed', true); break;
     case 'no_shows':     query = query.eq('lead_status', 'No Show'); break;
