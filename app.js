@@ -1248,9 +1248,9 @@ async function viewAdmin() {
     const a = await api('/api/admin?action=analytics');
     cards.innerHTML = '';
     const card = (label, value, sub) => el('div', { class: 'card' },
-      el('div', { class: 'card-label' }, label),
-      el('div', { class: 'card-value' }, String(value)),
-      sub ? el('div', { class: 'card-sub muted' }, sub) : null);
+      el('div', { class: 'label' }, label),
+      el('div', { class: 'value' }, String(value)),
+      sub ? el('div', { class: 'sub muted' }, sub) : null);
     cards.appendChild(card('Total clients', a.total_clients, `${a.new_clients_30d} new in 30d`));
     cards.appendChild(card('Active 7d', a.active_clients_7d, 'sent SMS in last 7 days'));
     cards.appendChild(card('SMS this month', a.sms_this_month, 'outbound across all clients'));
