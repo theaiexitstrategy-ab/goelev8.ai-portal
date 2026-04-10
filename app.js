@@ -188,7 +188,7 @@ function shell(content) {
   const brandName = state.client?.portal_tabs ? (state.client.name || 'Client Portal') : 'GoElev8.AI';
 
   // Bottom nav buttons for mobile
-  const bottomNav = state.client
+  const bottomNav = (state.client || state.isAdmin)
     ? el('nav', { class: 'bottom-nav' },
         ...tabs.map(id => {
           const label = TAB_LABELS[id] || id;
@@ -241,7 +241,7 @@ function shell(content) {
             el('div', { class: 'num' }, state.client?.twilio_phone_number || 'No number assigned')
           )
         : null,
-      state.client
+      (state.client || state.isAdmin)
         ? el('div', { class: 'nav' }, ...navButtons)
         : null,
       adminSection,
