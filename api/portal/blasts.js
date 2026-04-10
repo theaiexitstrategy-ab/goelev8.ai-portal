@@ -11,12 +11,18 @@ export default async function handler(req, res) {
   const ctx = await requireUser(req, res); if (!ctx) return;
   const { clientId } = ctx;
 
+  // blasts.client_id is text (slug), not uuid — resolve once
+  const { data: client } = await supabaseAdmin
+    .from('clients').select('slug').eq('id', clientId).single();
+  const slug = client?.slug;
+  if (!slug) return res.status(404).json({ error: 'client_not_found' });
+
   // ---------- GET: list blasts ----------
   if (req.method === 'GET') {
     const { data, error } = await supabaseAdmin
       .from('blasts')
       .select('*')
-      .eq('client_id', clientId)
+      .eq('client_id', slug)
       .order('sent_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     return res.status(200).json({ blasts: data || [] });
@@ -82,7 +88,7 @@ export default async function handler(req, res) {
 
   // Record blast
   await supabaseAdmin.from('blasts').insert({
-    client_id: clientId,
+    client_id: slug,
     blast_name: name,
     message_body: message,
     sent_at: new Date().toISOString(),

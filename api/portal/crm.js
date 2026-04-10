@@ -90,7 +90,7 @@ async function handleLeads(req, res, ctx) {
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
     const { data, error } = await sb
       .from('leads')
-      .select('id, name, phone, email, source, source_path, status, intent, notes, vapi_call_id, contact_id, created_at')
+      .select('id, name, phone, email, source, status, notes, tags, funnel, created_at')
       .eq('client_id', clientId)
       .order('created_at', { ascending: false })
       .limit(limit);
