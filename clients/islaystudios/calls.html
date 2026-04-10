@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Voice Calls</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css" />
+</head>
+<body>
+<div class="portal">
+  <button id="menu-toggle">☰</button>
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>Voice Calls</h1>
+        <div class="sub">View and manage voice calls</div>
+      </div>
+      <button class="btn btn-primary" onclick="openCallModal()">📞 Make Call</button>
+    </div>
+
+    <div class="panel">
+      <h2>Call Log</h2>
+      <div id="calls-table"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Make Call Modal -->
+<div id="call-modal" class="modal-bg" style="display:none">
+  <div class="modal">
+    <h2>Make a Call</h2>
+    <div class="form-group">
+      <label>Phone Number</label>
+      <input type="tel" id="call-phone" placeholder="+1 (555) 123-4567" />
+    </div>
+    <div id="call-result" style="margin-top:12px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeCallModal()">Cancel</button>
+      <button class="btn btn-primary" id="call-btn" onclick="makeCall()">Call Now</button>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('calls');
+
+function openCallModal() {
+  document.getElementById('call-modal').style.display = 'flex';
+  document.getElementById('call-result').innerHTML = '';
+  document.getElementById('call-phone').value = '';
+  document.getElementById('call-btn').disabled = false;
+}
+
+function closeCallModal() {
+  document.getElementById('call-modal').style.display = 'none';
+}
+
+async function makeCall() {
+  var phone = document.getElementById('call-phone').value.trim();
+  if (!phone) {
+    toast('Phone number is required', true);
+    return;
+  }
+
+  var btn = document.getElementById('call-btn');
+  btn.disabled = true;
+  btn.textContent = 'Calling...';
+  document.getElementById('call-result').innerHTML = '';
+
+  try {
+    var data = await api('/api/portal/calls', { method: 'POST', body: { phone_number: phone } });
+    document.getElementById('call-result').innerHTML =
+      '<div style="padding:12px;border-radius:8px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.25);font-size:0.85rem">' +
+      '<strong>Call initiated!</strong>' +
+      (data.call_id ? '<br>Call ID: ' + data.call_id : '') +
+      '</div>';
+    toast('Call initiated');
+    loadCalls();
+  } catch (err) {
+    document.getElementById('call-result').innerHTML =
+      '<div style="padding:12px;border-radius:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);font-size:0.85rem;color:var(--error)">' +
+      'Error: ' + err.message + '</div>';
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Call Now';
+  }
+}
+
+function formatDuration(seconds) {
+  if (seconds == null) return '—';
+  var mins = Math.floor(seconds / 60);
+  var secs = seconds % 60;
+  return String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+}
+
+function formatCost(cents) {
+  if (cents == null) return '—';
+  return '$' + (cents / 100).toFixed(2);
+}
+
+async function loadCalls() {
+  var container = document.getElementById('calls-table');
+  try {
+    var data = await api('/api/portal/calls');
+    var calls = data.calls || [];
+    if (!calls.length) {
+      container.innerHTML = '<div class="empty">No calls yet. Click "Make Call" to get started.</div>';
+      return;
+    }
+    var html = '<table><thead><tr>' +
+      '<th>When</th><th>Direction</th><th>From/To</th><th>Status</th><th>Duration</th><th>Cost</th><th>Summary</th><th>Recording</th>' +
+      '</tr></thead><tbody>';
+    calls.forEach(function(c) {
+      var when = c.started_at || c.created_at;
+      var number = c.customer_number || c.from_number || c.to_number || '—';
+      var dirBadge = c.direction === 'inbound' ? 'blue' : 'gold';
+      var statusClass = c.status === 'completed' ? 'green' : (c.status === 'failed' ? 'red' : 'badge');
+      var summary = (c.summary || '').length > 80 ? c.summary.substring(0, 80) + '...' : (c.summary || '—');
+      var recording = c.recording_url
+        ? '<a href="' + c.recording_url + '" target="_blank" style="color:var(--accent);text-decoration:none">Play</a>'
+        : '—';
+
+      html += '<tr>' +
+        '<td>' + formatDateTime(when) + '</td>' +
+        '<td><span class="badge ' + dirBadge + '">' + (c.direction || '—') + '</span></td>' +
+        '<td>' + number + '</td>' +
+        '<td><span class="badge ' + statusClass + '">' + (c.status || 'unknown') + '</span></td>' +
+        '<td>' + formatDuration(c.duration_seconds) + '</td>' +
+        '<td>' + formatCost(c.cost_cents) + '</td>' +
+        '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (c.summary || '').replace(/"/g, '&quot;') + '">' + summary + '</td>' +
+        '<td>' + recording + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch (err) {
+    container.innerHTML = '<div class="empty" style="color:var(--error)">Failed to load calls: ' + err.message + '</div>';
+  }
+}
+
+// Click outside modal to close
+document.getElementById('call-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeCallModal();
+});
+
+loadCalls();
+</script>
+</body>
+</html>

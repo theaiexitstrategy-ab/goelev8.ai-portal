@@ -29,6 +29,24 @@
 </head>
 <body>
 <div id="app"></div>
+<script>
+// Client routing: redirect /islaystudios to the iSlay portal
+(function() {
+  var path = window.location.pathname;
+  if (path.startsWith('/islaystudios')) {
+    var token = localStorage.getItem('ge8_token');
+    if (!token && path !== '/islaystudios/login') {
+      window.location.replace('/islaystudios/login');
+      return;
+    }
+    // If authenticated and on bare /islaystudios, go to dashboard
+    if (token && (path === '/islaystudios' || path === '/islaystudios/')) {
+      window.location.replace('/islaystudios/dashboard');
+      return;
+    }
+  }
+})();
+</script>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

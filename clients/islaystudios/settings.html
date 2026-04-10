@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Settings</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css" />
+<style>
+.settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media (max-width: 768px) { .settings-grid { grid-template-columns:1fr; } }
+.check-group { display:flex; align-items:center; gap:8px; margin-bottom:14px; }
+.check-group input[type="checkbox"] { width:auto; accent-color:var(--gold); }
+.check-group label { font-size:0.85rem; color:var(--text); text-transform:none; letter-spacing:0; margin-bottom:0; }
+.divider { border:none; border-top:1px solid var(--border); margin:24px 0; }
+</style>
+</head>
+<body>
+<button id="menu-toggle">&#9776;</button>
+<div class="portal">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>Settings</h1>
+        <div class="sub">Manage your studio configuration</div>
+      </div>
+    </div>
+
+    <!-- Studio Settings -->
+    <div class="panel" id="settings-panel">
+      <h2>Studio Settings</h2>
+      <div class="settings-grid">
+        <div class="form-group">
+          <label>Studio Name</label>
+          <input type="text" id="f-studio-name" />
+        </div>
+        <div class="form-group">
+          <label>Owner Name</label>
+          <input type="text" id="f-owner-name" />
+        </div>
+        <div class="form-group">
+          <label>Owner Email</label>
+          <input type="email" id="f-owner-email" />
+        </div>
+        <div class="form-group">
+          <label>Owner Phone</label>
+          <input type="tel" id="f-owner-phone" />
+        </div>
+        <div class="form-group">
+          <label>Promo Code</label>
+          <input type="text" id="f-promo-code" />
+        </div>
+        <div class="form-group">
+          <label>Promo Amount</label>
+          <input type="text" id="f-promo-amount" />
+        </div>
+        <div class="form-group">
+          <label>Timezone</label>
+          <select id="f-timezone">
+            <option value="America/New_York">Eastern (ET)</option>
+            <option value="America/Chicago">Central (CT)</option>
+            <option value="America/Denver">Mountain (MT)</option>
+            <option value="America/Los_Angeles">Pacific (PT)</option>
+            <option value="America/Anchorage">Alaska (AKT)</option>
+            <option value="Pacific/Honolulu">Hawaii (HT)</option>
+            <option value="America/Phoenix">Arizona (no DST)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Low Credit Threshold</label>
+          <input type="number" id="f-low-credit" min="0" />
+        </div>
+      </div>
+      <div class="check-group">
+        <input type="checkbox" id="f-notify-email" />
+        <label for="f-notify-email">Notification Email</label>
+      </div>
+      <div class="check-group">
+        <input type="checkbox" id="f-notify-sms" />
+        <label for="f-notify-sms">Notification SMS</label>
+      </div>
+      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Change Password -->
+    <div class="panel">
+      <h2>Change Password</h2>
+      <div class="settings-grid">
+        <div class="form-group">
+          <label>New Password</label>
+          <input type="password" id="f-new-pass" placeholder="Enter new password" />
+        </div>
+        <div class="form-group">
+          <label>Confirm Password</label>
+          <input type="password" id="f-confirm-pass" placeholder="Confirm new password" />
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="changePassword()">Update Password</button>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Sign Out -->
+    <div class="panel">
+      <h2>Session</h2>
+      <p style="color:var(--muted); font-size:0.85rem; margin-bottom:12px;">End your current session and return to the login page.</p>
+      <button class="btn btn-danger" onclick="logout()">Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('settings');
+
+var fieldMap = {
+  studio_name: 'f-studio-name',
+  owner_name: 'f-owner-name',
+  owner_email: 'f-owner-email',
+  owner_phone: 'f-owner-phone',
+  promo_code: 'f-promo-code',
+  promo_amount: 'f-promo-amount',
+  timezone: 'f-timezone',
+  notify_email: 'f-notify-email',
+  notify_sms: 'f-notify-sms',
+  low_credit_threshold: 'f-low-credit'
+};
+
+async function loadSettings() {
+  try {
+    var data = await api('/api/portal/settings');
+    Object.keys(fieldMap).forEach(function(key) {
+      var el = document.getElementById(fieldMap[key]);
+      if (!el) return;
+      if (el.type === 'checkbox') {
+        el.checked = !!data[key];
+      } else {
+        el.value = data[key] != null ? data[key] : '';
+      }
+    });
+  } catch (err) {
+    toast('Failed to load settings', true);
+  }
+}
+
+async function saveSettings() {
+  var body = {};
+  Object.keys(fieldMap).forEach(function(key) {
+    var el = document.getElementById(fieldMap[key]);
+    if (!el) return;
+    if (el.type === 'checkbox') {
+      body[key] = el.checked;
+    } else {
+      body[key] = el.value;
+    }
+  });
+  try {
+    await api('/api/portal/settings', { method: 'POST', body: body });
+    toast('Settings saved');
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function changePassword() {
+  var newPass = document.getElementById('f-new-pass').value;
+  var confirm = document.getElementById('f-confirm-pass').value;
+  if (!newPass) { toast('Enter a new password', true); return; }
+  if (newPass !== confirm) { toast('Passwords do not match', true); return; }
+  if (newPass.length < 6) { toast('Password must be at least 6 characters', true); return; }
+  try {
+    await api('/api/auth?action=change-password', { method: 'POST', body: { new_password: newPass } });
+    toast('Password updated');
+    document.getElementById('f-new-pass').value = '';
+    document.getElementById('f-confirm-pass').value = '';
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+loadSettings();
+</script>
+</body>
+</html>

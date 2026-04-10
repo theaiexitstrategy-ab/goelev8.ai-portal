@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>iSlay Studios — Leads</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css" />
+</head>
+<body>
+<button id="menu-toggle">&#9776;</button>
+<div class="portal">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>Leads</h1>
+        <div class="sub">Manage your incoming leads</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div id="leads-table">
+        <div class="skeleton" style="height:300px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js"></script>
+<script>
+initShell('leads');
+
+var allLeads = [];
+
+async function loadLeads() {
+  try {
+    var data = await api('/api/portal/leads');
+    allLeads = data.leads || [];
+    renderLeads();
+  } catch (err) {
+    document.getElementById('leads-table').innerHTML =
+      '<div class="empty">Failed to load leads.</div>';
+  }
+}
+
+function statusBadge(status) {
+  var cls = 'badge';
+  switch ((status || '').toLowerCase()) {
+    case 'new':       cls += ' gold'; break;
+    case 'contacted': cls += ' blue'; break;
+    case 'booked':    cls += ' green'; break;
+    case 'no show':   cls += ' red'; break;
+  }
+  return '<span class="' + cls + '">' + (status || '—') + '</span>';
+}
+
+function renderLeads() {
+  if (!allLeads.length) {
+    document.getElementById('leads-table').innerHTML =
+      '<div class="empty">No leads yet.</div>';
+    return;
+  }
+
+  var rows = allLeads.map(function(l) {
+    return '<tr data-id="' + l.id + '">' +
+      '<td>' + formatDateTime(l.date_entered || l.created_at) + '</td>' +
+      '<td>' + (l.full_name || '—') + '</td>' +
+      '<td>' + (l.phone || '—') + '</td>' +
+      '<td>' + (l.email || '—') + '</td>' +
+      '<td>' + (l.artist_selected || '—') + '</td>' +
+      '<td>' + (l.lead_source || '—') + '</td>' +
+      '<td>' + statusBadge(l.lead_status) + '</td>' +
+      '<td>' +
+        '<select class="status-select" onchange="changeStatus(\'' + l.id + '\', this.value)">' +
+          '<option value="">Change...</option>' +
+          '<option value="New"' + (l.lead_status === 'New' ? ' selected' : '') + '>New</option>' +
+          '<option value="Contacted"' + (l.lead_status === 'Contacted' ? ' selected' : '') + '>Contacted</option>' +
+          '<option value="Booked"' + (l.lead_status === 'Booked' ? ' selected' : '') + '>Booked</option>' +
+          '<option value="No Show"' + (l.lead_status === 'No Show' ? ' selected' : '') + '>No Show</option>' +
+        '</select> ' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteLead(\'' + l.id + '\')">Delete</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  document.getElementById('leads-table').innerHTML =
+    '<table><thead><tr>' +
+      '<th>When</th><th>Name</th><th>Phone</th><th>Email</th><th>Artist</th><th>Source</th><th>Status</th><th>Actions</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+async function changeStatus(id, status) {
+  if (!status) return;
+  try {
+    await api('/api/portal/leads', {
+      method: 'PATCH',
+      body: { id: id, lead_status: status }
+    });
+    // Update local data
+    for (var i = 0; i < allLeads.length; i++) {
+      if (allLeads[i].id === id) {
+        allLeads[i].lead_status = status;
+        break;
+      }
+    }
+    renderLeads();
+    toast('Status updated');
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function deleteLead(id) {
+  if (!confirm('Delete this lead?')) return;
+  try {
+    await api('/api/portal/leads', {
+      method: 'DELETE',
+      body: { id: id }
+    });
+    allLeads = allLeads.filter(function(l) { return l.id !== id; });
+    renderLeads();
+    toast('Lead deleted');
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+loadLeads();
+</script>
+<style>
+.status-select {
+  background: #1a2236;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.7rem;
+  padding: 4px 6px;
+  outline: none;
+  cursor: pointer;
+}
+.status-select:focus { border-color: var(--gold); }
+</style>
+</body>
+</html>

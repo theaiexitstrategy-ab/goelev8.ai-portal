@@ -1140,6 +1140,12 @@ async function render() {
   if (!state.user) {
     try { await loadMe(); } catch { logout(); return; }
   }
+  // Client-specific portal redirect: send branded clients to their portal
+  const CLIENT_PORTALS = { 'islay-studios': '/islaystudios/dashboard' };
+  if (!state.isAdmin && state.client?.slug && CLIENT_PORTALS[state.client.slug]) {
+    window.location.replace(CLIENT_PORTALS[state.client.slug]);
+    return;
+  }
   // Admins land on the admin view by default unless they pick a client.
   if (state.isAdmin && !state.impersonating && state.view !== 'admin') {
     state.view = 'admin';
