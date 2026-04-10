@@ -121,6 +121,23 @@ async function loadMe() {
 // ============================================================
 // SHELL
 // ============================================================
+const TAB_LABELS = {
+  overview:  'Overview',
+  activity:  'Activity',
+  messages:  'Messages',
+  contacts:  'Contacts',
+  leads:     'Leads',
+  calls:     'Voice Calls',
+  bookings:  'Bookings',
+  billing:   'Credits & Billing',
+  connect:   'Payments (Connect)',
+  settings:  'Settings',
+  blasts:    'SMS Blasts',
+  nudges:    'Nudges'
+};
+
+const DEFAULT_TABS = ['overview','activity','messages','contacts','leads','calls','bookings','billing','connect','settings'];
+
 function shell(content) {
   const navBtn = (id, label) =>
     el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; render(); } }, label);
@@ -143,11 +160,17 @@ function shell(content) {
         el('button', { class: 'link', onclick: () => { setImpersonation(null); render(); } }, 'Exit'))
     : null;
 
+  const tabs = state.client?.portal_tabs || DEFAULT_TABS;
+  const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
+
+  const logoSrc = state.client?.logo_url || '/logo.png';
+  const brandName = state.client?.portal_tabs ? (state.client.name || 'Client Portal') : 'GoElev8.AI';
+
   return el('div', { class: 'app' + (state.isAdmin ? ' is-admin' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
-        el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
-        el('div', { class: 'name' }, 'GoElev8.AI',
+        el('div', { class: 'logo' }, el('img', { src: logoSrc, alt: '' })),
+        el('div', { class: 'name' }, brandName,
           el('small', {}, state.isAdmin ? 'Master Admin' : 'Client Portal'))
       ),
       state.client
@@ -157,18 +180,7 @@ function shell(content) {
           )
         : null,
       state.client
-        ? el('div', { class: 'nav' },
-            navBtn('overview', 'Overview'),
-            navBtn('activity', 'Activity'),
-            navBtn('messages', 'Messages'),
-            navBtn('contacts', 'Contacts'),
-            navBtn('leads', 'Leads'),
-            navBtn('calls', 'Voice Calls'),
-            navBtn('bookings', 'Bookings'),
-            navBtn('billing', 'Credits & Billing'),
-            navBtn('connect', 'Payments (Connect)'),
-            navBtn('settings', 'Settings')
-          )
+        ? el('div', { class: 'nav' }, ...navButtons)
         : null,
       adminSection,
       el('button', { class: 'signout', onclick: logout }, 'Sign out')
@@ -776,6 +788,197 @@ async function viewConnect() {
 }
 
 // ============================================================
+// SMS BLASTS
+// ============================================================
+async function viewBlasts() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'SMS Blasts'),
+    el('button', { class: 'btn primary', onclick: () => openBlastModal(wrap) }, '+ New Blast')
+  ));
+
+  const table = el('div', { class: 'panel' });
+  table.appendChild(el('h2', {}, 'Past Blasts'));
+  const tbody = el('div', {});
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+
+  try {
+    const data = await api('/api/portal/blasts');
+    const blasts = data.blasts || [];
+    if (!blasts.length) {
+      tbody.appendChild(el('p', { class: 'muted' }, 'No blasts sent yet. Click "New Blast" to get started.'));
+    } else {
+      const tbl = el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'Sent At'), el('th', {}, 'Name'), el('th', {}, 'Message'),
+          el('th', {}, 'Recipients'), el('th', {}, 'Delivered'), el('th', {}, 'Failed'), el('th', {}, 'Status')
+        )),
+        el('tbody', {}, ...blasts.map(b => el('tr', {},
+          el('td', {}, new Date(b.sent_at || b.created_at).toLocaleString()),
+          el('td', {}, b.name || '—'),
+          el('td', {}, (b.message || '').slice(0, 60) + ((b.message || '').length > 60 ? '…' : '')),
+          el('td', {}, String(b.recipients ?? b.total_recipients ?? '—')),
+          el('td', {}, String(b.delivered ?? b.delivered_count ?? '—')),
+          el('td', {}, String(b.failed ?? b.failed_count ?? '—')),
+          el('td', {}, b.status || 'pending')
+        )))
+      );
+      tbody.appendChild(tbl);
+    }
+  } catch (e) {
+    tbody.appendChild(el('p', { class: 'err' }, 'Failed to load blasts: ' + e.message));
+  }
+  return wrap;
+}
+
+function openBlastModal(wrap) {
+  const existing = document.querySelector('.blast-modal-bg');
+  if (existing) existing.remove();
+
+  const nameIn = el('input', { type: 'text', placeholder: 'e.g. Spring Promo' });
+  const msgIn = el('textarea', { rows: '4', placeholder: 'Your message...' });
+  const promoIn = el('input', { type: 'text', placeholder: 'e.g. SPRING25 (optional)' });
+  const segSel = el('select', {},
+    el('option', { value: 'all' }, 'All Leads'),
+    el('option', { value: 'first_timers' }, 'First Timers'),
+    el('option', { value: 'returning' }, 'Returning'),
+    el('option', { value: 'no_shows' }, 'No Shows')
+  );
+  const result = el('div', {});
+  const sendBtn = el('button', { class: 'btn primary', onclick: async () => {
+    if (!nameIn.value.trim() || !msgIn.value.trim()) { toast('Name and message are required', true); return; }
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending...';
+    try {
+      const body = { name: nameIn.value.trim(), message: msgIn.value.trim(), segment: segSel.value };
+      if (promoIn.value.trim()) body.promoCode = promoIn.value.trim();
+      const data = await api('/api/portal/blasts', { method: 'POST', body });
+      toast(`Blast sent! ${data.sent || 0} delivered, ${data.failed || 0} failed`);
+      bg.remove();
+      state.view = 'blasts'; render();
+    } catch (e) {
+      result.textContent = 'Error: ' + e.message;
+      result.style.color = 'var(--error)';
+    } finally { sendBtn.disabled = false; sendBtn.textContent = 'Send Blast'; }
+  } }, 'Send Blast');
+
+  const modal = el('div', { class: 'modal' },
+    el('h2', {}, 'New SMS Blast'),
+    el('label', {}, 'Blast Name'), nameIn,
+    el('label', {}, 'Message Body'), msgIn,
+    el('label', {}, 'Promo Code'), promoIn,
+    el('label', {}, 'Segment'), segSel,
+    result,
+    el('div', { style: 'display:flex;gap:12px;justify-content:flex-end;margin-top:16px' },
+      el('button', { class: 'btn', onclick: () => bg.remove() }, 'Cancel'),
+      sendBtn
+    )
+  );
+
+  const bg = el('div', { class: 'blast-modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); } }, modal);
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';
+  modal.style.cssText = 'background:var(--card,#1a2236);border:1px solid var(--border,#2a3a5c);border-radius:12px;padding:24px;width:90%;max-width:480px';
+  modal.querySelectorAll('input,textarea,select').forEach(i => {
+    i.style.cssText = 'width:100%;padding:8px 12px;margin:4px 0 12px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem';
+  });
+  modal.querySelectorAll('label').forEach(l => l.style.cssText = 'font-size:0.8rem;color:var(--muted,#888)');
+  document.body.appendChild(bg);
+}
+
+// ============================================================
+// NUDGES
+// ============================================================
+const DELAY_OPTIONS = {
+  1: [{ v: 0, l: 'Immediately' }],
+  2: [{ v: 30, l: '30 min' }, { v: 60, l: '1 hour' }, { v: 120, l: '2 hours' }, { v: 240, l: '4 hours' }],
+  3: [{ v: 720, l: '12 hours' }, { v: 1440, l: '1 day' }, { v: 2880, l: '2 days' }],
+  4: [{ v: 1440, l: '1 day' }, { v: 2880, l: '2 days' }, { v: 4320, l: '3 days' }],
+  5: [{ v: 4320, l: '3 days' }, { v: 7200, l: '5 days' }, { v: 10080, l: '7 days' }]
+};
+
+async function viewNudges() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Nudges'),
+    el('div', { class: 'muted' }, 'Automated 5-message SMS drip for new leads')
+  ));
+
+  wrap.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:20px' },
+    'When a new lead comes in, these messages are sent automatically. Variables: [first_name], [business_name], [funnel_url]'
+  ));
+
+  const slotsDiv = el('div', { id: 'nudge-slots' });
+  wrap.appendChild(slotsDiv);
+
+  let nudges = [];
+  try {
+    const data = await api('/api/portal/nudges');
+    nudges = data.nudges || [];
+  } catch (e) {
+    slotsDiv.appendChild(el('p', { class: 'err' }, 'Failed to load nudges: ' + e.message));
+    return wrap;
+  }
+
+  for (let i = 1; i <= 5; i++) {
+    const n = nudges.find(x => x.message_number === i);
+    const body = n ? n.message_body : '';
+    const delay = n ? n.delay_minutes : 0;
+    const active = n ? n.is_active !== false : true;
+
+    const textarea = el('textarea', { rows: '3', style: 'width:100%;padding:10px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:8px;color:var(--text,#e0e0e0);font-size:0.8rem;resize:none' }, body);
+    textarea.dataset.num = i;
+
+    const delaySel = el('select', { style: 'background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.75rem;padding:4px 8px' });
+    delaySel.dataset.num = i;
+    (DELAY_OPTIONS[i] || []).forEach(o => {
+      const opt = el('option', { value: String(o.v) }, o.l);
+      if (o.v === delay) opt.selected = true;
+      delaySel.appendChild(opt);
+    });
+
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = active;
+    cb.dataset.num = i;
+
+    const card = el('div', { class: 'panel', style: active ? '' : 'opacity:0.5' },
+      el('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:12px' },
+        el('div', { style: 'width:28px;height:28px;border-radius:50%;background:var(--accent,#C9A84C);color:#000;display:flex;align-items:center;justify-content:center;font-weight:bold' }, String(i)),
+        el('div', { style: 'flex:1;font-weight:600;font-size:0.9rem' }, 'Message ' + i + (i === 1 ? ' — Welcome' : '')),
+        el('label', { style: 'display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--muted,#888);cursor:pointer' },
+          cb, el('span', {}, active ? 'Active' : 'Off'))
+      ),
+      textarea,
+      el('div', { style: 'display:flex;justify-content:flex-end;margin-top:8px' }, delaySel)
+    );
+    slotsDiv.appendChild(card);
+  }
+
+  const saveBtn = el('button', { class: 'btn primary', style: 'margin-top:16px', onclick: async () => {
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving...';
+    const payload = [];
+    for (let i = 1; i <= 5; i++) {
+      const ta = slotsDiv.querySelector(`textarea[data-num="${i}"]`);
+      const sel = slotsDiv.querySelector(`select[data-num="${i}"]`);
+      const chk = slotsDiv.querySelector(`input[data-num="${i}"]`);
+      payload.push({
+        message_number: i,
+        message_body: ta.value,
+        delay_minutes: parseInt(sel.value, 10),
+        is_active: chk.checked
+      });
+    }
+    try {
+      await api('/api/portal/nudges', { method: 'PUT', body: { nudges: payload } });
+      toast('Nudges saved');
+    } catch (e) { toast(e.message, true); }
+    finally { saveBtn.disabled = false; saveBtn.textContent = 'Save All Nudges'; }
+  } }, 'Save All Nudges');
+  wrap.appendChild(el('div', { style: 'text-align:right' }, saveBtn));
+
+  return wrap;
+}
+
+// ============================================================
 // SETTINGS
 // ============================================================
 function viewSettings() {
@@ -1153,6 +1356,10 @@ async function render() {
   // Reload client context when impersonation toggles.
   if (state.isAdmin && state.impersonating && !state.client) {
     try { await loadMe(); } catch (e) { toast('Impersonation failed: ' + e.message, true); }
+    // Navigate to the client's first tab if they have custom portal_tabs
+    if (state.client?.portal_tabs?.length) {
+      state.view = state.client.portal_tabs[0];
+    }
   }
   let view;
   try {
@@ -1167,6 +1374,8 @@ async function render() {
       case 'messages':  view = await viewMessages(); break;
       case 'billing':   view = await viewBilling(); break;
       case 'connect':   view = await viewConnect(); break;
+      case 'blasts':    view = await viewBlasts(); break;
+      case 'nudges':    view = await viewNudges(); break;
       case 'settings':  view = viewSettings(); break;
       default:          view = await viewOverview();
     }
