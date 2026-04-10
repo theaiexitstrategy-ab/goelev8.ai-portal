@@ -411,9 +411,9 @@ async function handleLead(req, res) {
   const slug = body.slug;
   if (!slug) return res.status(400).json({ error: 'missing_slug' });
 
-  // Resolve client
+  // Resolve client (fetch all fields needed for welcome SMS)
   const { data: client } = await supabaseAdmin
-    .from('clients').select('id').eq('slug', slug).maybeSingle();
+    .from('clients').select('*').eq('slug', slug).maybeSingle();
   if (!client) return res.status(422).json({ error: 'unknown_client' });
 
   const name  = body.name  || null;
@@ -434,7 +434,20 @@ async function handleLead(req, res) {
 
   if (error) return res.status(500).json({ error: error.message });
 
-  return res.status(200).json({ ok: true, lead_id: lead?.id || null });
+  // Fire welcome SMS if enabled for this client
+  let welcome = { sent: false, reason: 'no_phone' };
+  if (phone) {
+    try {
+      welcome = await sendWelcomeForEvent({
+        client,
+        event: { contact_phone: phone, contact_name: name, contact_email: email, source: body.source || 'web_form' }
+      });
+    } catch (e) {
+      welcome = { sent: false, reason: 'error: ' + e.message };
+    }
+  }
+
+  return res.status(200).json({ ok: true, lead_id: lead?.id || null, welcome });
 }
 
 export default async function handler(req, res) {
