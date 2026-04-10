@@ -492,5 +492,30 @@ async function loadBlastHistory() {
   .seg-btn:not(:last-child) { border-right:none; border-bottom:1px solid var(--border); }
 }
 </style>
+<!-- Mobile bottom nav (inline styles — cache-proof) -->
+<nav id="mnav" style="display:none;position:fixed;bottom:0;left:0;right:0;background:#0d1117;border-top:1px solid #1f2937;z-index:200;padding:8px 0;justify-content:space-around;align-items:center">
+<a href="/islaystudios/leads" style="display:flex;flex-direction:column;align-items:center;gap:2px;text-decoration:none;color:#9ca3af;font-size:0.6rem;font-family:sans-serif;padding:4px 8px"><span style="font-size:1.2rem">👥</span>Leads</a>
+<a href="/islaystudios/messages" style="display:flex;flex-direction:column;align-items:center;gap:2px;text-decoration:none;color:#9ca3af;font-size:0.6rem;font-family:sans-serif;padding:4px 8px"><span style="font-size:1.2rem">💬</span>Messages</a>
+<a href="/islaystudios/blasts" style="display:flex;flex-direction:column;align-items:center;gap:2px;text-decoration:none;color:#C9A84C;font-size:0.6rem;font-family:sans-serif;padding:4px 8px"><span style="font-size:1.2rem">📣</span>Blasts</a>
+<a href="/islaystudios/nudges" style="display:flex;flex-direction:column;align-items:center;gap:2px;text-decoration:none;color:#9ca3af;font-size:0.6rem;font-family:sans-serif;padding:4px 8px"><span style="font-size:1.2rem">⚡</span>Nudges</a>
+<a href="/islaystudios/settings" style="display:flex;flex-direction:column;align-items:center;gap:2px;text-decoration:none;color:#9ca3af;font-size:0.6rem;font-family:sans-serif;padding:4px 8px"><span style="font-size:1.2rem">⚙️</span>Settings</a>
+</nav>
+<script>
+(function(){
+  var n=document.getElementById('mnav');
+  var m=window.matchMedia('(max-width:768px)');
+  function u(){n.style.display=m.matches?'flex':'none'}
+  m.addEventListener?m.addEventListener('change',u):m.addListener(u);u();
+  if(m.matches){var mn=document.querySelector('.main');if(mn)mn.style.paddingBottom='80px';}
+  var ios=/iphone|ipad|ipod/i.test(navigator.userAgent);
+  var standalone=window.matchMedia('(display-mode:standalone)').matches||window.navigator.standalone;
+  if(ios&&!standalone&&!sessionStorage.getItem('pwa_x')){
+    var b=document.createElement('div');
+    b.style.cssText='position:fixed;bottom:62px;left:12px;right:12px;background:#111827;border:1px solid #C9A84C;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;z-index:199;box-shadow:0 4px 20px rgba(0,0,0,0.4)';
+    b.innerHTML='<div style="flex:1;font-size:0.8rem;line-height:1.4;color:#f3f4f6"><strong style="color:#C9A84C">Add to Home Screen</strong><br>Tap the share button <span style="font-size:1.1rem">⎙</span> then <b>Add to Home Screen</b></div><button onclick="this.parentElement.remove();sessionStorage.setItem(\'pwa_x\',\'1\')" style="background:none;border:none;color:#9ca3af;font-size:1.2rem;cursor:pointer;padding:4px">✕</button>';
+    document.body.appendChild(b);
+  }
+})();
+</script>
 </body>
 </html>
