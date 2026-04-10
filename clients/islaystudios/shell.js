@@ -1,6 +1,26 @@
 // iSlay Studios portal shell — shared across all pages.
 // Handles auth, sidebar, API calls, and common utilities.
 
+// Force SW update + nuke stale caches on load
+(function() {
+  if ('serviceWorker' in navigator) {
+    // Clear all caches that aren't the current version
+    if ('caches' in window) {
+      caches.keys().then(function(names) {
+        names.forEach(function(name) {
+          if (name !== 'goelev8-portal-v9') caches.delete(name);
+        });
+      });
+    }
+    // Force the SW to check for updates
+    navigator.serviceWorker.getRegistration().then(function(reg) {
+      if (reg) reg.update();
+    });
+  }
+  // Clear stale client config cache
+  try { sessionStorage.removeItem('ge8_client'); } catch(e) {}
+})();
+
 var CLIENT_ID = 'islay_studios';
 
 // Full tab catalog — maps tab key to config
