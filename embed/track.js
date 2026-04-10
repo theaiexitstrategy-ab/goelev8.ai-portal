@@ -139,4 +139,26 @@
   // Capture phase so we run before the form's own onsubmit handler can
   // navigate / unmount the page.
   document.addEventListener('submit', handleSubmit, true);
+
+  // ── Page view tracking ─────────────────────────────────────────────
+  // Fire once on load. Silent, never blocks render.
+  try {
+    var viewPayload = JSON.stringify({
+      slug: cfg.slug,
+      referrer: document.referrer || null,
+      user_agent: navigator.userAgent || null
+    });
+    var VIEW_ENDPOINT = 'https://portal.goelev8.ai/api/track/view';
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(VIEW_ENDPOINT, new Blob([viewPayload], { type: 'application/json' }));
+    } else {
+      fetch(VIEW_ENDPOINT, {
+        method: 'POST',
+        mode: 'cors',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: viewPayload
+      }).catch(function () {});
+    }
+  } catch (_) {}
 })();

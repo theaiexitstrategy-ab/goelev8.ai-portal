@@ -3,66 +3,89 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>iSlay Studios — SMS Blasts</title>
+<title>iSlay Studios — SMS Blast</title>
 <link rel="icon" href="/icon-192.png" />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./portal.css" />
 </head>
 <body>
+<button id="menu-toggle">&#9776;</button>
 <div class="portal">
-  <button id="menu-toggle">☰</button>
   <div id="sidebar"></div>
   <div class="main">
     <div class="topbar">
       <div>
-        <h1>SMS Blasts</h1>
-        <div class="sub">Send promotional messages to your client segments</div>
+        <h1>SMS BLAST</h1>
+        <div class="sub">Send to your artist list</div>
       </div>
-      <button class="btn btn-primary" onclick="openModal()">📱 New Blast</button>
     </div>
 
-    <div class="panel">
-      <h2>Past Blasts</h2>
-      <div id="blasts-table"><div class="empty">Loading...</div></div>
+    <!-- Audience selector -->
+    <div class="blast-section">
+      <div class="section-label">AUDIENCE</div>
+      <div class="segment-control">
+        <button class="seg-btn active" data-seg="all" onclick="setSegment('all')">All Leads</button>
+        <button class="seg-btn" data-seg="new" onclick="setSegment('new')">New Only</button>
+        <button class="seg-btn" data-seg="booked" onclick="setSegment('booked')">Session Booked</button>
+      </div>
+      <div class="audience-count" id="audience-count">Loading audience...</div>
+    </div>
+
+    <!-- Message composer -->
+    <div class="blast-section">
+      <div class="section-label">MESSAGE</div>
+      <div class="composer-card">
+        <textarea id="blast-message" rows="4" maxlength="160" placeholder="Type your message..." oninput="updateComposer()"></textarea>
+        <div class="composer-bar">
+          <div class="var-buttons">
+            <button class="var-btn" onclick="insertVar('[first_name]')">[first_name]</button>
+            <button class="var-btn" onclick="insertVar('[business_name]')">[business_name]</button>
+          </div>
+          <span class="char-counter" id="char-counter">0/160</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div class="blast-section" id="preview-section" style="display:none">
+      <div class="section-label">PREVIEW</div>
+      <div class="preview-card" id="preview-card"></div>
+    </div>
+
+    <!-- Credit estimate -->
+    <div class="credit-estimate" id="credit-estimate"></div>
+
+    <!-- Send button -->
+    <button class="blast-send-btn" id="send-btn" onclick="confirmSend()" disabled>
+      SEND BLAST →
+    </button>
+
+    <!-- Past blasts -->
+    <div class="blast-section" style="margin-top:32px">
+      <div class="section-label">BLAST HISTORY</div>
+      <div id="blasts-history">
+        <div class="skeleton" style="height:120px;border-radius:12px"></div>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- New Blast Modal -->
-<div id="blast-modal" class="modal-bg" style="display:none">
-  <div class="modal">
-    <h2>New SMS Blast</h2>
-    <div class="form-group">
-      <label>Blast Name</label>
-      <input type="text" id="blast-name" placeholder="e.g. Spring Promo" />
-    </div>
-    <div class="form-group">
-      <label>Message Body</label>
-      <textarea id="blast-message" rows="4" placeholder="Your message..."></textarea>
-    </div>
-    <div class="form-group">
-      <label>Promo Code (optional)</label>
-      <input type="text" id="blast-promo" placeholder="e.g. SPRING25" />
-    </div>
-    <div class="form-group">
-      <label>Segment</label>
-      <select id="blast-segment" onchange="toggleArtistFilter()">
-        <option value="all">All Leads</option>
-        <option value="first_timers">First Timers</option>
-        <option value="returning">Returning</option>
-        <option value="no_shows">No Shows</option>
-        <option value="by_artist">By Artist</option>
-      </select>
-    </div>
-    <div class="form-group" id="artist-filter-group" style="display:none">
-      <label>Artist Name</label>
-      <input type="text" id="blast-artist" placeholder="Artist name" />
-    </div>
-    <div id="blast-result" style="margin-top:12px"></div>
+<!-- Confirmation modal -->
+<div id="confirm-modal" class="modal-bg" style="display:none" onclick="closeConfirm(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="confirm-title" id="confirm-title">SEND TO 0 ARTISTS</div>
+    <div class="confirm-body" id="confirm-body"></div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="send-btn" onclick="sendBlast()">Send Blast</button>
+      <button class="btn btn-ghost" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-primary" id="confirm-send-btn" onclick="executeSend()" style="font-family:var(--font-heading);letter-spacing:1px">CONFIRM SEND →</button>
     </div>
+  </div>
+</div>
+
+<!-- Success overlay -->
+<div id="success-overlay" class="success-overlay" style="display:none">
+  <div class="success-content">
+    <div class="success-check">✓</div>
+    <div class="success-text" id="success-text">Blast sent!</div>
   </div>
 </div>
 
@@ -70,109 +93,404 @@
 <script>
 initShell('blasts');
 
-function openModal() {
-  document.getElementById('blast-modal').style.display = 'flex';
-  document.getElementById('blast-result').innerHTML = '';
-  document.getElementById('blast-name').value = '';
-  document.getElementById('blast-message').value = '';
-  document.getElementById('blast-promo').value = '';
-  document.getElementById('blast-segment').value = 'all';
-  document.getElementById('blast-artist').value = '';
-  document.getElementById('artist-filter-group').style.display = 'none';
-  document.getElementById('send-btn').disabled = false;
+var currentSegment = 'all';
+var audienceCounts = { all: 0, new: 0, booked: 0 };
+var creditBalance = 0;
+
+// Init
+(async function init() {
+  await Promise.all([loadAudienceCounts(), loadBlastHistory()]);
+})();
+
+async function loadAudienceCounts() {
+  try {
+    var data = await api('/api/portal/leads');
+    var leads = (data.leads || []).filter(function(l) { return l.phone; });
+    audienceCounts.all = leads.length;
+    audienceCounts.new = leads.filter(function(l) { return (l.lead_status || '').toLowerCase() === 'new'; }).length;
+    audienceCounts.booked = leads.filter(function(l) { return (l.lead_status || '').toLowerCase() === 'booked'; }).length;
+
+    var dashData = await api('/api/portal/dashboard');
+    creditBalance = dashData.creditBalance || 0;
+
+    updateAudienceDisplay();
+    updateCreditEstimate();
+  } catch(e) {
+    document.getElementById('audience-count').textContent = 'Unable to load audience';
+  }
 }
 
-function closeModal() {
-  document.getElementById('blast-modal').style.display = 'none';
+function setSegment(seg) {
+  currentSegment = seg;
+  var btns = document.querySelectorAll('.seg-btn');
+  btns.forEach(function(b) {
+    b.className = b.getAttribute('data-seg') === seg ? 'seg-btn active' : 'seg-btn';
+  });
+  updateAudienceDisplay();
+  updateCreditEstimate();
 }
 
-function toggleArtistFilter() {
-  var seg = document.getElementById('blast-segment').value;
-  document.getElementById('artist-filter-group').style.display = seg === 'by_artist' ? 'block' : 'none';
+function updateAudienceDisplay() {
+  var count = audienceCounts[currentSegment] || 0;
+  document.getElementById('audience-count').textContent =
+    count + ' artist' + (count !== 1 ? 's' : '') + ' will receive this';
 }
 
-async function sendBlast() {
-  var name = document.getElementById('blast-name').value.trim();
-  var message = document.getElementById('blast-message').value.trim();
-  var promoCode = document.getElementById('blast-promo').value.trim();
-  var segment = document.getElementById('blast-segment').value;
-  var artistFilter = document.getElementById('blast-artist').value.trim();
+function insertVar(variable) {
+  var textarea = document.getElementById('blast-message');
+  var start = textarea.selectionStart;
+  var end = textarea.selectionEnd;
+  var text = textarea.value;
+  textarea.value = text.substring(0, start) + variable + text.substring(end);
+  textarea.selectionStart = textarea.selectionEnd = start + variable.length;
+  textarea.focus();
+  updateComposer();
+}
 
-  if (!name || !message) {
-    toast('Name and message are required', true);
+function updateComposer() {
+  var textarea = document.getElementById('blast-message');
+  var len = textarea.value.length;
+  var counter = document.getElementById('char-counter');
+  counter.textContent = len + '/160';
+  counter.className = 'char-counter' + (len > 150 ? ' red' : len > 130 ? ' amber' : '');
+
+  // Preview
+  var previewSection = document.getElementById('preview-section');
+  var previewCard = document.getElementById('preview-card');
+  if (len > 0) {
+    previewSection.style.display = '';
+    var preview = textarea.value
+      .replace(/\[first_name\]/g, 'Marcus')
+      .replace(/\[business_name\]/g, 'iSlay Studios');
+    previewCard.textContent = preview;
+  } else {
+    previewSection.style.display = 'none';
+  }
+
+  updateCreditEstimate();
+  updateSendButton();
+}
+
+function updateCreditEstimate() {
+  var count = audienceCounts[currentSegment] || 0;
+  var el = document.getElementById('credit-estimate');
+  var insufficient = count > creditBalance;
+  if (count === 0) {
+    el.innerHTML = '';
     return;
   }
+  el.innerHTML =
+    '<span' + (insufficient ? ' class="credit-warn"' : '') + '>' +
+      'Estimated: ' + count + ' SMS credit' + (count !== 1 ? 's' : '') +
+      ' · Balance: ' + creditBalance + ' credits' +
+    '</span>' +
+    (insufficient
+      ? '<div class="credit-warn-msg">⚠ Not enough credits — you need ' + (count - creditBalance) + ' more. <a href="/islaystudios/settings">Buy Credits →</a></div>'
+      : '');
+}
 
+function updateSendButton() {
+  var msg = document.getElementById('blast-message').value.trim();
+  var count = audienceCounts[currentSegment] || 0;
   var btn = document.getElementById('send-btn');
-  btn.disabled = true;
-  btn.textContent = 'Sending...';
-  document.getElementById('blast-result').innerHTML = '';
+  btn.disabled = !msg || count === 0 || count > creditBalance;
+}
+
+function confirmSend() {
+  var count = audienceCounts[currentSegment] || 0;
+  document.getElementById('confirm-title').textContent = 'SEND TO ' + count + ' ARTIST' + (count !== 1 ? 'S' : '');
+  document.getElementById('confirm-body').textContent =
+    'This will use ' + count + ' credit' + (count !== 1 ? 's' : '') + '. You have ' + creditBalance + ' remaining.';
+  document.getElementById('confirm-modal').style.display = 'flex';
+}
+
+function closeConfirm(e) {
+  if (e && e.target !== document.getElementById('confirm-modal')) return;
+  document.getElementById('confirm-modal').style.display = 'none';
+}
+
+async function executeSend() {
+  var message = document.getElementById('blast-message').value.trim();
+  var confirmBtn = document.getElementById('confirm-send-btn');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'SENDING...';
 
   try {
-    var body = { name: name, message: message, segment: segment };
-    if (promoCode) body.promoCode = promoCode;
-    if (segment === 'by_artist' && artistFilter) body.artistFilter = artistFilter;
+    var data = await api('/api/portal/blasts', {
+      method: 'POST',
+      body: {
+        name: 'Blast — ' + new Date().toLocaleDateString(),
+        message: message,
+        segment: currentSegment
+      }
+    });
 
-    var data = await api('/api/portal/blasts', { method: 'POST', body: body });
+    // Close confirm modal
+    document.getElementById('confirm-modal').style.display = 'none';
+
+    // Show success overlay
     var sent = data.sent || 0;
-    var failed = data.failed || 0;
-    document.getElementById('blast-result').innerHTML =
-      '<div style="padding:12px;border-radius:8px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.25);font-size:0.85rem">' +
-      '<strong>Blast sent!</strong><br>' +
-      '<span style="color:var(--success)">Sent: ' + sent + '</span> &nbsp; ' +
-      '<span style="color:var(--error)">Failed: ' + failed + '</span>' +
-      '</div>';
-    toast('Blast sent successfully');
-    loadBlasts();
+    document.getElementById('success-text').textContent = 'Blast sent to ' + sent + ' artist' + (sent !== 1 ? 's' : '');
+    document.getElementById('success-overlay').style.display = 'flex';
+
+    // Update credit balance
+    creditBalance = data.credits_remaining || 0;
+
+    // Reset composer
+    document.getElementById('blast-message').value = '';
+    updateComposer();
+
+    // Fade success after 3s
+    setTimeout(function() {
+      document.getElementById('success-overlay').style.display = 'none';
+    }, 3000);
+
+    // Reload counts and history
+    loadAudienceCounts();
+    loadBlastHistory();
   } catch (err) {
-    document.getElementById('blast-result').innerHTML =
-      '<div style="padding:12px;border-radius:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);font-size:0.85rem;color:var(--error)">' +
-      'Error: ' + err.message + '</div>';
-    toast(err.message, true);
+    document.getElementById('confirm-modal').style.display = 'none';
+
+    if (err.message.indexOf('insufficient_credits') >= 0) {
+      document.getElementById('credit-estimate').innerHTML =
+        '<div class="credit-warn-msg">⚠ Not enough credits. <a href="/islaystudios/settings">Buy Credits →</a></div>';
+    } else {
+      toast(err.message, true);
+    }
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Send Blast';
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = 'CONFIRM SEND →';
   }
 }
 
-async function loadBlasts() {
-  var container = document.getElementById('blasts-table');
+async function loadBlastHistory() {
+  var container = document.getElementById('blasts-history');
   try {
     var data = await api('/api/portal/blasts');
     var blasts = data.blasts || [];
     if (!blasts.length) {
-      container.innerHTML = '<div class="empty">No blasts sent yet. Click "New Blast" to get started.</div>';
+      container.innerHTML = '<div class="empty" style="padding:24px">No blasts sent yet.</div>';
       return;
     }
-    var html = '<table><thead><tr>' +
-      '<th>Sent At</th><th>Name</th><th>Message</th><th>Recipients</th><th>Delivered</th><th>Failed</th><th>Status</th>' +
-      '</tr></thead><tbody>';
-    blasts.forEach(function(b) {
-      var statusClass = b.status === 'completed' ? 'green' : (b.status === 'failed' ? 'red' : 'gold');
-      var msgPreview = (b.message || '').length > 60 ? b.message.substring(0, 60) + '...' : (b.message || '');
-      html += '<tr>' +
-        '<td>' + formatDateTime(b.sent_at || b.created_at) + '</td>' +
-        '<td>' + (b.name || '—') + '</td>' +
-        '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (b.message || '').replace(/"/g, '&quot;') + '">' + msgPreview + '</td>' +
-        '<td>' + (b.recipients != null ? b.recipients : '—') + '</td>' +
-        '<td>' + (b.delivered != null ? b.delivered : '—') + '</td>' +
-        '<td>' + (b.failed != null ? b.failed : '—') + '</td>' +
-        '<td><span class="badge ' + statusClass + '">' + (b.status || 'pending') + '</span></td>' +
-        '</tr>';
-    });
-    html += '</tbody></table>';
+    var html = blasts.map(function(b) {
+      var statusCls = (b.status || '').toLowerCase() === 'sent' ? 'badge-booked' : 'badge-new';
+      var msg = (b.message_body || b.message || '');
+      var preview = msg.length > 80 ? msg.substring(0, 80) + '...' : msg;
+      return '<div class="history-row">' +
+        '<div class="history-left">' +
+          '<div class="history-name">' + (b.blast_name || b.name || 'Untitled') + '</div>' +
+          '<div class="history-msg">' + preview + '</div>' +
+        '</div>' +
+        '<div class="history-right">' +
+          '<div class="history-date">' + formatDate(b.sent_at || b.created_at) + '</div>' +
+          '<div class="history-stats">' +
+            '<span class="history-sent">' + (b.delivered_count || b.delivered || 0) + ' sent</span>' +
+            (b.failed_count || b.failed ? '<span class="history-failed"> · ' + (b.failed_count || b.failed) + ' failed</span>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
     container.innerHTML = html;
   } catch (err) {
-    container.innerHTML = '<div class="empty" style="color:var(--error)">Failed to load blasts: ' + err.message + '</div>';
+    container.innerHTML = '<div class="empty" style="color:var(--error)">Failed to load history.</div>';
   }
 }
-
-// Click outside modal to close
-document.getElementById('blast-modal').addEventListener('click', function(e) {
-  if (e.target === this) closeModal();
-});
-
-loadBlasts();
 </script>
+<style>
+/* Blast page styles */
+.blast-section { margin-bottom:20px; }
+.section-label {
+  font-size:0.65rem;
+  font-weight:600;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:0.5px;
+  margin-bottom:10px;
+}
+
+/* Segment control */
+.segment-control {
+  display:flex;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:10px;
+  overflow:hidden;
+}
+.seg-btn {
+  flex:1;
+  padding:10px 8px;
+  background:transparent;
+  border:none;
+  color:var(--muted);
+  font-size:0.8rem;
+  font-weight:500;
+  cursor:pointer;
+  transition:all 0.15s;
+  font-family:var(--font-body);
+}
+.seg-btn:not(:last-child) { border-right:1px solid var(--border); }
+.seg-btn:hover { color:var(--text); background:rgba(255,255,255,0.03); }
+.seg-btn.active { background:var(--gold); color:#000; font-weight:600; }
+.audience-count {
+  font-size:0.75rem;
+  color:var(--muted);
+  margin-top:8px;
+  padding-left:2px;
+}
+
+/* Composer */
+.composer-card {
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:12px;
+  overflow:hidden;
+}
+.composer-card textarea {
+  width:100%;
+  padding:14px 16px;
+  background:transparent;
+  border:none;
+  color:var(--text);
+  font-size:0.85rem;
+  line-height:1.5;
+  outline:none;
+  resize:none;
+  font-family:var(--font-body);
+}
+.composer-bar {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:8px 12px;
+  border-top:1px solid var(--border);
+}
+.var-buttons { display:flex; gap:6px; }
+.var-btn {
+  padding:3px 8px;
+  background:#1a2236;
+  border:1px solid var(--border);
+  border-radius:4px;
+  color:var(--gold);
+  font-size:0.65rem;
+  font-family:monospace;
+  cursor:pointer;
+  transition:border-color 0.15s;
+}
+.var-btn:hover { border-color:var(--gold); }
+.char-counter { font-size:0.7rem; color:var(--success); font-weight:500; }
+.char-counter.amber { color:var(--warn); }
+.char-counter.red { color:var(--error); }
+
+/* Preview */
+.preview-card {
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px 16px;
+  font-size:0.8rem;
+  line-height:1.5;
+  color:var(--text);
+  white-space:pre-wrap;
+}
+
+/* Credit estimate */
+.credit-estimate {
+  font-size:0.75rem;
+  color:var(--muted);
+  margin-bottom:16px;
+  padding-left:2px;
+}
+.credit-warn { color:var(--error); }
+.credit-warn-msg {
+  margin-top:6px;
+  font-size:0.75rem;
+  color:var(--error);
+}
+.credit-warn-msg a { color:var(--gold); text-decoration:none; }
+.credit-warn-msg a:hover { text-decoration:underline; }
+
+/* Send button */
+.blast-send-btn {
+  width:100%;
+  padding:14px;
+  background:var(--gold);
+  color:#000;
+  border:none;
+  border-radius:10px;
+  font-family:var(--font-heading);
+  font-size:1.1rem;
+  letter-spacing:1px;
+  cursor:pointer;
+  transition:background 0.15s;
+}
+.blast-send-btn:hover { background:var(--gold-light); }
+.blast-send-btn:disabled { opacity:0.4; cursor:not-allowed; }
+
+/* Confirm modal overrides */
+.confirm-title {
+  font-family:var(--font-heading);
+  font-size:1.3rem;
+  letter-spacing:0.5px;
+  margin-bottom:8px;
+}
+.confirm-body {
+  font-size:0.8rem;
+  color:var(--muted);
+  margin-bottom:4px;
+}
+
+/* Success overlay */
+.success-overlay {
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.7);
+  z-index:9999;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.success-content { text-align:center; animation:fadeInUp 0.4s ease; }
+.success-check {
+  width:64px;
+  height:64px;
+  border-radius:50%;
+  background:var(--success);
+  color:#fff;
+  font-size:2rem;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  margin:0 auto 16px;
+}
+.success-text { font-size:1rem; color:var(--text); font-weight:600; }
+@keyframes fadeInUp {
+  from { transform:translateY(20px); opacity:0; }
+  to { transform:translateY(0); opacity:1; }
+}
+
+/* Blast history */
+.history-row {
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  padding:14px 16px;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:10px;
+  margin-bottom:8px;
+}
+.history-left { flex:1; min-width:0; margin-right:12px; }
+.history-name { font-weight:600; font-size:0.85rem; margin-bottom:4px; }
+.history-msg { font-size:0.75rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.history-right { flex-shrink:0; text-align:right; }
+.history-date { font-size:0.7rem; color:var(--muted); margin-bottom:4px; }
+.history-sent { font-size:0.7rem; color:var(--success); }
+.history-failed { font-size:0.7rem; color:var(--error); }
+
+@media (max-width: 768px) {
+  .segment-control { flex-direction:column; }
+  .seg-btn:not(:last-child) { border-right:none; border-bottom:1px solid var(--border); }
+}
+</style>
 </body>
 </html>

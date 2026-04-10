@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>iSlay Studios — Settings</title>
 <link rel="icon" href="/icon-192.png" />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./portal.css" />
 <style>
 .settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
@@ -14,6 +13,18 @@
 .check-group input[type="checkbox"] { width:auto; accent-color:var(--gold); }
 .check-group label { font-size:0.85rem; color:var(--text); text-transform:none; letter-spacing:0; margin-bottom:0; }
 .divider { border:none; border-top:1px solid var(--border); margin:24px 0; }
+.settings-logo { display:flex; justify-content:center; margin-bottom:24px; }
+.settings-logo img { height:48px; width:auto; object-fit:contain; }
+.credit-cards { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px; }
+@media (max-width: 768px) { .credit-cards { grid-template-columns:1fr; } }
+.credit-stat { background:#1a2236; border:1px solid var(--border); border-radius:10px; padding:16px; text-align:center; }
+.credit-stat .cs-value { font-family:var(--font-heading); font-size:1.75rem; color:var(--gold); }
+.credit-stat .cs-label { font-size:0.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.3px; margin-top:2px; }
+.credit-stat.warn .cs-value { color:var(--warn); }
+.account-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.8rem; }
+.account-label { color:var(--muted); }
+.account-value { color:var(--text); font-weight:500; }
+.reload-info { font-size:0.75rem; color:var(--muted); margin-top:4px; }
 </style>
 </head>
 <body>
@@ -23,65 +34,127 @@
   <div class="main">
     <div class="topbar">
       <div>
-        <h1>Settings</h1>
+        <h1>SETTINGS</h1>
         <div class="sub">Manage your studio configuration</div>
       </div>
     </div>
 
-    <!-- Studio Settings -->
-    <div class="panel" id="settings-panel">
-      <h2>Studio Settings</h2>
+    <!-- Logo -->
+    <div class="settings-logo">
+      <img src="/images/islay-logo.png" alt="iSlay Studios" />
+    </div>
+
+    <!-- Account Info -->
+    <div class="panel">
+      <h2>Account</h2>
+      <div id="account-info">
+        <div class="skeleton" style="height:100px"></div>
+      </div>
+    </div>
+
+    <!-- Credits & Billing -->
+    <div class="panel">
+      <h2>Credits & Billing</h2>
+      <div class="credit-cards" id="credit-cards">
+        <div class="credit-stat">
+          <div class="cs-value" id="cs-balance">—</div>
+          <div class="cs-label">Credit Balance</div>
+        </div>
+        <div class="credit-stat">
+          <div class="cs-value" id="cs-sent">—</div>
+          <div class="cs-label">Sent This Month</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Buy More Credits -->
+    <div class="panel">
+      <h2>Buy More Credits</h2>
+      <div class="pack-cards">
+        <div class="pack-card">
+          <div class="pack-label">Starter</div>
+          <div class="pack-price">$25</div>
+          <div class="pack-credits">250 credits</div>
+          <div class="pack-rate">$0.10 / SMS</div>
+          <button class="btn btn-ghost btn-sm" onclick="buyPack('starter')">Buy</button>
+        </div>
+        <div class="pack-card featured">
+          <div class="pack-label">Growth</div>
+          <div class="pack-price">$50</div>
+          <div class="pack-credits">625 credits</div>
+          <div class="pack-rate">$0.08 / SMS</div>
+          <button class="btn btn-primary btn-sm" onclick="buyPack('growth')">Buy</button>
+        </div>
+        <div class="pack-card">
+          <div class="pack-label">Pro</div>
+          <div class="pack-price">$100</div>
+          <div class="pack-credits">2,000 credits</div>
+          <div class="pack-rate">$0.05 / SMS</div>
+          <button class="btn btn-ghost btn-sm" onclick="buyPack('pro')">Buy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Auto-Reload Settings -->
+    <div class="panel">
+      <h2>Auto-Reload</h2>
+      <p class="reload-info" style="margin-bottom:14px">Reloads automatically when credits fall below threshold.</p>
       <div class="settings-grid">
         <div class="form-group">
-          <label>Studio Name</label>
-          <input type="text" id="f-studio-name" />
-        </div>
-        <div class="form-group">
-          <label>Owner Name</label>
-          <input type="text" id="f-owner-name" />
-        </div>
-        <div class="form-group">
-          <label>Owner Email</label>
-          <input type="email" id="f-owner-email" />
-        </div>
-        <div class="form-group">
-          <label>Owner Phone</label>
-          <input type="tel" id="f-owner-phone" />
-        </div>
-        <div class="form-group">
-          <label>Promo Code</label>
-          <input type="text" id="f-promo-code" />
-        </div>
-        <div class="form-group">
-          <label>Promo Amount</label>
-          <input type="text" id="f-promo-amount" />
-        </div>
-        <div class="form-group">
-          <label>Timezone</label>
-          <select id="f-timezone">
-            <option value="America/New_York">Eastern (ET)</option>
-            <option value="America/Chicago">Central (CT)</option>
-            <option value="America/Denver">Mountain (MT)</option>
-            <option value="America/Los_Angeles">Pacific (PT)</option>
-            <option value="America/Anchorage">Alaska (AKT)</option>
-            <option value="Pacific/Honolulu">Hawaii (HT)</option>
-            <option value="America/Phoenix">Arizona (no DST)</option>
+          <label>Auto-Reload</label>
+          <select id="ar-enabled">
+            <option value="false">Disabled</option>
+            <option value="true">Enabled</option>
           </select>
         </div>
         <div class="form-group">
-          <label>Low Credit Threshold</label>
-          <input type="number" id="f-low-credit" min="0" />
+          <label>Threshold (credits)</label>
+          <input type="number" id="ar-threshold" placeholder="50" min="1" />
+        </div>
+        <div class="form-group">
+          <label>Pack to Purchase</label>
+          <select id="ar-pack">
+            <option value="starter">Starter — $25 / 250 credits</option>
+            <option value="growth">Growth — $50 / 625 credits</option>
+            <option value="pro">Pro — $100 / 2,000 credits</option>
+          </select>
         </div>
       </div>
+      <button class="btn btn-primary" onclick="saveAutoReload()">Save Auto-Reload</button>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Welcome SMS Template -->
+    <div class="panel">
+      <h2>Welcome SMS Template</h2>
+      <p style="color:var(--muted);font-size:0.75rem;margin-bottom:12px">
+        Sent automatically when a new lead comes in. Variables: <code style="color:var(--gold)">[first_name]</code>, <code style="color:var(--gold)">[business_name]</code>
+      </p>
+      <div class="form-group">
+        <textarea id="f-welcome-sms" rows="3" placeholder="Hey [first_name]! Thanks for reaching out to [business_name]..." maxlength="160"></textarea>
+      </div>
+      <div class="check-group">
+        <input type="checkbox" id="f-welcome-enabled" />
+        <label for="f-welcome-enabled">Enable Welcome SMS</label>
+      </div>
+      <button class="btn btn-primary" onclick="saveWelcomeSms()">Save Template</button>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Notification Preferences -->
+    <div class="panel">
+      <h2>Notifications</h2>
       <div class="check-group">
         <input type="checkbox" id="f-notify-email" />
-        <label for="f-notify-email">Notification Email</label>
+        <label for="f-notify-email">Email notifications for new leads</label>
       </div>
       <div class="check-group">
         <input type="checkbox" id="f-notify-sms" />
-        <label for="f-notify-sms">Notification SMS</label>
+        <label for="f-notify-sms">SMS notifications for new leads</label>
       </div>
-      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+      <button class="btn btn-primary" onclick="saveNotifications()">Save Notifications</button>
     </div>
 
     <hr class="divider" />
@@ -107,7 +180,7 @@
     <!-- Sign Out -->
     <div class="panel">
       <h2>Session</h2>
-      <p style="color:var(--muted); font-size:0.85rem; margin-bottom:12px;">End your current session and return to the login page.</p>
+      <p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">End your current session and return to the login page.</p>
       <button class="btn btn-danger" onclick="logout()">Sign Out</button>
     </div>
   </div>
@@ -117,53 +190,111 @@
 <script>
 initShell('settings');
 
-var fieldMap = {
-  studio_name: 'f-studio-name',
-  owner_name: 'f-owner-name',
-  owner_email: 'f-owner-email',
-  owner_phone: 'f-owner-phone',
-  promo_code: 'f-promo-code',
-  promo_amount: 'f-promo-amount',
-  timezone: 'f-timezone',
-  notify_email: 'f-notify-email',
-  notify_sms: 'f-notify-sms',
-  low_credit_threshold: 'f-low-credit'
-};
+// Load account info + credit balance
+(async function init() {
+  await Promise.all([loadAccountInfo(), loadSettings()]);
+})();
+
+async function loadAccountInfo() {
+  try {
+    var data = await api('/api/portal/me');
+    var client = data.client || {};
+    var user = data.user || {};
+
+    // Account info
+    document.getElementById('account-info').innerHTML =
+      '<div class="account-row"><span class="account-label">Email</span><span class="account-value">' + (user.email || '—') + '</span></div>' +
+      '<div class="account-row"><span class="account-label">Studio</span><span class="account-value">' + (client.name || client.business_name || '—') + '</span></div>' +
+      '<div class="account-row"><span class="account-label">Twilio Number</span><span class="account-value">' + (client.twilio_phone_number || '—') + '</span></div>';
+
+    // Credits
+    var balance = client.credit_balance || 0;
+    var balEl = document.getElementById('cs-balance');
+    balEl.textContent = balance;
+    if (balance < 50) balEl.closest('.credit-stat').classList.add('warn');
+
+    // Welcome SMS
+    if (client.welcome_sms_template) {
+      document.getElementById('f-welcome-sms').value = client.welcome_sms_template;
+    }
+    document.getElementById('f-welcome-enabled').checked = !!client.welcome_sms_enabled;
+
+    // Sent this month from dashboard
+    try {
+      var dash = await api('/api/portal/dashboard');
+      document.getElementById('cs-sent').textContent = dash.smsSent || 0;
+    } catch(e) {}
+
+  } catch (err) {
+    document.getElementById('account-info').innerHTML =
+      '<div class="empty">Failed to load account info.</div>';
+  }
+}
 
 async function loadSettings() {
   try {
     var data = await api('/api/portal/settings');
-    Object.keys(fieldMap).forEach(function(key) {
-      var el = document.getElementById(fieldMap[key]);
-      if (!el) return;
-      if (el.type === 'checkbox') {
-        el.checked = !!data[key];
-      } else {
-        el.value = data[key] != null ? data[key] : '';
-      }
-    });
-  } catch (err) {
-    toast('Failed to load settings', true);
-  }
+    // Notifications
+    document.getElementById('f-notify-email').checked = !!data.notification_email;
+    document.getElementById('f-notify-sms').checked = !!data.notification_sms;
+  } catch(e) {}
 }
 
-async function saveSettings() {
-  var body = {};
-  Object.keys(fieldMap).forEach(function(key) {
-    var el = document.getElementById(fieldMap[key]);
-    if (!el) return;
-    if (el.type === 'checkbox') {
-      body[key] = el.checked;
-    } else {
-      body[key] = el.value;
-    }
-  });
+async function saveNotifications() {
   try {
-    await api('/api/portal/settings', { method: 'POST', body: body });
-    toast('Settings saved');
-  } catch (err) {
-    toast(err.message, true);
-  }
+    await api('/api/portal/settings', {
+      method: 'POST',
+      body: {
+        notification_email: document.getElementById('f-notify-email').checked,
+        notification_sms: document.getElementById('f-notify-sms').checked
+      }
+    });
+    toast('Notifications saved');
+  } catch(err) { toast(err.message, true); }
+}
+
+async function saveWelcomeSms() {
+  try {
+    await api('/api/portal/me', {
+      method: 'PATCH',
+      body: {
+        welcome_sms_enabled: document.getElementById('f-welcome-enabled').checked,
+        welcome_sms_template: document.getElementById('f-welcome-sms').value.trim()
+      }
+    });
+    toast('Welcome SMS saved');
+  } catch(err) { toast(err.message, true); }
+}
+
+async function buyPack(pack) {
+  try {
+    var data = await api('/api/portal/credits?action=checkout', {
+      method: 'POST',
+      body: { pack: pack }
+    });
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      toast('No checkout URL returned', true);
+    }
+  } catch (err) { toast(err.message, true); }
+}
+
+async function saveAutoReload() {
+  try {
+    var enabled = document.getElementById('ar-enabled').value === 'true';
+    var threshold = parseInt(document.getElementById('ar-threshold').value, 10);
+    var pack = document.getElementById('ar-pack').value;
+    if (enabled && (!threshold || threshold < 1)) {
+      toast('Enter a valid threshold', true);
+      return;
+    }
+    await api('/api/portal/credits?action=auto-reload', {
+      method: 'POST',
+      body: { enabled: enabled, threshold: threshold || 0, pack: pack }
+    });
+    toast('Auto-reload settings saved');
+  } catch (err) { toast(err.message, true); }
 }
 
 async function changePassword() {
@@ -177,12 +308,17 @@ async function changePassword() {
     toast('Password updated');
     document.getElementById('f-new-pass').value = '';
     document.getElementById('f-confirm-pass').value = '';
-  } catch (err) {
-    toast(err.message, true);
-  }
+  } catch (err) { toast(err.message, true); }
 }
 
-loadSettings();
+// Check for credit purchase success redirect
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('credits') === 'success') {
+    toast('Credits purchased successfully!');
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+})();
 </script>
 </body>
 </html>
