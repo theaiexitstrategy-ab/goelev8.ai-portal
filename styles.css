@@ -994,16 +994,16 @@ tbody tr:last-child td { border-bottom: none; }
     font-size: 15px;
   }
   .mobile-header .mobile-brand .logo {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
     background: var(--brand-grad);
     display: grid;
     place-items: center;
     box-shadow: var(--brand-glow);
     flex-shrink: 0;
   }
-  .mobile-header .mobile-brand .logo img { width: 70%; height: 70%; object-fit: contain; }
+  .mobile-header .mobile-brand .logo img { width: 80%; height: 80%; object-fit: contain; }
 
   /* Main content. Padding honors safe-area insets so nothing sits under
      the notch in landscape / the home indicator at the bottom. */
@@ -1297,13 +1297,12 @@ tbody tr:last-child td { border-bottom: none; }
   gap: 4px;
   cursor: pointer;
 }
-.bottom-nav .bnav-btn .bnav-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: currentColor;
-  opacity: 0.4;
+.bottom-nav .bnav-btn .bnav-icon {
+  font-size: 20px;
+  line-height: 1;
 }
-.bottom-nav .bnav-btn.active { color: #2D9CDB; }
-.bottom-nav .bnav-btn.active .bnav-dot { opacity: 1; box-shadow: 0 0 8px #2D9CDB; }
+.bottom-nav .bnav-btn.active { color: #C9A84C; }
+.bottom-nav .bnav-btn.active .bnav-icon { transform: scale(1.15); }
 
 /* "Menu" button: 3-line hamburger so users can see it opens a menu. */
 .bottom-nav .bnav-menu { color: #2D9CDB; }
