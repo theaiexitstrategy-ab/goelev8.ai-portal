@@ -6,3 +6,10 @@ node_modules/
 *.log
 .vercel
 dist/
+
+# Claude Code local settings — may contain secrets (Supabase PATs, etc.)
+.claude/
+# VS Code workspace (per-machine)
+*.code-workspace
+# Supabase CLI temp files
+supabase/.temp/
