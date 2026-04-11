@@ -232,13 +232,19 @@ function shell(content) {
   const toggleNav = () => document.body.classList.toggle('nav-open');
   const closeNav = () => document.body.classList.remove('nav-open');
 
+  // If we're showing a client's custom logo (not the default GoElev8 mark),
+  // tag it with .client-logo so the CSS gives it a black background
+  // instead of the default brand gradient.
+  const isClientLogo = !!state.client?.logo_url;
+  const logoClass = isClientLogo ? 'logo client-logo' : 'logo';
+
   // Mobile header (hamburger + brand)
   const mobileHeader = el('div', { class: 'mobile-header' },
     el('button', { class: 'nav-toggle', onclick: toggleNav },
       el('span'), el('span'), el('span')
     ),
     el('div', { class: 'mobile-brand' },
-      el('div', { class: 'logo' }, el('img', { src: logoSrc, alt: '' })),
+      el('div', { class: logoClass }, el('img', { src: logoSrc, alt: '' })),
       brandName
     )
   );
@@ -255,7 +261,7 @@ function shell(content) {
   return el('div', { class: 'app has-bottom-nav' + (state.isAdmin ? ' is-admin' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
-        el('div', { class: 'logo' }, el('img', { src: logoSrc, alt: '' })),
+        el('div', { class: logoClass }, el('img', { src: logoSrc, alt: '' })),
         el('div', { class: 'name' }, brandName,
           el('small', {}, state.isAdmin ? 'Master Admin' : 'Client Portal'))
       ),
