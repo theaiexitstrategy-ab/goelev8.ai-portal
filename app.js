@@ -157,7 +157,7 @@ const TAB_ICONS = {
   admin:     '🛡️'
 };
 
-const DEFAULT_TABS = ['overview','leads','messages','billing','settings'];
+const DEFAULT_TABS = ['overview','leads','messages','settings'];
 const ADMIN_TABS = ['admin','activity','analytics'];
 
 function shell(content) {
@@ -1073,9 +1073,105 @@ async function viewNudges() {
 // ============================================================
 // SETTINGS
 // ============================================================
-function viewSettings() {
+async function viewSettings() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Settings')));
+
+  // ----- Credits ticker (live) -----
+  const ticker = el('div', { class: 'panel credits-ticker' },
+    el('div', { class: 'credits-ticker-row' },
+      el('div', {},
+        el('div', { class: 'credits-ticker-label' }, 'SMS CREDITS REMAINING'),
+        el('div', { class: 'credits-ticker-value', id: 'credits-balance' }, '—')
+      ),
+      el('div', { class: 'credits-ticker-icon' }, '💬')
+    )
+  );
+  wrap.appendChild(ticker);
+
+  // Load billing data so we can show packs, ledger, auto-reload
+  let b = null;
+  try {
+    b = await api('/api/portal/billing');
+    const balanceEl = ticker.querySelector('#credits-balance');
+    if (balanceEl) balanceEl.textContent = String(b.credit_balance ?? 0);
+    if ((b.credit_balance ?? 0) < 50) ticker.classList.add('low');
+  } catch (e) {
+    const balanceEl = ticker.querySelector('#credits-balance');
+    if (balanceEl) balanceEl.textContent = '—';
+  }
+
+  // ----- Credits & Billing -----
+  if (b) {
+    const billingPanel = el('div', { class: 'panel' });
+    billingPanel.appendChild(el('h2', {}, '💳 Credits & Billing'));
+
+    const stats = el('div', { class: 'cards' });
+    stats.appendChild(card('Sent This Month', b.sent_this_month, 'Outbound messages'));
+    stats.appendChild(card('Auto-Reload', b.auto_reload?.enabled ? 'ON' : 'OFF',
+      b.auto_reload?.enabled ? `< ${b.auto_reload.threshold} → buy ${b.auto_reload.pack}` : 'Disabled'));
+    billingPanel.appendChild(stats);
+
+    // Top-up packs
+    billingPanel.appendChild(el('h3', { style: 'margin-top:20px;font-size:14px;font-weight:600' }, 'Buy more credits'));
+    const packsRow = el('div', { class: 'cards' });
+    for (const p of Object.values(b.packs || {})) {
+      packsRow.appendChild(el('div', { class: 'pack-card' + (p.id === 'growth' ? ' featured' : '') },
+        el('div', { class: 'pack-label' }, p.label),
+        el('div', { class: 'pack-price' }, '$' + (p.priceCents / 100)),
+        el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`),
+        el('button', { class: 'btn',
+          onclick: async () => {
+            try {
+              const r = await api('/api/portal/credits?action=checkout', { method: 'POST', body: { pack: p.id } });
+              window.location.href = r.url;
+            } catch (e) { toast(e.message, true); }
+          }}, `Buy ${p.label} →`)
+      ));
+    }
+    billingPanel.appendChild(packsRow);
+
+    // Auto-reload
+    billingPanel.appendChild(el('h3', { style: 'margin-top:24px;font-size:14px;font-weight:600' }, 'Auto-Reload Settings'));
+    const arEnabled = el('input', { type: 'checkbox' });
+    arEnabled.checked = !!b.auto_reload?.enabled;
+    const arThreshold = el('input', { type: 'number', value: b.auto_reload?.threshold ?? 50, min: 1 });
+    const arPackSel = el('select', {},
+      ...Object.values(b.packs || {}).map(p => el('option', { value: p.id, selected: p.id === b.auto_reload?.pack }, `${p.label} ($${p.priceCents/100} / ${p.credits} credits)`))
+    );
+    billingPanel.appendChild(el('div', { class: 'row', style: 'gap:20px; margin:12px 0' },
+      el('label', { style: 'display:flex; align-items:center; gap:8px; font-size:14px; color:var(--text)' }, arEnabled, 'Enable auto-reload')
+    ));
+    billingPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'Threshold (credits remaining)'), arThreshold));
+    billingPanel.appendChild(el('div', { class: 'field' }, el('label', {}, 'Pack to buy'), arPackSel));
+    billingPanel.appendChild(el('button', { class: 'btn', onclick: async () => {
+      try {
+        await api('/api/portal/credits?action=auto-reload', { method: 'POST', body: {
+          enabled: arEnabled.checked,
+          threshold: parseInt(arThreshold.value, 10),
+          pack: arPackSel.value
+        }});
+        toast('Auto-reload settings saved');
+      } catch (e) { toast(e.message, true); }
+    }}, 'Save settings'));
+
+    // Recent activity ledger
+    if (b.ledger?.length) {
+      billingPanel.appendChild(el('h3', { style: 'margin-top:24px;font-size:14px;font-weight:600' }, 'Recent activity'));
+      billingPanel.appendChild(el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'When'), el('th', {}, 'Type'), el('th', {}, 'Δ Credits'), el('th', {}, 'Amount')
+        )),
+        el('tbody', {}, ...b.ledger.slice(0, 10).map(r => el('tr', {},
+          el('td', {}, new Date(r.created_at).toLocaleString()),
+          el('td', {}, r.reason),
+          el('td', {}, (r.delta > 0 ? '+' : '') + r.delta),
+          el('td', {}, r.amount_cents ? '$' + (r.amount_cents/100).toFixed(2) : '—')
+        )))
+      ));
+    }
+    wrap.appendChild(billingPanel);
+  }
 
   const panel = el('div', { class: 'panel' });
   panel.appendChild(el('h2', {}, 'Account'));
@@ -1632,7 +1728,7 @@ async function render() {
       case 'connect':   view = await viewConnect(); break;
       case 'blasts':    view = await viewBlasts(); break;
       case 'nudges':    view = await viewNudges(); break;
-      case 'settings':  view = viewSettings(); break;
+      case 'settings':  view = await viewSettings(); break;
       case 'analytics': view = state.user?.email === 'ab@goelev8.ai' ? await viewAnalytics() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
