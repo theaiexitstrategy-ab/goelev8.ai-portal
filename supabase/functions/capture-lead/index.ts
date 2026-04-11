@@ -95,58 +95,186 @@ serve(async (req: Request) => {
       });
     }
 
-    // Send welcome SMS if the client has it enabled and has credits
+    // ------------------------------------------------------------------
+    // Welcome SMS path.
+    //
+    // Mirrors lib/welcome.js → sendWelcomeForEvent(): upsert a contact,
+    // consume credits atomically, send via Twilio, log the outbound row
+    // into `messages` + `credit_ledger` so the portal's Messages tab can
+    // actually display the conversation (the whole reason this function
+    // exists — other clients go through api/events → sendWelcomeForEvent
+    // and get proper message logging, but site-embedded landing pages
+    // call capture-lead directly and previously skipped that logging).
+    // Refunds credits if Twilio rejects the send.
+    // ------------------------------------------------------------------
     let smsDelivered = false;
+    let smsStatus: string | null = null;
+
     if (lead.phone) {
       const { data: client } = await supabase
         .from("clients")
-        .select("credit_balance, welcome_sms_enabled, welcome_sms_template, twilio_phone_number, name")
+        .select("id, credit_balance, welcome_sms_enabled, welcome_sms_template, twilio_phone_number, name")
         .eq("id", clientId)
         .single();
 
-      if (client?.welcome_sms_enabled && (client.credit_balance ?? 0) > 0 && client.twilio_phone_number) {
-        const firstName = lead.full_name ? lead.full_name.split(" ")[0] : "there";
-        let smsBody = (client.welcome_sms_template || "Thanks for reaching out to {{client_name}}!")
-          .replace("{{first_name}}", firstName)
-          .replace("{{client_name}}", client.name || "us");
+      const canSend = client?.welcome_sms_enabled &&
+                      client.twilio_phone_number &&
+                      client.welcome_sms_template;
 
-        const sid = Deno.env.get("TWILIO_ACCOUNT_SID")!;
-        const token = Deno.env.get("TWILIO_AUTH_TOKEN")!;
-        const auth = btoa(`${sid}:${token}`);
-        const params = new URLSearchParams();
-        params.set("To", lead.phone);
-        params.set("From", client.twilio_phone_number);
-        params.set("Body", smsBody);
-
+      if (canSend) {
+        // 1) Upsert the contact so the welcome shows up in a Messages thread
+        let contactId: string | null = null;
         try {
-          const twilioRes = await fetch(
-            `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Basic ${auth}`,
-                "Content-Type": "application/x-www-form-urlencoded",
-              },
-              body: params.toString(),
-            },
-          );
-          smsDelivered = twilioRes.ok;
+          const { data: existingContact } = await supabase
+            .from("contacts")
+            .select("id, opted_out")
+            .eq("client_id", clientId)
+            .eq("phone", lead.phone)
+            .maybeSingle();
 
-          if (smsDelivered) {
-            await supabase.from("clients")
-              .update({ credit_balance: (client.credit_balance ?? 0) - 1 })
-              .eq("id", clientId);
+          if (existingContact) {
+            if (existingContact.opted_out) {
+              console.log("capture-lead: contact opted out, skipping welcome SMS");
+            } else {
+              contactId = existingContact.id;
+            }
+          } else {
+            const { data: newContact, error: cErr } = await supabase
+              .from("contacts")
+              .insert({
+                client_id: clientId,
+                phone: lead.phone,
+                name: lead.full_name || lead.name || null,
+                email: lead.email || null,
+                source: lead.source || null,
+              })
+              .select("id")
+              .single();
+            if (cErr) {
+              console.error("contact upsert error:", cErr);
+            } else {
+              contactId = newContact?.id || null;
+            }
           }
-
-          await supabase.from("leads")
-            .update({
-              sms_delivered: smsDelivered,
-              sms_status: smsDelivered ? "sent" : "failed",
-            })
-            .eq("id", data.id);
         } catch (err) {
-          console.error("Twilio error:", err);
+          console.error("contact upsert threw:", err);
         }
+
+        if (contactId) {
+          // 2) Render the welcome template
+          const fullName = lead.full_name || lead.name || "";
+          const firstNameVal = fullName ? fullName.trim().split(/\s+/)[0] : "there";
+          const body = String(client.welcome_sms_template || "")
+            .replace(/\{\{\s*first_name\s*\}\}/g, firstNameVal)
+            .replace(/\{\{\s*name\s*\}\}/g, fullName)
+            .replace(/\{\{\s*client_name\s*\}\}/g, client.name || "")
+            .replace(/\{\{\s*source\s*\}\}/g, lead.source || "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          // 3) Segment estimate — GSM-7 default, 160 chars/segment
+          const segments = Math.max(1, Math.ceil(body.length / 160));
+
+          // 4) Credit check
+          if ((client.credit_balance ?? 0) < segments) {
+            console.log(`capture-lead: insufficient credits (${client.credit_balance ?? 0} < ${segments})`);
+          } else {
+            // 5) Atomic deduct via RPC (same helper sendWelcomeForEvent uses)
+            const { error: dErr } = await supabase.rpc("consume_credits", {
+              p_client_id: clientId,
+              p_amount: segments,
+            });
+
+            if (dErr) {
+              console.error("consume_credits failed:", dErr);
+            } else {
+              // 6) Send via Twilio
+              const tsid = Deno.env.get("TWILIO_ACCOUNT_SID")!;
+              const ttoken = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+              const auth = btoa(`${tsid}:${ttoken}`);
+              const params = new URLSearchParams();
+              params.set("To", lead.phone);
+              params.set("From", client.twilio_phone_number);
+              params.set("Body", body);
+
+              let twilioSid: string | null = null;
+              try {
+                const twilioRes = await fetch(
+                  `https://api.twilio.com/2010-04-01/Accounts/${tsid}/Messages.json`,
+                  {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Basic ${auth}`,
+                      "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    body: params.toString(),
+                  },
+                );
+
+                if (twilioRes.ok) {
+                  const twilioBody = await twilioRes.json();
+                  twilioSid = twilioBody.sid || null;
+                  smsStatus = twilioBody.status || "sent";
+                  smsDelivered = true;
+                } else {
+                  const errText = await twilioRes.text();
+                  console.error("Twilio HTTP " + twilioRes.status + ":", errText);
+                }
+              } catch (err) {
+                console.error("Twilio fetch threw:", err);
+              }
+
+              if (smsDelivered) {
+                // 7a) Log the outbound message so the portal's Messages tab
+                //     renders it as part of the contact's thread.
+                const { error: mErr } = await supabase.from("messages").insert({
+                  client_id: clientId,
+                  contact_id: contactId,
+                  direction: "outbound",
+                  body,
+                  segments,
+                  twilio_sid: twilioSid,
+                  status: smsStatus,
+                  to_number: lead.phone,
+                  from_number: client.twilio_phone_number,
+                  credits_charged: segments,
+                });
+                if (mErr) console.error("messages insert failed:", mErr);
+
+                // 7b) Write the credit ledger debit for audit parity with
+                //     manual sends / nudges / api/events welcome path.
+                const { error: lErr } = await supabase.from("credit_ledger").insert({
+                  client_id: clientId,
+                  delta: -segments,
+                  reason: "welcome_sms",
+                  ref_id: twilioSid,
+                });
+                if (lErr) console.error("credit_ledger debit failed:", lErr);
+              } else {
+                // 8) Refund the credits since Twilio rejected the send
+                await supabase.rpc("add_credits", {
+                  p_client_id: clientId,
+                  p_amount: segments,
+                });
+                await supabase.from("credit_ledger").insert({
+                  client_id: clientId,
+                  delta: segments,
+                  reason: "refund",
+                  ref_id: "welcome_send_failed",
+                });
+              }
+            }
+          }
+        }
+
+        // 9) Reflect delivery state back onto the lead row so the Leads tab
+        //    shows the delivery badge immediately.
+        await supabase.from("leads")
+          .update({
+            sms_delivered: smsDelivered,
+            sms_status: smsDelivered ? (smsStatus || "sent") : "failed",
+          })
+          .eq("id", data.id);
       }
     }
 
