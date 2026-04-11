@@ -18,6 +18,11 @@
     { "source": "/islaystudios/shell.js", "destination": "/clients/islaystudios/shell.js" },
     { "source": "/islaystudios/portal.css", "destination": "/clients/islaystudios/portal.css" },
     { "source": "/islaystudios", "destination": "/clients/islaystudios/leads.html" },
+    { "source": "/theflexfacility/login", "destination": "/clients/theflexfacility/login.html" },
+    { "source": "/theflexfacility/bookings", "destination": "/clients/theflexfacility/bookings.html" },
+    { "source": "/theflexfacility/shell.js", "destination": "/clients/theflexfacility/shell.js" },
+    { "source": "/theflexfacility/portal.css", "destination": "/clients/theflexfacility/portal.css" },
+    { "source": "/theflexfacility", "destination": "/clients/theflexfacility/bookings.html" },
     { "source": "/((?!api/|clients/).*)", "destination": "/index.html" }
   ],
   "headers": [
