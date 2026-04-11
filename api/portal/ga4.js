@@ -17,6 +17,7 @@
 //   5. Paste the entire service account JSON into GA4_SERVICE_ACCOUNT_JSON
 
 import { requireUser, methodGuard } from '../../lib/auth.js';
+import { supabaseAdmin } from '../../lib/supabase.js';
 
 const GA4_BASE = 'https://analyticsdata.googleapis.com/v1beta';
 
@@ -72,11 +73,27 @@ export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
 
-  const propertyId = process.env.GA4_PROPERTY_ID;
+  // Resolve the GA4 property for this request:
+  //   - If impersonating / client context → use client.ga4_property_id
+  //   - Otherwise (admin platform view) → use env GA4_PROPERTY_ID
+  let propertyId = null;
+  let propertyLabel = 'Platform-wide';
+  if (ctx.clientId) {
+    const { data: client } = await supabaseAdmin
+      .from('clients').select('name, ga4_property_id').eq('id', ctx.clientId).maybeSingle();
+    propertyId = client?.ga4_property_id || null;
+    propertyLabel = client?.name || 'Client';
+  }
+  if (!propertyId) {
+    propertyId = process.env.GA4_PROPERTY_ID;
+  }
+
   if (!propertyId || !process.env.GA4_SERVICE_ACCOUNT_JSON) {
     return res.status(200).json({
       configured: false,
-      error: 'GA4 not configured. Set GA4_PROPERTY_ID and GA4_SERVICE_ACCOUNT_JSON env vars.',
+      error: ctx.clientId
+        ? `No GA4 property configured for ${propertyLabel}. Set clients.ga4_property_id in Supabase or GA4_PROPERTY_ID env var.`
+        : 'GA4 not configured. Set GA4_PROPERTY_ID and GA4_SERVICE_ACCOUNT_JSON env vars.',
       sessions: 0,
       page_views: 0,
       users: 0,
@@ -180,6 +197,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       configured: true,
       property_id: propertyId,
+      property_label: propertyLabel,
       sessions,
       page_views: pageViews,
       users,
