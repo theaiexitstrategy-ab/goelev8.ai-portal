@@ -679,11 +679,21 @@ async function viewBookings() {
 
   async function updateStatus(id, status, reload) {
     try {
-      await api('/api/portal/bookings/appointments', {
+      const r = await api('/api/portal/bookings/appointments', {
         method: 'PATCH',
         body: { id, status }
       });
-      toast('Updated');
+      // For cancellations the API delegates to the widget's /api/cancel
+      // endpoint which sends the customer + Coach Kenny SMS. Surface
+      // whether that succeeded so the operator knows if a manual call
+      // is needed.
+      let msg = 'Updated';
+      if (status === 'cancelled') {
+        msg = r?.sms_sent
+          ? 'Cancelled — SMS sent to customer'
+          : 'Cancelled — but SMS notification failed (check Vercel logs)';
+      }
+      toast(msg, status === 'cancelled' && !r?.sms_sent);
       await reload();
     } catch (e) {
       toast(e.message, true);
