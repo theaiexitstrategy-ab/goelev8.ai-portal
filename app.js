@@ -1294,6 +1294,16 @@ async function viewAdmin() {
       el('tbody', {}, ...allClients.map((c) => {
         const amountInput = el('input', { type: 'number', min: '1', value: '20', style: 'width:70px' });
         const noteInput   = el('input', { type: 'text', placeholder: 'note (optional)', style: 'width:140px' });
+        const ga4Input    = el('input', { type: 'text', placeholder: 'GA4 property ID', value: c.ga4_property_id || '', style: 'width:140px' });
+        const saveGa4 = async () => {
+          try {
+            await api('/api/admin?action=set-ga4', {
+              method: 'POST', body: { client_id: c.id, ga4_property_id: ga4Input.value.trim() }
+            });
+            toast('GA4 property saved for ' + c.name);
+            await refresh();
+          } catch (e) { toast(e.message, true); }
+        };
         const adjust = async (sign) => {
           const raw = parseInt(amountInput.value, 10);
           if (!Number.isFinite(raw) || raw <= 0) { toast('Enter a positive amount', true); return; }
@@ -1330,7 +1340,12 @@ async function viewAdmin() {
                 toast(c.billing_paused ? 'Billing resumed' : 'Billing paused');
                 await refresh();
               } catch (e) { toast(e.message, true); }
-            }}, c.billing_paused ? 'Resume billing' : 'Pause billing')
+            }}, c.billing_paused ? 'Resume billing' : 'Pause billing'),
+            el('div', { style: 'display:flex;gap:4px;align-items:center;margin-top:6px' },
+              el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'GA4:'),
+              ga4Input,
+              el('button', { class: 'btn sm', onclick: saveGa4 }, 'Save')
+            )
           )
         );
       }))
@@ -1419,10 +1434,11 @@ async function viewAdmin() {
 // ============================================================
 async function viewAnalytics() {
   const wrap = el('div', {});
-  wrap.appendChild(el('div', { class: 'topbar' },
+  const topbar = el('div', { class: 'topbar' },
     el('h1', {}, 'Analytics'),
-    el('div', { class: 'muted' }, (state.client ? state.client.name : 'Platform-wide') + ' · Last 30 days · Live from Google Analytics')
-  ));
+    el('div', { class: 'muted', id: 'ga-subtitle' }, 'Loading live Google Analytics data…')
+  );
+  wrap.appendChild(topbar);
 
   const cards = el('div', { class: 'cards' });
   cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading live data from Google Analytics…')));
@@ -1468,6 +1484,10 @@ async function viewAnalytics() {
     cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'GA4 error: ' + ga.error)));
     return wrap;
   }
+
+  // Update subtitle with property label
+  const sub = wrap.querySelector('#ga-subtitle');
+  if (sub) sub.textContent = (ga.property_label || 'Platform-wide') + ' · Property ' + ga.property_id + ' · Last 30 days';
 
   // Render summary cards
   cards.innerHTML = '';

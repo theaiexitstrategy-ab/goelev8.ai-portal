@@ -23,7 +23,7 @@ import { twilioForClient, estimateSegments } from '../lib/twilio.js';
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
     .from('clients')
-    .select('id, slug, name, twilio_phone_number, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at, tier, conversion_label, business_name, logo_url, brand_color')
+    .select('id, slug, name, twilio_phone_number, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at, tier, conversion_label, business_name, logo_url, brand_color, ga4_property_id')
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
 
@@ -238,6 +238,18 @@ async function setTier(req, res) {
   return res.status(200).json({ client: data });
 }
 
+async function setGa4(req, res) {
+  const body = await readJson(req);
+  const { client_id, ga4_property_id } = body || {};
+  if (!client_id) return res.status(400).json({ error: 'client_id required' });
+  const value = (ga4_property_id || '').toString().trim() || null;
+  const { data, error } = await supabaseAdmin
+    .from('clients').update({ ga4_property_id: value })
+    .eq('id', client_id).select('id, name, ga4_property_id').single();
+  if (error) return res.status(400).json({ error: error.message });
+  return res.status(200).json({ client: data });
+}
+
 async function listAdmins(req, res) {
   const { data } = await supabaseAdmin
     .from('platform_admins').select('user_id, email, created_at').order('created_at');
@@ -262,6 +274,7 @@ export default async function handler(req, res) {
       case 'create-client':  return await createClient(req, res);
       case 'billing-pause':  return await billingPause(req, res);
       case 'set-tier':       return await setTier(req, res);
+      case 'set-ga4':        return await setGa4(req, res);
       case 'analytics':      return await analytics(req, res);
       case 'list-admins':    return await listAdmins(req, res);
       default:               return res.status(400).json({ error: 'unknown_action' });
