@@ -700,27 +700,26 @@ async function viewBookings() {
     }
   }
 
-  // Banner shared by Availability and Services sub-tabs. The new
-  // booking_availability and booking_services tables aren't yet read by the
-  // public booking widget at book.theflexfacility.com — the widget has its
-  // own configuration baked in. Until the widget is rewritten to consume
-  // these tables, edits here are portal-only and don't change what leads
-  // see when they go to book.
-  const notWiredBanner = () => el('div', {
-    class: 'panel',
-    style: 'background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.3); padding: 12px 16px; margin-bottom: 12px;'
-  },
-    el('div', { style: 'font-size: 13px; color: #fbbf24' },
-      el('strong', {}, '⚠ Portal-only for now. '),
-      'Changes here don\'t yet update the live booking page at ',
-      el('span', { class: 'mono' }, cal.custom_domain || cal.slug),
-      '. The widget uses its own configured availability and services until the integration is wired up.'
-    )
-  );
+  // The Availability and Services sub-tabs both write directly into the
+  // tables that the public booking widget at book.theflexfacility.com
+  // reads from (booking_services + availability_templates, set up in
+  // migration 0018, consumed by flex-booking-calendar /api/services).
+  // Edits here flow through to the live booking page within ~60s of save
+  // (the widget endpoint has a 60s edge cache).
+  const liveSyncNotice = () => el('div', {
+    class: 'muted',
+    style: 'font-size: 12px; margin-bottom: 12px'
+  }, 'Changes save directly to the live booking page at ',
+    el('span', { class: 'mono' }, cal.custom_domain || cal.slug),
+    '.');
 
   // ----- Availability sub-view -----
+  // The new schema has multiple slots per day per service, so the UI is
+  // a service picker + per-day list of (start, end) pairs you can add or
+  // remove individually. Switching services discards unsaved edits to the
+  // previous service (with a confirm if there are pending changes).
   async function renderAvailability() {
-    content.appendChild(notWiredBanner());
+    content.appendChild(liveSyncNotice());
     const panel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
     content.appendChild(panel);
 
@@ -732,84 +731,155 @@ async function viewBookings() {
       return;
     }
 
-    const byDow = Object.fromEntries((data.availability || []).map(r => [r.day_of_week, r]));
+    const services = (data.services || []).filter(s => s.is_active !== false);
     const tz = data.timezone || cal.timezone || '';
 
-    // Build a row per day with a toggle + start/end time inputs.
-    const rowEls = DAYS_OF_WEEK.map(d => {
-      const existing = byDow[d.dow];
-      const active = existing ? !!existing.is_active : false;
-      const start  = (existing?.start_time || '09:00:00').slice(0, 5);
-      const end    = (existing?.end_time   || '17:00:00').slice(0, 5);
-
-      const startInput = el('input', { type: 'time', value: start, disabled: !active });
-      const endInput   = el('input', { type: 'time', value: end,   disabled: !active });
-      const toggle = el('input', {
-        type: 'checkbox',
-        checked: active,
-        onchange: (e) => {
-          startInput.disabled = !e.target.checked;
-          endInput.disabled   = !e.target.checked;
-        }
-      });
-
-      const row = el('div', {
-        class: 'row',
-        style: 'gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.04); flex-wrap: nowrap'
-      },
-        el('label', { class: 'toggle-row', style: 'padding: 0; min-width: 130px; flex: 0 0 auto' },
-          toggle,
-          el('span', { style: 'font-weight: 600' }, d.label)
-        ),
-        el('div', { class: 'row', style: 'gap: 8px; flex: 1; justify-content: flex-end' },
-          startInput,
-          el('span', { class: 'muted', style: 'font-size: 12px' }, 'to'),
-          endInput
-        )
+    if (!services.length) {
+      panel.replaceChildren(
+        el('p', { class: 'muted' }, 'No services yet. Add a service in the Services tab first, then come back here to set its availability.')
       );
-      row._dow = d.dow;
-      row._toggle = toggle;
-      row._start  = startInput;
-      row._end    = endInput;
-      return row;
-    });
+      return;
+    }
 
-    const saveBtn = el('button', { class: 'btn', onclick: saveAvailability }, 'Save all');
+    // Local edit state — { dow: [{startInput, endInput, removeBtn, rowEl}, ...] }
+    let activeServiceId = services[0].id;
+    let dayRows = {}; // dow → array of slot row refs
+    let dirty = false;
 
-    panel.replaceChildren(
-      el('div', { class: 'row between', style: 'margin-bottom: 8px' },
-        el('h2', { style: 'margin: 0' }, 'Weekly availability'),
-        tz ? el('span', { class: 'muted', style: 'font-size: 12px' }, tz) : null
-      ),
-      ...rowEls,
-      el('div', { class: 'row', style: 'justify-content: flex-end; margin-top: 16px' }, saveBtn)
+    const serviceSelect = el('select', {
+      class: 'cta-select',
+      style: 'flex: 1; min-width: 200px',
+      onchange: (e) => {
+        if (dirty && !confirm('You have unsaved changes. Switch services anyway?')) {
+          e.target.value = activeServiceId;
+          return;
+        }
+        activeServiceId = e.target.value;
+        dirty = false;
+        renderForActiveService();
+      }
+    },
+      ...services.map(s => el('option', { value: s.id }, s.name))
     );
 
-    async function saveAvailability() {
-      const days = rowEls.map(r => {
-        const active = r._toggle.checked;
-        let startT = r._start.value;
-        let endT   = r._end.value;
-        // The DB CHECK constraint requires end > start even for inactive rows.
-        // Supply a sentinel when the user hasn't filled them in.
-        if (!active && (!endT || endT <= startT)) { startT = '09:00'; endT = '17:00'; }
-        return { day_of_week: r._dow, start_time: startT, end_time: endT, is_active: active };
+    const headerRow = el('div', { class: 'row', style: 'gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center' },
+      el('div', { style: 'font-size: 13px; font-weight: 600; min-width: 80px' }, 'Service:'),
+      serviceSelect,
+      tz ? el('span', { class: 'muted', style: 'font-size: 12px' }, tz) : null
+    );
+
+    const dayContainer = el('div', {});
+    const saveBtn = el('button', { class: 'btn', onclick: () => saveAvailability() }, 'Save changes');
+    const footer = el('div', { class: 'row', style: 'justify-content: flex-end; margin-top: 16px' }, saveBtn);
+
+    panel.replaceChildren(headerRow, dayContainer, footer);
+
+    function renderForActiveService() {
+      const svc = services.find(s => s.id === activeServiceId);
+      if (!svc) return;
+      // Group existing templates by day_of_week
+      const byDow = {};
+      for (const t of (svc.templates || [])) {
+        if (!byDow[t.day_of_week]) byDow[t.day_of_week] = [];
+        byDow[t.day_of_week].push(t);
+      }
+      dayRows = {};
+      const dayBlocks = DAYS_OF_WEEK.map(d => {
+        const slots = byDow[d.dow] || [];
+        const slotsContainer = el('div', { style: 'display: flex; flex-direction: column; gap: 6px; margin-top: 4px' });
+        dayRows[d.dow] = [];
+        slots.forEach(t => {
+          slotsContainer.appendChild(makeSlotRow(d.dow, t.start_time.slice(0, 5), t.end_time.slice(0, 5), slotsContainer));
+        });
+        const addBtn = el('button', {
+          class: 'btn sm ghost',
+          style: 'align-self: flex-start; margin-top: 4px',
+          onclick: () => {
+            slotsContainer.appendChild(makeSlotRow(d.dow, '09:00', '10:00', slotsContainer));
+            dirty = true;
+          }
+        }, '+ Add slot');
+        return el('div', {
+          style: 'padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.04)'
+        },
+          el('div', { class: 'row between', style: 'margin-bottom: 4px' },
+            el('div', { style: 'font-weight: 600; font-size: 14px; min-width: 110px' }, d.label),
+            addBtn
+          ),
+          slotsContainer
+        );
       });
+      dayContainer.replaceChildren(...dayBlocks);
+    }
+
+    function makeSlotRow(dow, startHHMM, endHHMM, container) {
+      const startInput = el('input', { type: 'time', value: startHHMM, onchange: () => { dirty = true; } });
+      const endInput   = el('input', { type: 'time', value: endHHMM,   onchange: () => { dirty = true; } });
+      const removeBtn  = el('button', {
+        class: 'btn sm ghost',
+        title: 'Remove slot',
+        onclick: () => {
+          container.removeChild(slotEl);
+          dayRows[dow] = dayRows[dow].filter(r => r.startInput !== startInput);
+          dirty = true;
+        }
+      }, '×');
+      const slotEl = el('div', {
+        class: 'row',
+        style: 'gap: 8px; align-items: center'
+      },
+        startInput,
+        el('span', { class: 'muted', style: 'font-size: 12px' }, 'to'),
+        endInput,
+        removeBtn
+      );
+      dayRows[dow].push({ startInput, endInput });
+      return slotEl;
+    }
+
+    async function saveAvailability() {
+      // Collect all rows from the current edit state.
+      const templates = [];
+      for (const dowStr of Object.keys(dayRows)) {
+        const dow = +dowStr;
+        for (const r of dayRows[dow]) {
+          const start = r.startInput.value;
+          const end   = r.endInput.value;
+          if (!start || !end) {
+            toast('Every slot needs a start and end time', true);
+            return;
+          }
+          if (end <= start) {
+            toast('Slot end times must be after start times', true);
+            return;
+          }
+          templates.push({ day_of_week: dow, start_time: start, end_time: end });
+        }
+      }
       saveBtn.disabled = true;
       try {
-        await api('/api/portal/bookings/availability', { method: 'PUT', body: { days } });
-        toast('Availability saved');
+        const r = await api('/api/portal/bookings/availability', {
+          method: 'PUT',
+          body: { service_id: activeServiceId, templates }
+        });
+        // Refresh local cache so subsequent service-switches see saved state
+        const svc = services.find(s => s.id === activeServiceId);
+        if (svc) svc.templates = r.templates || [];
+        dirty = false;
+        toast('Availability saved · syncs to live booking page within 1 minute');
       } catch (e) {
         toast(e.message, true);
       } finally {
         saveBtn.disabled = false;
       }
     }
+
+    renderForActiveService();
   }
 
   // ----- Services sub-view -----
   async function renderServices() {
-    content.appendChild(notWiredBanner());
+    content.appendChild(liveSyncNotice());
     const header = el('div', { class: 'row between', style: 'margin-bottom: 12px' },
       el('div', { class: 'muted' }, 'Services leads can book on your page'),
       el('button', { class: 'btn sm', onclick: () => openServiceModal(null, renderServices_reload) }, '+ Add Service')
@@ -839,9 +909,8 @@ async function viewBookings() {
   }
 
   function renderServiceRow(s, reload) {
-    const priceStr = '$' + ((s.price_cents || 0) / 100).toFixed(2);
-    const metaStr = (s.duration_minutes || 0) + ' min · ' + priceStr +
-      (s.description ? ' · ' + s.description : '');
+    const capStr  = s.max_per_slot != null ? (s.max_per_slot + ' per slot') : 'unlimited';
+    const metaStr = s.full_name + ' · ' + capStr;
 
     const toggle = el('input', {
       type: 'checkbox',
@@ -853,6 +922,7 @@ async function viewBookings() {
             body: { id: s.id, is_active: e.target.checked }
           });
           row.style.opacity = e.target.checked ? '1' : '0.55';
+          s.is_active = e.target.checked;
         } catch (err) {
           toast(err.message, true);
           e.target.checked = !e.target.checked;
@@ -865,7 +935,6 @@ async function viewBookings() {
       style: 'padding: 14px 16px; margin-bottom: 8px; cursor: pointer; display: flex; gap: 12px; align-items: center;'
             + (s.is_active ? '' : ' opacity: 0.55;'),
       onclick: (ev) => {
-        // Avoid opening the edit modal when clicking the toggle / edit button.
         if (ev.target.closest('input, button')) return;
         openServiceModal(s, reload);
       }
@@ -890,32 +959,45 @@ async function viewBookings() {
 
   function openServiceModal(existing, reload) {
     const isEdit = !!existing;
-    const nameIn = el('input', { placeholder: 'e.g. 30-min Personal Training', value: existing?.name || '' });
-    const descIn = el('textarea', { placeholder: 'Short description shown to leads' });
-    if (existing?.description) descIn.value = existing.description;
-    const durIn  = el('input', { type: 'number', min: '5', step: '5', value: existing?.duration_minutes ?? 30 });
-    const priceIn = el('input', { type: 'number', min: '0', step: '1', value: ((existing?.price_cents ?? 0) / 100).toFixed(2) });
+    const nameIn      = el('input', { placeholder: 'Athlete Assessment',                  value: existing?.name      || '' });
+    const fullNameIn  = el('input', { placeholder: 'Free Athlete Performance Assessment', value: existing?.full_name || '' });
+    const btnTextIn   = el('input', { placeholder: 'CONFIRM SESSION',                      value: existing?.btn_text  || '' });
+    const maxSlotIn   = el('input', { type: 'number', min: '1', step: '1', placeholder: 'unlimited', value: existing?.max_per_slot ?? '' });
+    const infoTitleIn = el('input', { placeholder: 'ATHLETE ASSESSMENT SCHEDULE',          value: existing?.info_title || '' });
+    const infoNoteIn  = el('textarea', { rows: 2, placeholder: 'Max 10 athletes per session…' });
+    if (existing?.info_note) infoNoteIn.value = existing.info_note;
+    const sortOrderIn = el('input', { type: 'number', min: '0', step: '1', value: existing?.sort_order ?? 0 });
 
     const close = () => bg.remove();
     const save = async () => {
       const name = nameIn.value.trim();
       if (!name) { toast('Name required', true); return; }
-      const duration_minutes = parseInt(durIn.value, 10) || 30;
-      const price_cents = Math.round((parseFloat(priceIn.value) || 0) * 100);
-      const description = descIn.value.trim();
+      const full_name = fullNameIn.value.trim() || name;
+      const btn_text  = btnTextIn.value.trim();
+      const info_title = infoTitleIn.value.trim();
+      const info_note  = infoNoteIn.value.trim();
+      const sort_order = parseInt(sortOrderIn.value, 10) || 0;
+      const maxRaw = maxSlotIn.value.trim();
+      const max_per_slot = maxRaw === '' ? null : parseInt(maxRaw, 10);
+      if (max_per_slot != null && (!Number.isFinite(max_per_slot) || max_per_slot <= 0)) {
+        toast('Capacity must be a positive number or blank', true);
+        return;
+      }
+
+      const body = { name, full_name, btn_text, max_per_slot, info_title, info_note, sort_order };
       try {
         if (isEdit) {
           await api('/api/portal/bookings/services', {
             method: 'PATCH',
-            body: { id: existing.id, name, description, duration_minutes, price_cents }
+            body: { id: existing.id, ...body }
           });
-          toast('Service updated');
+          toast('Service updated · syncs to live booking page within 1 minute');
         } else {
           await api('/api/portal/bookings/services', {
             method: 'POST',
-            body: { name, description, duration_minutes, price_cents }
+            body
           });
-          toast('Service added');
+          toast('Service added · syncs to live booking page within 1 minute');
         }
         close();
         await reload();
@@ -926,12 +1008,15 @@ async function viewBookings() {
 
     const modal = el('div', { class: 'modal' },
       el('h2', {}, isEdit ? 'Edit service' : 'New service'),
-      el('div', { class: 'field' }, el('label', {}, 'Name'), nameIn),
-      el('div', { class: 'field' }, el('label', {}, 'Description'), descIn),
+      el('div', { class: 'field' }, el('label', {}, 'Short name'), nameIn),
+      el('div', { class: 'field' }, el('label', {}, 'Full name (shown on booking page)'), fullNameIn),
+      el('div', { class: 'field' }, el('label', {}, 'Button text'), btnTextIn),
       el('div', { class: 'grid-2' },
-        el('div', { class: 'field' }, el('label', {}, 'Duration (min)'), durIn),
-        el('div', { class: 'field' }, el('label', {}, 'Price (USD)'),    priceIn)
+        el('div', { class: 'field' }, el('label', {}, 'Max per slot (blank = unlimited)'), maxSlotIn),
+        el('div', { class: 'field' }, el('label', {}, 'Sort order'), sortOrderIn)
       ),
+      el('div', { class: 'field' }, el('label', {}, 'Info panel title'), infoTitleIn),
+      el('div', { class: 'field' }, el('label', {}, 'Info panel note'), infoNoteIn),
       el('div', { class: 'row', style: 'justify-content: flex-end; gap: 8px; margin-top: 8px' },
         el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
         el('button', { class: 'btn', onclick: save }, 'Save')
