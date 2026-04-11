@@ -690,8 +690,27 @@ async function viewBookings() {
     }
   }
 
+  // Banner shared by Availability and Services sub-tabs. The new
+  // booking_availability and booking_services tables aren't yet read by the
+  // public booking widget at book.theflexfacility.com — the widget has its
+  // own configuration baked in. Until the widget is rewritten to consume
+  // these tables, edits here are portal-only and don't change what leads
+  // see when they go to book.
+  const notWiredBanner = () => el('div', {
+    class: 'panel',
+    style: 'background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.3); padding: 12px 16px; margin-bottom: 12px;'
+  },
+    el('div', { style: 'font-size: 13px; color: #fbbf24' },
+      el('strong', {}, '⚠ Portal-only for now. '),
+      'Changes here don\'t yet update the live booking page at ',
+      el('span', { class: 'mono' }, cal.custom_domain || cal.slug),
+      '. The widget uses its own configured availability and services until the integration is wired up.'
+    )
+  );
+
   // ----- Availability sub-view -----
   async function renderAvailability() {
+    content.appendChild(notWiredBanner());
     const panel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
     content.appendChild(panel);
 
@@ -780,6 +799,7 @@ async function viewBookings() {
 
   // ----- Services sub-view -----
   async function renderServices() {
+    content.appendChild(notWiredBanner());
     const header = el('div', { class: 'row between', style: 'margin-bottom: 12px' },
       el('div', { class: 'muted' }, 'Services leads can book on your page'),
       el('button', { class: 'btn sm', onclick: () => openServiceModal(null, renderServices_reload) }, '+ Add Service')
