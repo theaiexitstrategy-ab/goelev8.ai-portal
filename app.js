@@ -1418,6 +1418,15 @@ async function viewAnalytics() {
     el('div', { class: 'muted' }, state.client ? (state.client.name + ' · Last 30 days') : 'Platform-wide · Last 30 days')
   ));
 
+  // GoElev8.AI branding header
+  wrap.appendChild(el('div', { class: 'panel', style: 'display:flex;align-items:center;gap:16px;background:linear-gradient(135deg,rgba(45,156,219,0.08),rgba(201,168,76,0.08));border-color:rgba(45,156,219,0.2)' },
+    el('img', { src: '/logo.png', alt: 'GoElev8.AI', style: 'height:48px;width:auto' }),
+    el('div', {},
+      el('div', { style: 'font-weight:700;font-size:1rem;color:var(--text,#fff)' }, 'GoElev8.AI Analytics'),
+      el('div', { style: 'font-size:0.75rem;color:var(--text-dim,#94a3b8);margin-top:2px' }, 'Real-time portal metrics from your Supabase backend')
+    )
+  ));
+
   const cards = el('div', { class: 'cards' });
   cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading…')));
   wrap.appendChild(cards);
@@ -1515,10 +1524,10 @@ async function viewAnalytics() {
     }
   }
 
-  // GA4 link
-  wrap.appendChild(el('div', { style: 'text-align:center;padding:24px 0' },
-    el('a', { href: 'https://analytics.google.com/analytics/web/#/p/G-07Y6KTRES2', target: '_blank', class: 'btn' }, '📊 Open GA4 Dashboard'),
-    el('div', { style: 'font-size:0.75rem;color:var(--text-dim,#94a3b8);margin-top:8px' }, 'Powered by Google Analytics')
+  // Footer branding
+  wrap.appendChild(el('div', { style: 'text-align:center;padding:32px 0 16px;display:flex;flex-direction:column;align-items:center;gap:8px' },
+    el('img', { src: '/logo.png', alt: 'GoElev8.AI', style: 'height:40px;opacity:0.85' }),
+    el('div', { style: 'font-size:0.75rem;color:var(--text-dim,#94a3b8);letter-spacing:1px;text-transform:uppercase' }, 'Powered by GoElev8.AI')
   ));
 
   return wrap;

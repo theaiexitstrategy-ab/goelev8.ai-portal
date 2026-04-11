@@ -33,7 +33,7 @@
 <script>
 // Force-clear stale service worker caches on every load
 (function(){
-  var APP_VERSION = 12;
+  var APP_VERSION = 13;
   var vKey = 'ge8_app_v';
   var lastV = parseInt(localStorage.getItem(vKey) || '0', 10);
   if (lastV < APP_VERSION) {
@@ -71,6 +71,6 @@
   }
 })();
 </script>
-<script type="module" src="/app.js?v=4"></script>
+<script type="module" src="/app.js?v=5"></script>
 </body>
 </html>
