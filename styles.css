@@ -954,7 +954,7 @@ tbody tr:last-child td { border-bottom: none; }
     align-items: center;
     gap: 12px;
     padding: calc(10px + var(--sat)) 4px 14px;
-    margin: calc(-16px - var(--sat)) -16px 8px;
+    margin: calc(-16px - var(--sat)) -16px 24px;
     padding-left: calc(16px + var(--sal));
     padding-right: calc(16px + var(--sar));
     position: sticky;
@@ -964,6 +964,11 @@ tbody tr:last-child td { border-bottom: none; }
     backdrop-filter: blur(16px) saturate(160%);
     -webkit-backdrop-filter: blur(16px) saturate(160%);
     border-bottom: 1px solid var(--border, rgba(255,255,255,0.06));
+  }
+  /* Ensure topbar never scrolls under the sticky mobile header */
+  .topbar {
+    scroll-margin-top: 80px;
+    padding-top: 4px;
   }
   .mobile-header .nav-toggle {
     background: var(--bg-glass);

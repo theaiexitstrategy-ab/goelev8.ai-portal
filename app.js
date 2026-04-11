@@ -179,16 +179,26 @@ function shell(content) {
     : null;
 
   const isGlobalAdmin = state.user?.email === 'ab@goelev8.ai';
+  // Insert Analytics before Settings so the two are side-by-side with
+  // Settings last. If there's no Settings tab, append Analytics to the end.
+  const withAnalytics = (baseTabs) => {
+    const t = [...baseTabs];
+    const settingsIdx = t.indexOf('settings');
+    if (settingsIdx >= 0) t.splice(settingsIdx, 0, 'analytics');
+    else t.push('analytics');
+    return t;
+  };
+
   let tabs;
   if (state.isAdmin && !state.impersonating) {
     // Admin view — no client selected
     tabs = ADMIN_TABS;
   } else if (state.client?.portal_tabs) {
     // Client has custom tabs
-    tabs = isGlobalAdmin ? [...state.client.portal_tabs, 'analytics'] : state.client.portal_tabs;
+    tabs = isGlobalAdmin ? withAnalytics(state.client.portal_tabs) : state.client.portal_tabs;
   } else {
     // Default client tabs
-    tabs = isGlobalAdmin ? [...DEFAULT_TABS, 'analytics'] : DEFAULT_TABS;
+    tabs = isGlobalAdmin ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
   }
   const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
 
