@@ -24,7 +24,11 @@ const state = {
   client: null,
   isAdmin: false,
   impersonating: localStorage.getItem('ge8_impersonate') || null,
-  view: 'overview'
+  view: 'overview',
+  // Non-null when the authed client (or impersonated client) has an active
+  // booking_calendars row. Drives whether the Bookings tab appears in the
+  // sidebar and feeds the booking link widget on the Bookings view.
+  bookingCalendar: null
 };
 
 function toast(msg, isError = false) {
@@ -118,6 +122,18 @@ async function loadMe() {
   state.user = r.user;
   state.client = r.client;
   state.isAdmin = !!r.isAdmin;
+
+  // Fetch booking calendar for the current client context (if any). Used to
+  // gate the Bookings tab and to render the link widget. Silent-fail so a
+  // client without a calendar, or an admin not impersonating, just hides
+  // the tab instead of breaking login.
+  state.bookingCalendar = null;
+  if (state.client || state.impersonating) {
+    try {
+      const cal = await api('/api/portal/bookings/calendar');
+      state.bookingCalendar = cal?.calendar || null;
+    } catch { /* no_calendar_for_client or no_client_assigned — hide tab */ }
+  }
 }
 
 // ============================================================
@@ -188,6 +204,19 @@ function shell(content) {
     else t.push('analytics');
     return t;
   };
+  // Insert Bookings when the current client has an active booking_calendars
+  // row. Placed right before Settings/Analytics so it sits next to the other
+  // tail tabs. No-op (returns input) if the client has no calendar, or if
+  // bookings is already in the list.
+  const withBookings = (baseTabs) => {
+    if (!state.bookingCalendar) return baseTabs;
+    if (baseTabs.includes('bookings')) return baseTabs;
+    const t = [...baseTabs];
+    const anchorIdx = t.indexOf('settings');
+    const insertAt = anchorIdx >= 0 ? anchorIdx : t.length;
+    t.splice(insertAt, 0, 'bookings');
+    return t;
+  };
 
   let tabs;
   if (state.isAdmin && !state.impersonating) {
@@ -196,9 +225,11 @@ function shell(content) {
   } else if (state.client?.portal_tabs) {
     // Client has custom tabs
     tabs = isGlobalAdmin ? withAnalytics(state.client.portal_tabs) : state.client.portal_tabs;
+    tabs = withBookings(tabs);
   } else {
     // Default client tabs
     tabs = isGlobalAdmin ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
+    tabs = withBookings(tabs);
   }
   const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
 
@@ -447,83 +478,447 @@ function openContactModal(initial = null) {
 }
 
 // ============================================================
-// BOOKINGS
+// BOOKINGS — full management UI for the per-tenant booking platform.
+// Three sub-tabs: Appointments / Availability / Services. Sub-tab state
+// is kept local to the view closure so switching doesn't rebuild the
+// whole page. Data comes from /api/portal/bookings/* which are
+// tenant-scoped via ctx.clientId (admin impersonation also works).
 // ============================================================
+const DAYS_OF_WEEK = [
+  { dow: 1, label: 'Monday'    },
+  { dow: 2, label: 'Tuesday'   },
+  { dow: 3, label: 'Wednesday' },
+  { dow: 4, label: 'Thursday'  },
+  { dow: 5, label: 'Friday'    },
+  { dow: 6, label: 'Saturday'  },
+  { dow: 0, label: 'Sunday'    }
+];
+
+// Status label → CSS class on the global .badge system.
+const STATUS_BADGE_CLASS = {
+  pending:   'badge warn',
+  confirmed: 'badge green',
+  cancelled: 'badge',
+  no_show:   'badge red'
+};
+
 async function viewBookings() {
   if (typeof gtag === 'function') gtag('event', 'booking_viewed', { client_name: state.client?.name || '' });
-  const wrap = el('div', {});
-  wrap.appendChild(el('div', { class: 'topbar' },
-    el('h1', {}, 'Bookings'),
-    el('button', { class: 'btn', onclick: () => openBookingModal() }, '+ New booking')
-  ));
-  const panel = el('div', { class: 'panel' });
-  wrap.appendChild(panel);
-  try {
-    const r = await api('/api/portal/crm?action=bookings');
-    if (!r.bookings.length) {
-      panel.appendChild(el('p', { class: 'muted' }, 'No bookings yet.'));
-      return wrap;
-    }
-    panel.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'When'), el('th', {}, 'Service'), el('th', {}, 'Contact'),
-        el('th', {}, 'Status'), el('th', {}, '')
-      )),
-      el('tbody', {}, ...r.bookings.map(b =>
-        el('tr', {},
-          el('td', {}, new Date(b.starts_at).toLocaleString()),
-          el('td', {}, b.service),
-          el('td', {}, b.contacts?.name || '—'),
-          el('td', {}, el('span', { class: 'badge' }, b.status)),
-          el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
-            if (!confirm('Delete booking?')) return;
-            await api('/api/portal/crm?action=bookings', { method: 'DELETE', body: { id: b.id } });
-            render();
-          }}, 'Delete'))
-        )
-      ))
-    ));
-  } catch (e) { panel.innerHTML = `<p class="err">${e.message}</p>`; }
-  return wrap;
-}
 
-async function openBookingModal() {
-  const c = await api('/api/portal/crm?action=contacts');
-  const contactSel = el('select', {},
-    el('option', { value: '' }, '— none —'),
-    ...c.contacts.map(ct => el('option', { value: ct.id }, `${ct.name} (${ct.phone})`))
-  );
-  const service = el('input', { placeholder: 'Consultation, etc.' });
-  const startsAt = el('input', { type: 'datetime-local' });
-  const status = el('select', {},
-    ...['scheduled','confirmed','completed','cancelled'].map(s => el('option', { value: s }, s))
-  );
-  const notes = el('textarea', {});
-  const close = () => bg.remove();
-  const save = async () => {
-    try {
-      await api('/api/portal/crm?action=bookings', { method: 'POST', body: {
-        contact_id: contactSel.value || null, service: service.value,
-        starts_at: new Date(startsAt.value).toISOString(),
-        status: status.value, notes: notes.value
-      }});
-      close(); render();
-    } catch (e) { toast(e.message, true); }
+  const cal = state.bookingCalendar;
+  if (!cal) {
+    // Tab was somehow selected without a calendar (e.g. deep-link after the
+    // calendar was just disabled). Show a clear message instead of crashing.
+    return el('div', {},
+      el('div', { class: 'topbar' }, el('h1', {}, 'Bookings')),
+      el('div', { class: 'panel' },
+        el('p', { class: 'muted' }, 'Booking calendar is not configured for this account.')
+      )
+    );
+  }
+
+  // ----- Booking link widget -----
+  const bookingUrl = () => cal.custom_domain || ('book.goelev8.ai/' + cal.slug);
+  const fullUrl = () => {
+    const u = bookingUrl();
+    return /^https?:\/\//.test(u) ? u : ('https://' + u);
   };
-  const modal = el('div', { class: 'modal' },
-    el('h2', {}, 'New booking'),
-    el('div', { class: 'field' }, el('label', {}, 'Contact'), contactSel),
-    el('div', { class: 'field' }, el('label', {}, 'Service'), service),
-    el('div', { class: 'field' }, el('label', {}, 'Starts at'), startsAt),
-    el('div', { class: 'field' }, el('label', {}, 'Status'), status),
-    el('div', { class: 'field' }, el('label', {}, 'Notes'), notes),
-    el('div', { class: 'row', style: 'justify-content:flex-end; gap:8px' },
-      el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
-      el('button', { class: 'btn', onclick: save }, 'Save')
+
+  const copyBtn = el('button', {
+    class: 'btn sm',
+    onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(fullUrl());
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+      } catch { toast('Copy failed', true); }
+    }
+  }, 'Copy Link');
+
+  const linkWidget = el('div', {
+    class: 'panel',
+    style: 'background: linear-gradient(135deg, rgba(45,156,219,0.1), rgba(45,156,219,0.02)); border: 1px solid rgba(45,156,219,0.3)'
+  },
+    el('div', { class: 'field-label' }, 'YOUR BOOKING LINK'),
+    el('div', { class: 'row', style: 'gap: 16px; flex-wrap: wrap; align-items: center' },
+      el('div', {
+        class: 'mono',
+        style: 'flex: 1; min-width: 200px; font-size: 14px; color: #93c5fd; word-break: break-all'
+      }, bookingUrl()),
+      el('div', { class: 'row', style: 'gap: 8px; flex-wrap: wrap' },
+        copyBtn,
+        el('button', {
+          class: 'btn sm ghost',
+          onclick: () => { window.open(fullUrl(), '_blank', 'noopener'); }
+        }, 'Open in new tab')
+      )
     )
   );
-  const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
-  document.body.appendChild(bg);
+
+  // ----- Sub-tab state + container -----
+  let subTab = 'appointments';
+  const subTabBar = el('div', { class: 'filter-bar' });
+  const content = el('div', {});
+
+  function renderSubTabBar() {
+    const mk = (id, label) => el('button', {
+      class: 'chip' + (subTab === id ? ' active' : ''),
+      onclick: () => { if (subTab === id) return; subTab = id; renderAll(); }
+    }, label);
+    subTabBar.replaceChildren(
+      mk('appointments', 'Appointments'),
+      mk('availability', 'Availability'),
+      mk('services',     'Services')
+    );
+  }
+
+  function renderAll() {
+    renderSubTabBar();
+    content.replaceChildren();
+    if (subTab === 'appointments') renderAppointments();
+    else if (subTab === 'availability') renderAvailability();
+    else renderServices();
+  }
+
+  // ----- Appointments sub-view -----
+  let apptFilter = 'upcoming';
+
+  async function renderAppointments() {
+    const filterBar = el('div', { class: 'filter-bar' });
+    const listPanel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
+    content.appendChild(filterBar);
+    content.appendChild(listPanel);
+
+    const mkFilter = (id, label) => el('button', {
+      class: 'chip' + (apptFilter === id ? ' active' : ''),
+      onclick: () => { if (apptFilter === id) return; apptFilter = id; renderAppointments_reload(); }
+    }, label);
+    filterBar.replaceChildren(
+      mkFilter('upcoming',  'Upcoming'),
+      mkFilter('all',       'All'),
+      mkFilter('past',      'Past'),
+      mkFilter('cancelled', 'Cancelled')
+    );
+
+    async function renderAppointments_reload() {
+      // Rebuild the filter bar so the active chip updates.
+      filterBar.replaceChildren(
+        mkFilter('upcoming',  'Upcoming'),
+        mkFilter('all',       'All'),
+        mkFilter('past',      'Past'),
+        mkFilter('cancelled', 'Cancelled')
+      );
+      listPanel.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
+      let rows;
+      try {
+        const r = await api('/api/portal/bookings/appointments?filter=' + encodeURIComponent(apptFilter));
+        rows = r.appointments || [];
+      } catch (e) {
+        listPanel.replaceChildren(el('p', { class: 'err' }, 'Failed to load appointments: ' + e.message));
+        return;
+      }
+      if (!rows.length) {
+        listPanel.replaceChildren(el('p', { class: 'muted' }, 'No appointments yet. Share your booking link to get started.'));
+        return;
+      }
+      listPanel.replaceChildren(
+        el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'When'),
+            el('th', {}, 'Name'),
+            el('th', {}, 'Service'),
+            el('th', {}, 'Status'),
+            el('th', {}, '')
+          )),
+          el('tbody', {}, ...rows.map(a => renderAppointmentRow(a, renderAppointments_reload)))
+        )
+      );
+    }
+
+    await renderAppointments_reload();
+  }
+
+  function renderAppointmentRow(a, reload) {
+    const when = new Date(a.appointment_start);
+    const whenStr = when.toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+    });
+    const contactStr = [a.lead_name, a.lead_phone].filter(Boolean).join(' · ') || '—';
+    const badgeCls = STATUS_BADGE_CLASS[a.status] || 'badge';
+    const statusText = (a.status || 'pending').replace('_', ' ');
+
+    const actions = [];
+    if (a.status !== 'confirmed' && a.status !== 'cancelled') {
+      actions.push(el('button', {
+        class: 'btn sm green',
+        onclick: () => updateStatus(a.id, 'confirmed', reload)
+      }, 'Confirm'));
+    }
+    if (a.status !== 'cancelled') {
+      actions.push(el('button', {
+        class: 'btn sm ghost',
+        onclick: () => updateStatus(a.id, 'cancelled', reload)
+      }, 'Cancel'));
+    }
+    if (a.status !== 'no_show' && a.status !== 'cancelled') {
+      actions.push(el('button', {
+        class: 'btn sm ghost',
+        onclick: () => updateStatus(a.id, 'no_show', reload)
+      }, 'No-show'));
+    }
+
+    return el('tr', {},
+      el('td', {}, whenStr),
+      el('td', {}, contactStr),
+      el('td', {}, a.service_name || '—'),
+      el('td', {}, el('span', { class: badgeCls }, statusText)),
+      el('td', {}, el('div', { class: 'row', style: 'gap: 4px; flex-wrap: wrap; justify-content: flex-end' }, ...actions))
+    );
+  }
+
+  async function updateStatus(id, status, reload) {
+    try {
+      await api('/api/portal/bookings/appointments', {
+        method: 'PATCH',
+        body: { id, status }
+      });
+      toast('Updated');
+      await reload();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  // ----- Availability sub-view -----
+  async function renderAvailability() {
+    const panel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
+    content.appendChild(panel);
+
+    let data;
+    try {
+      data = await api('/api/portal/bookings/availability');
+    } catch (e) {
+      panel.replaceChildren(el('p', { class: 'err' }, 'Failed to load availability: ' + e.message));
+      return;
+    }
+
+    const byDow = Object.fromEntries((data.availability || []).map(r => [r.day_of_week, r]));
+    const tz = data.timezone || cal.timezone || '';
+
+    // Build a row per day with a toggle + start/end time inputs.
+    const rowEls = DAYS_OF_WEEK.map(d => {
+      const existing = byDow[d.dow];
+      const active = existing ? !!existing.is_active : false;
+      const start  = (existing?.start_time || '09:00:00').slice(0, 5);
+      const end    = (existing?.end_time   || '17:00:00').slice(0, 5);
+
+      const startInput = el('input', { type: 'time', value: start, disabled: !active });
+      const endInput   = el('input', { type: 'time', value: end,   disabled: !active });
+      const toggle = el('input', {
+        type: 'checkbox',
+        checked: active,
+        onchange: (e) => {
+          startInput.disabled = !e.target.checked;
+          endInput.disabled   = !e.target.checked;
+        }
+      });
+
+      const row = el('div', {
+        class: 'row',
+        style: 'gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.04); flex-wrap: nowrap'
+      },
+        el('label', { class: 'toggle-row', style: 'padding: 0; min-width: 130px; flex: 0 0 auto' },
+          toggle,
+          el('span', { style: 'font-weight: 600' }, d.label)
+        ),
+        el('div', { class: 'row', style: 'gap: 8px; flex: 1; justify-content: flex-end' },
+          startInput,
+          el('span', { class: 'muted', style: 'font-size: 12px' }, 'to'),
+          endInput
+        )
+      );
+      row._dow = d.dow;
+      row._toggle = toggle;
+      row._start  = startInput;
+      row._end    = endInput;
+      return row;
+    });
+
+    const saveBtn = el('button', { class: 'btn', onclick: saveAvailability }, 'Save all');
+
+    panel.replaceChildren(
+      el('div', { class: 'row between', style: 'margin-bottom: 8px' },
+        el('h2', { style: 'margin: 0' }, 'Weekly availability'),
+        tz ? el('span', { class: 'muted', style: 'font-size: 12px' }, tz) : null
+      ),
+      ...rowEls,
+      el('div', { class: 'row', style: 'justify-content: flex-end; margin-top: 16px' }, saveBtn)
+    );
+
+    async function saveAvailability() {
+      const days = rowEls.map(r => {
+        const active = r._toggle.checked;
+        let startT = r._start.value;
+        let endT   = r._end.value;
+        // The DB CHECK constraint requires end > start even for inactive rows.
+        // Supply a sentinel when the user hasn't filled them in.
+        if (!active && (!endT || endT <= startT)) { startT = '09:00'; endT = '17:00'; }
+        return { day_of_week: r._dow, start_time: startT, end_time: endT, is_active: active };
+      });
+      saveBtn.disabled = true;
+      try {
+        await api('/api/portal/bookings/availability', { method: 'PUT', body: { days } });
+        toast('Availability saved');
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        saveBtn.disabled = false;
+      }
+    }
+  }
+
+  // ----- Services sub-view -----
+  async function renderServices() {
+    const header = el('div', { class: 'row between', style: 'margin-bottom: 12px' },
+      el('div', { class: 'muted' }, 'Services leads can book on your page'),
+      el('button', { class: 'btn sm', onclick: () => openServiceModal(null, renderServices_reload) }, '+ Add Service')
+    );
+    const listWrap = el('div', {});
+    content.appendChild(header);
+    content.appendChild(listWrap);
+
+    async function renderServices_reload() {
+      listWrap.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
+      let services;
+      try {
+        const r = await api('/api/portal/bookings/services');
+        services = r.services || [];
+      } catch (e) {
+        listWrap.replaceChildren(el('p', { class: 'err' }, 'Failed to load services: ' + e.message));
+        return;
+      }
+      if (!services.length) {
+        listWrap.replaceChildren(el('p', { class: 'muted' }, 'No services yet. Click "+ Add Service" to create one.'));
+        return;
+      }
+      listWrap.replaceChildren(...services.map(s => renderServiceRow(s, renderServices_reload)));
+    }
+
+    await renderServices_reload();
+  }
+
+  function renderServiceRow(s, reload) {
+    const priceStr = '$' + ((s.price_cents || 0) / 100).toFixed(2);
+    const metaStr = (s.duration_minutes || 0) + ' min · ' + priceStr +
+      (s.description ? ' · ' + s.description : '');
+
+    const toggle = el('input', {
+      type: 'checkbox',
+      checked: !!s.is_active,
+      onchange: async (e) => {
+        try {
+          await api('/api/portal/bookings/services', {
+            method: 'PATCH',
+            body: { id: s.id, is_active: e.target.checked }
+          });
+          row.style.opacity = e.target.checked ? '1' : '0.55';
+        } catch (err) {
+          toast(err.message, true);
+          e.target.checked = !e.target.checked;
+        }
+      }
+    });
+
+    const row = el('div', {
+      class: 'panel',
+      style: 'padding: 14px 16px; margin-bottom: 8px; cursor: pointer; display: flex; gap: 12px; align-items: center;'
+            + (s.is_active ? '' : ' opacity: 0.55;'),
+      onclick: (ev) => {
+        // Avoid opening the edit modal when clicking the toggle / edit button.
+        if (ev.target.closest('input, button')) return;
+        openServiceModal(s, reload);
+      }
+    },
+      el('div', { style: 'flex: 1; min-width: 0' },
+        el('div', { style: 'font-weight: 600; font-size: 14px' }, s.name),
+        el('div', { class: 'muted', style: 'font-size: 12px; margin-top: 2px' }, metaStr)
+      ),
+      el('label', {
+        class: 'toggle-row',
+        style: 'padding: 0; margin: 0',
+        title: s.is_active ? 'Active' : 'Inactive',
+        onclick: (e) => e.stopPropagation()
+      }, toggle),
+      el('button', {
+        class: 'btn sm ghost',
+        onclick: (e) => { e.stopPropagation(); openServiceModal(s, reload); }
+      }, 'Edit')
+    );
+    return row;
+  }
+
+  function openServiceModal(existing, reload) {
+    const isEdit = !!existing;
+    const nameIn = el('input', { placeholder: 'e.g. 30-min Personal Training', value: existing?.name || '' });
+    const descIn = el('textarea', { placeholder: 'Short description shown to leads' });
+    if (existing?.description) descIn.value = existing.description;
+    const durIn  = el('input', { type: 'number', min: '5', step: '5', value: existing?.duration_minutes ?? 30 });
+    const priceIn = el('input', { type: 'number', min: '0', step: '1', value: ((existing?.price_cents ?? 0) / 100).toFixed(2) });
+
+    const close = () => bg.remove();
+    const save = async () => {
+      const name = nameIn.value.trim();
+      if (!name) { toast('Name required', true); return; }
+      const duration_minutes = parseInt(durIn.value, 10) || 30;
+      const price_cents = Math.round((parseFloat(priceIn.value) || 0) * 100);
+      const description = descIn.value.trim();
+      try {
+        if (isEdit) {
+          await api('/api/portal/bookings/services', {
+            method: 'PATCH',
+            body: { id: existing.id, name, description, duration_minutes, price_cents }
+          });
+          toast('Service updated');
+        } else {
+          await api('/api/portal/bookings/services', {
+            method: 'POST',
+            body: { name, description, duration_minutes, price_cents }
+          });
+          toast('Service added');
+        }
+        close();
+        await reload();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+
+    const modal = el('div', { class: 'modal' },
+      el('h2', {}, isEdit ? 'Edit service' : 'New service'),
+      el('div', { class: 'field' }, el('label', {}, 'Name'), nameIn),
+      el('div', { class: 'field' }, el('label', {}, 'Description'), descIn),
+      el('div', { class: 'grid-2' },
+        el('div', { class: 'field' }, el('label', {}, 'Duration (min)'), durIn),
+        el('div', { class: 'field' }, el('label', {}, 'Price (USD)'),    priceIn)
+      ),
+      el('div', { class: 'row', style: 'justify-content: flex-end; gap: 8px; margin-top: 8px' },
+        el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+        el('button', { class: 'btn', onclick: save }, 'Save')
+      )
+    );
+    const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
+    document.body.appendChild(bg);
+  }
+
+  // ----- Assemble + initial render -----
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Bookings')));
+  wrap.appendChild(linkWidget);
+  wrap.appendChild(subTabBar);
+  wrap.appendChild(content);
+  renderAll();
+  return wrap;
 }
 
 // ============================================================
