@@ -122,7 +122,15 @@ tr:hover td { background:rgba(255,255,255,0.02); }
 @media (max-width: 768px) {
   #menu-toggle { display:none; }
   #sidebar { display:none; }
-  .main { margin-left:0; padding:16px 16px 80px; }
+  .main {
+    margin-left:0;
+    padding:
+      calc(24px + env(safe-area-inset-top))
+      16px
+      100px
+      16px;
+  }
+  .topbar { padding-top: 4px; }
   .bottom-tabs {
     display:flex;
     position:fixed;
