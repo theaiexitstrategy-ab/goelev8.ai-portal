@@ -100,9 +100,54 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'invalid_status' });
     }
 
-    // Translate to the Title-cased form the live widget uses, then update
-    // scoped by both id AND client_id so a crafted id from another tenant
-    // can't update a row.
+    // Tenant ownership check before any state change. The widget's
+    // /api/cancel endpoint accepts any booking_id with no auth, so we
+    // verify ownership here in the portal before delegating to it.
+    const { data: existing, error: existingErr } = await supabaseAdmin
+      .from('bookings')
+      .select('id, client_id')
+      .eq('id', id)
+      .eq('client_id', clientId)
+      .maybeSingle();
+    if (existingErr) return res.status(500).json({ error: existingErr.message });
+    if (!existing)   return res.status(404).json({ error: 'booking_not_found' });
+
+    // Cancellation path: delegate to the public booking widget's
+    // /api/cancel endpoint (book.theflexfacility.com/api/cancel) so
+    //   1. the customer gets the same SMS template + Twilio sender they
+    //      already received their original confirmation from,
+    //   2. Coach Kenny gets a parallel notification SMS,
+    //   3. the matching time_slots row gets reopened.
+    // The widget endpoint updates the bookings row itself, so we don't
+    // need to also write here on success. Falls back to a direct DB
+    // update if the widget call fails (so cancellation still happens
+    // even if the widget is unreachable, just without SMS).
+    if (status === 'cancelled') {
+      const cancelUrl = process.env.FLEX_BOOKING_CANCEL_URL
+        || 'https://book.theflexfacility.com/api/cancel';
+      try {
+        const widgetRes = await fetch(cancelUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ booking_id: id })
+        });
+        if (widgetRes.ok) {
+          return res.status(200).json({
+            appointment: { id, status: 'cancelled' },
+            sms_sent: true
+          });
+        }
+        const widgetBody = await widgetRes.text().catch(() => '');
+        console.warn('[bookings] widget cancel returned', widgetRes.status, widgetBody);
+      } catch (e) {
+        console.warn('[bookings] widget cancel fetch error:', e.message);
+      }
+      // Fall through to direct DB update if the widget call failed.
+    }
+
+    // Direct DB update path. Used for confirmed/no_show transitions and
+    // as the fallback if the widget cancel call fails. Translates to the
+    // Title-cased form the widget uses for consistency.
     const dbStatus = PORTAL_TO_DB_STATUS[status];
     const { data, error } = await supabaseAdmin
       .from('bookings')
@@ -113,7 +158,8 @@ export default async function handler(req, res) {
       .single();
     if (error) return res.status(400).json({ error: error.message });
     return res.status(200).json({
-      appointment: { id: data.id, status: dbStatusToPortal(data.status) }
+      appointment: { id: data.id, status: dbStatusToPortal(data.status) },
+      sms_sent: false
     });
   }
 }
