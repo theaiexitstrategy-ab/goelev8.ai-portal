@@ -16,6 +16,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.4.5",
+    "google-auth-library": "^10.6.2",
     "stripe": "^16.0.0",
     "twilio": "^5.3.0",
     "web-push": "^3.6.0"

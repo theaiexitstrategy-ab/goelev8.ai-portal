@@ -1421,12 +1421,15 @@ async function viewAnalytics() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Analytics'),
-    el('div', { class: 'muted' }, state.client ? (state.client.name + ' · Last 30 days') : 'Platform-wide · Last 30 days')
+    el('div', { class: 'muted' }, (state.client ? state.client.name : 'Platform-wide') + ' · Last 30 days · Live from Google Analytics')
   ));
 
   const cards = el('div', { class: 'cards' });
-  cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading…')));
+  cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading live data from Google Analytics…')));
   wrap.appendChild(cards);
+
+  const restOfPage = el('div', {});
+  wrap.appendChild(restOfPage);
 
   const card = (icon, label, value, sub) => el('div', { class: 'card' },
     el('div', { class: 'label' }, icon + ' ' + label),
@@ -1434,152 +1437,121 @@ async function viewAnalytics() {
     sub ? el('div', { class: 'sub muted' }, sub) : null
   );
 
-  if (state.client) {
-    // Per-client analytics from /api/portal/analytics + funnel views
-    try {
-      const [data, funnel] = await Promise.all([
-        api('/api/portal/analytics'),
-        api('/api/portal/funnel-views').catch(() => ({ count: 0, total_30d: 0, by_source: [], by_slug: [], by_day: {} }))
-      ]);
-      const o = data.overview || {};
-      cards.innerHTML = '';
-      const changeDir = o.leads_change >= 0 ? '↑' : '↓';
-      cards.appendChild(card('👁️', 'Funnel Views', funnel.total_30d || 0, 'Last 30 days'));
-      cards.appendChild(card('👥', 'Leads', o.total_leads || 0, `${changeDir} ${Math.abs(o.leads_change || 0)}% vs last month`));
-      const convRate = funnel.total_30d > 0 ? ((o.total_leads / funnel.total_30d) * 100).toFixed(1) + '%' : '—';
-      cards.appendChild(card('🎯', 'Conversion', convRate, 'Views → leads'));
-      cards.appendChild(card('💰', 'Revenue', '$' + (o.revenue_this_month || 0).toFixed(2), 'Paid this month'));
-
-      // Funnel views chart panel
-      const chartPanel = el('div', { class: 'panel' });
-      chartPanel.appendChild(el('h2', {}, '📈 Funnel Views (Last 30 Days)'));
-      const days = Object.entries(funnel.by_day || {});
-      if (days.some(([_, v]) => v > 0)) {
-        const max = Math.max(...days.map(([_, v]) => v), 1);
-        const chart = el('div', { class: 'view-chart' });
-        days.forEach(([date, count]) => {
-          const bar = el('div', { class: 'view-bar', title: date + ': ' + count + ' views' },
-            el('div', { class: 'view-bar-fill', style: 'height:' + Math.max(2, (count / max) * 100) + '%' }),
-            el('div', { class: 'view-bar-label' }, new Date(date).getDate())
-          );
-          chart.appendChild(bar);
-        });
-        chartPanel.appendChild(chart);
-      } else {
-        chartPanel.appendChild(el('p', { class: 'muted' }, 'No funnel views recorded yet. Once visitors land on your funnel pages, you\'ll see traffic here.'));
-      }
-      wrap.appendChild(chartPanel);
-
-      // Funnel views by source panel
-      const viewSrcPanel = el('div', { class: 'panel' });
-      viewSrcPanel.appendChild(el('h2', {}, '🌐 Where Views Come From'));
-      if ((funnel.by_source || []).length) {
-        const totalViews = funnel.by_source.reduce((s, x) => s + x.count, 0);
-        viewSrcPanel.appendChild(el('table', {},
-          el('thead', {}, el('tr', {},
-            el('th', {}, 'Referrer'),
-            el('th', {}, 'Views'),
-            el('th', {}, '%')
-          )),
-          el('tbody', {}, ...funnel.by_source.map(s => el('tr', {},
-            el('td', {}, s.source),
-            el('td', {}, String(s.count)),
-            el('td', {}, ((s.count / totalViews) * 100).toFixed(1) + '%')
-          )))
-        ));
-      } else {
-        viewSrcPanel.appendChild(el('p', { class: 'muted' }, 'No traffic sources yet.'));
-      }
-      wrap.appendChild(viewSrcPanel);
-
-      // Top funnel pages
-      if ((funnel.by_slug || []).length) {
-        const pagePanel = el('div', { class: 'panel' });
-        pagePanel.appendChild(el('h2', {}, '📄 Top Funnel Pages'));
-        pagePanel.appendChild(el('table', {},
-          el('thead', {}, el('tr', {}, el('th', {}, 'Page'), el('th', {}, 'Views'))),
-          el('tbody', {}, ...funnel.by_slug.map(p => el('tr', {},
-            el('td', {}, el('code', {}, p.slug)),
-            el('td', {}, String(p.count))
-          )))
-        ));
-        wrap.appendChild(pagePanel);
-      }
-
-      // Lead sources panel
-      const srcPanel = el('div', { class: 'panel' });
-      srcPanel.appendChild(el('h2', {}, 'Lead Sources'));
-      const sources = data.top_sources || [];
-      if (sources.length) {
-        srcPanel.appendChild(el('table', {},
-          el('thead', {}, el('tr', {}, el('th', {}, 'Source'), el('th', {}, 'Leads'))),
-          el('tbody', {}, ...sources.map(s => el('tr', {},
-            el('td', {}, s.source), el('td', {}, String(s.count))
-          )))
-        ));
-      } else {
-        srcPanel.appendChild(el('p', { class: 'muted' }, 'No lead sources yet.'));
-      }
-      wrap.appendChild(srcPanel);
-
-      // Recent activity panel
-      const actPanel = el('div', { class: 'panel' });
-      actPanel.appendChild(el('h2', {}, 'Recent Activity'));
-      const activity = data.recent_activity || [];
-      if (activity.length) {
-        actPanel.appendChild(el('table', {},
-          el('thead', {}, el('tr', {},
-            el('th', {}, 'Type'), el('th', {}, 'Name'), el('th', {}, 'Action'), el('th', {}, 'Time')
-          )),
-          el('tbody', {}, ...activity.slice(0, 15).map(a => el('tr', {},
-            el('td', {}, el('span', { class: 'badge ' + (a.type === 'lead' ? 'blue' : a.type === 'sale' ? 'green' : '') }, a.type)),
-            el('td', {}, a.name || '—'),
-            el('td', {}, a.action || ''),
-            el('td', {}, new Date(a.ts).toLocaleString())
-          )))
-        ));
-      } else {
-        actPanel.appendChild(el('p', { class: 'muted' }, 'No recent activity.'));
-      }
-      wrap.appendChild(actPanel);
-    } catch (e) {
-      cards.innerHTML = '';
-      cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'Error: ' + e.message)));
-    }
-  } else {
-    // Platform-wide admin analytics from /api/admin
-    try {
-      const a = await api('/api/admin?action=analytics');
-      const r = await api('/api/admin?action=list-clients');
-      const clients = r.clients || [];
-      cards.innerHTML = '';
-      cards.appendChild(card('🏢', 'Total Clients', a.total_clients || 0, `${a.new_clients_30d || 0} new in 30d`));
-      cards.appendChild(card('📱', 'SMS This Month', a.sms_this_month || 0, 'Across all clients'));
-      cards.appendChild(card('⚡', 'Active (7d)', a.active_clients_7d || 0, 'Sent SMS in last 7 days'));
-      cards.appendChild(card('💳', 'Purchases', a.purchases_this_month || 0, 'Credit packs this month'));
-
-      // Per-client breakdown
-      if (clients.length) {
-        const bkPanel = el('div', { class: 'panel' });
-        bkPanel.appendChild(el('h2', {}, 'Client Breakdown'));
-        bkPanel.appendChild(el('table', {},
-          el('thead', {}, el('tr', {},
-            el('th', {}, 'Client'), el('th', {}, 'Credits'), el('th', {}, 'Sent 30d'), el('th', {}, 'Status')
-          )),
-          el('tbody', {}, ...clients.map(c => el('tr', {},
-            el('td', {}, c.name || c.slug),
-            el('td', {}, String(c.credit_balance ?? 0)),
-            el('td', {}, String(c.sent_30d ?? 0)),
-            el('td', {}, el('span', { class: 'badge ' + (c.billing_paused ? 'red' : 'green') }, c.billing_paused ? 'Paused' : 'Active'))
-          )))
-        ));
-        wrap.appendChild(bkPanel);
-      }
-    } catch (e) {
-      cards.innerHTML = '';
-      cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'Error: ' + e.message)));
-    }
+  let ga;
+  try {
+    ga = await api('/api/portal/ga4');
+  } catch (e) {
+    cards.innerHTML = '';
+    cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'Failed to load GA4: ' + e.message)));
+    return wrap;
   }
+
+  if (ga.configured === false) {
+    cards.innerHTML = '';
+    const setupPanel = el('div', { class: 'panel' });
+    setupPanel.appendChild(el('h2', {}, '⚠️ Google Analytics Not Configured'));
+    setupPanel.appendChild(el('p', { class: 'muted' }, 'To pull live data into this dashboard, set the following environment variables in Vercel:'));
+    setupPanel.appendChild(el('div', { style: 'background:#0d1117;padding:14px;border-radius:8px;margin:12px 0;font-family:monospace;font-size:0.8rem;color:#94a3b8' },
+      el('div', {}, 'GA4_PROPERTY_ID=123456789'),
+      el('div', { style: 'margin-top:6px' }, 'GA4_SERVICE_ACCOUNT_JSON={"type":"service_account",...}')
+    ));
+    setupPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem' },
+      el('strong', {}, 'Setup steps: '),
+      '1) Google Cloud Console → enable Google Analytics Data API · 2) Create a service account & download JSON key · 3) GA4 Admin → Property Access Management → add the service account email as a Viewer · 4) Paste credentials into Vercel env vars · 5) Redeploy'
+    ));
+    wrap.appendChild(setupPanel);
+    return wrap;
+  }
+
+  if (ga.error) {
+    cards.innerHTML = '';
+    cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'GA4 error: ' + ga.error)));
+    return wrap;
+  }
+
+  // Render summary cards
+  cards.innerHTML = '';
+  cards.appendChild(card('👁️', 'Sessions', ga.sessions, 'Last 30 days'));
+  cards.appendChild(card('📄', 'Page Views', ga.page_views, 'Last 30 days'));
+  cards.appendChild(card('👥', 'Users', ga.users, 'Unique visitors'));
+  const engagementRate = ga.sessions > 0 ? ((ga.engaged_sessions / ga.sessions) * 100).toFixed(1) + '%' : '—';
+  cards.appendChild(card('🎯', 'Engagement', engagementRate, 'Engaged sessions'));
+
+  // Sessions over time chart
+  const chartPanel = el('div', { class: 'panel' });
+  chartPanel.appendChild(el('h2', {}, '📈 Sessions Over Time'));
+  const days = Object.entries(ga.by_day || {});
+  if (days.length && days.some(([_, v]) => v.sessions > 0)) {
+    const max = Math.max(...days.map(([_, v]) => v.sessions), 1);
+    const chart = el('div', { class: 'view-chart' });
+    days.forEach(([date, vals]) => {
+      const bar = el('div', { class: 'view-bar', title: date + ': ' + vals.sessions + ' sessions, ' + vals.page_views + ' views' },
+        el('div', { class: 'view-bar-fill', style: 'height:' + Math.max(2, (vals.sessions / max) * 100) + '%' }),
+        el('div', { class: 'view-bar-label' }, new Date(date).getDate())
+      );
+      chart.appendChild(bar);
+    });
+    chartPanel.appendChild(chart);
+  } else {
+    chartPanel.appendChild(el('p', { class: 'muted' }, 'No GA4 sessions recorded in the last 30 days.'));
+  }
+  restOfPage.appendChild(chartPanel);
+
+  // Top traffic sources
+  const srcPanel = el('div', { class: 'panel' });
+  srcPanel.appendChild(el('h2', {}, '🌐 Top Traffic Sources'));
+  if ((ga.top_sources || []).length) {
+    const totalSrc = ga.top_sources.reduce((s, x) => s + x.sessions, 0);
+    srcPanel.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Source'), el('th', {}, 'Sessions'), el('th', {}, 'Users'), el('th', {}, '%')
+      )),
+      el('tbody', {}, ...ga.top_sources.map(s => el('tr', {},
+        el('td', {}, s.source),
+        el('td', {}, String(s.sessions)),
+        el('td', {}, String(s.users)),
+        el('td', {}, ((s.sessions / totalSrc) * 100).toFixed(1) + '%')
+      )))
+    ));
+  } else {
+    srcPanel.appendChild(el('p', { class: 'muted' }, 'No traffic sources yet.'));
+  }
+  restOfPage.appendChild(srcPanel);
+
+  // Top pages
+  const pagePanel = el('div', { class: 'panel' });
+  pagePanel.appendChild(el('h2', {}, '📄 Top Pages'));
+  if ((ga.top_pages || []).length) {
+    pagePanel.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Page'), el('th', {}, 'Views'), el('th', {}, 'Sessions')
+      )),
+      el('tbody', {}, ...ga.top_pages.map(p => el('tr', {},
+        el('td', {}, el('code', {}, p.path)),
+        el('td', {}, String(p.views)),
+        el('td', {}, String(p.sessions))
+      )))
+    ));
+  } else {
+    pagePanel.appendChild(el('p', { class: 'muted' }, 'No page data yet.'));
+  }
+  restOfPage.appendChild(pagePanel);
+
+  // Custom portal events
+  const eventPanel = el('div', { class: 'panel' });
+  eventPanel.appendChild(el('h2', {}, '⚡ Portal Events'));
+  const eventLabels = {
+    lead_viewed:    'Leads Viewed',
+    booking_viewed: 'Bookings Viewed',
+    call_log_viewed: 'Call Logs Viewed',
+    client_login:   'Client Logins'
+  };
+  const eventCards = el('div', { class: 'cards', style: 'margin-top:8px' });
+  Object.entries(eventLabels).forEach(([key, label]) => {
+    eventCards.appendChild(card('📊', label, ga.events?.[key] || 0, 'Last 30 days'));
+  });
+  eventPanel.appendChild(eventCards);
+  restOfPage.appendChild(eventPanel);
 
   return wrap;
 }
