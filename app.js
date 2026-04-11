@@ -236,6 +236,12 @@ function shell(content) {
   // Backdrop behind slide-in nav drawer
   const navBackdrop = el('div', { class: 'nav-backdrop', onclick: closeNav });
 
+  // Global footer (every page)
+  const portalFooter = el('div', { class: 'portal-footer' },
+    el('img', { src: '/logo.png', alt: 'GoElev8.AI' }),
+    el('span', {}, 'Powered by GoElev8.AI')
+  );
+
   return el('div', { class: 'app has-bottom-nav' + (state.isAdmin ? ' is-admin' : '') },
     el('aside', { class: 'sidebar' },
       el('div', { class: 'brand' },
@@ -256,7 +262,7 @@ function shell(content) {
       el('button', { class: 'signout', onclick: () => { closeNav(); logout(); } }, 'Sign out')
     ),
     navBackdrop,
-    el('main', { class: 'main' }, mobileHeader, banner, content),
+    el('main', { class: 'main' }, mobileHeader, banner, content, portalFooter),
     bottomNav,
     installBanner
   );
@@ -1418,15 +1424,6 @@ async function viewAnalytics() {
     el('div', { class: 'muted' }, state.client ? (state.client.name + ' · Last 30 days') : 'Platform-wide · Last 30 days')
   ));
 
-  // GoElev8.AI branding header
-  wrap.appendChild(el('div', { class: 'panel', style: 'display:flex;align-items:center;gap:16px;background:linear-gradient(135deg,rgba(45,156,219,0.08),rgba(201,168,76,0.08));border-color:rgba(45,156,219,0.2)' },
-    el('img', { src: '/logo.png', alt: 'GoElev8.AI', style: 'height:48px;width:auto' }),
-    el('div', {},
-      el('div', { style: 'font-weight:700;font-size:1rem;color:var(--text,#fff)' }, 'GoElev8.AI Analytics'),
-      el('div', { style: 'font-size:0.75rem;color:var(--text-dim,#94a3b8);margin-top:2px' }, 'Real-time portal metrics from your Supabase backend')
-    )
-  ));
-
   const cards = el('div', { class: 'cards' });
   cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading…')));
   wrap.appendChild(cards);
@@ -1438,16 +1435,76 @@ async function viewAnalytics() {
   );
 
   if (state.client) {
-    // Per-client analytics from /api/portal/analytics
+    // Per-client analytics from /api/portal/analytics + funnel views
     try {
-      const data = await api('/api/portal/analytics');
+      const [data, funnel] = await Promise.all([
+        api('/api/portal/analytics'),
+        api('/api/portal/funnel-views').catch(() => ({ count: 0, total_30d: 0, by_source: [], by_slug: [], by_day: {} }))
+      ]);
       const o = data.overview || {};
       cards.innerHTML = '';
       const changeDir = o.leads_change >= 0 ? '↑' : '↓';
-      cards.appendChild(card('👥', 'Leads This Month', o.total_leads || 0, `${changeDir} ${Math.abs(o.leads_change || 0)}% vs last month`));
-      cards.appendChild(card('📅', 'Bookings', o.bookings_this_month || 0, 'Confirmed this month'));
+      cards.appendChild(card('👁️', 'Funnel Views', funnel.total_30d || 0, 'Last 30 days'));
+      cards.appendChild(card('👥', 'Leads', o.total_leads || 0, `${changeDir} ${Math.abs(o.leads_change || 0)}% vs last month`));
+      const convRate = funnel.total_30d > 0 ? ((o.total_leads / funnel.total_30d) * 100).toFixed(1) + '%' : '—';
+      cards.appendChild(card('🎯', 'Conversion', convRate, 'Views → leads'));
       cards.appendChild(card('💰', 'Revenue', '$' + (o.revenue_this_month || 0).toFixed(2), 'Paid this month'));
-      cards.appendChild(card('📞', 'Calls', (data.recent_activity || []).filter(a => a.type === 'call').length, 'Last 30 days'));
+
+      // Funnel views chart panel
+      const chartPanel = el('div', { class: 'panel' });
+      chartPanel.appendChild(el('h2', {}, '📈 Funnel Views (Last 30 Days)'));
+      const days = Object.entries(funnel.by_day || {});
+      if (days.some(([_, v]) => v > 0)) {
+        const max = Math.max(...days.map(([_, v]) => v), 1);
+        const chart = el('div', { class: 'view-chart' });
+        days.forEach(([date, count]) => {
+          const bar = el('div', { class: 'view-bar', title: date + ': ' + count + ' views' },
+            el('div', { class: 'view-bar-fill', style: 'height:' + Math.max(2, (count / max) * 100) + '%' }),
+            el('div', { class: 'view-bar-label' }, new Date(date).getDate())
+          );
+          chart.appendChild(bar);
+        });
+        chartPanel.appendChild(chart);
+      } else {
+        chartPanel.appendChild(el('p', { class: 'muted' }, 'No funnel views recorded yet. Once visitors land on your funnel pages, you\'ll see traffic here.'));
+      }
+      wrap.appendChild(chartPanel);
+
+      // Funnel views by source panel
+      const viewSrcPanel = el('div', { class: 'panel' });
+      viewSrcPanel.appendChild(el('h2', {}, '🌐 Where Views Come From'));
+      if ((funnel.by_source || []).length) {
+        const totalViews = funnel.by_source.reduce((s, x) => s + x.count, 0);
+        viewSrcPanel.appendChild(el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Referrer'),
+            el('th', {}, 'Views'),
+            el('th', {}, '%')
+          )),
+          el('tbody', {}, ...funnel.by_source.map(s => el('tr', {},
+            el('td', {}, s.source),
+            el('td', {}, String(s.count)),
+            el('td', {}, ((s.count / totalViews) * 100).toFixed(1) + '%')
+          )))
+        ));
+      } else {
+        viewSrcPanel.appendChild(el('p', { class: 'muted' }, 'No traffic sources yet.'));
+      }
+      wrap.appendChild(viewSrcPanel);
+
+      // Top funnel pages
+      if ((funnel.by_slug || []).length) {
+        const pagePanel = el('div', { class: 'panel' });
+        pagePanel.appendChild(el('h2', {}, '📄 Top Funnel Pages'));
+        pagePanel.appendChild(el('table', {},
+          el('thead', {}, el('tr', {}, el('th', {}, 'Page'), el('th', {}, 'Views'))),
+          el('tbody', {}, ...funnel.by_slug.map(p => el('tr', {},
+            el('td', {}, el('code', {}, p.slug)),
+            el('td', {}, String(p.count))
+          )))
+        ));
+        wrap.appendChild(pagePanel);
+      }
 
       // Lead sources panel
       const srcPanel = el('div', { class: 'panel' });
@@ -1523,12 +1580,6 @@ async function viewAnalytics() {
       cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'Error: ' + e.message)));
     }
   }
-
-  // Footer branding
-  wrap.appendChild(el('div', { style: 'text-align:center;padding:32px 0 16px;display:flex;flex-direction:column;align-items:center;gap:8px' },
-    el('img', { src: '/logo.png', alt: 'GoElev8.AI', style: 'height:40px;opacity:0.85' }),
-    el('div', { style: 'font-size:0.75rem;color:var(--text-dim,#94a3b8);letter-spacing:1px;text-transform:uppercase' }, 'Powered by GoElev8.AI')
-  ));
 
   return wrap;
 }
