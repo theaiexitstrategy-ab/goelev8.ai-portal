@@ -2346,7 +2346,7 @@ async function viewBookingAdmin() {
   // ----- Dashboard -----
   async function renderDashboard() {
     content.innerHTML = '';
-    content.appendChild(el('div', { class: 'muted' }, 'Loading...'));
+    content.appendChild(el('div', { class: 'muted' }, 'Loading book.goelev8.ai data...'));
     try {
       const d = await api('/api/admin-booking?action=dashboard');
       content.innerHTML = '';
@@ -2629,11 +2629,19 @@ async function viewBookingAdmin() {
   // ----- Render router -----
   async function renderContent() {
     renderSubNav();
-    switch (subTab) {
-      case 'dashboard': await renderDashboard(); break;
-      case 'tenants':   await renderTenants(); break;
-      case 'bookings':  await renderBookings(); break;
-      case 'detail':    await renderDetail(); break;
+    try {
+      switch (subTab) {
+        case 'dashboard': await renderDashboard(); break;
+        case 'tenants':   await renderTenants(); break;
+        case 'bookings':  await renderBookings(); break;
+        case 'detail':    await renderDetail(); break;
+      }
+    } catch (e) {
+      console.error('[BookingAdmin] renderContent error:', e);
+      content.innerHTML = '';
+      content.appendChild(el('div', { class: 'panel' },
+        el('div', { class: 'err' }, 'Error loading booking data: ' + e.message),
+        el('pre', { style: 'color:#e05252;font-size:12px;margin-top:8px;white-space:pre-wrap' }, e.stack || '')));
     }
   }
 
