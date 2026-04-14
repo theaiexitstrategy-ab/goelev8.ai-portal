@@ -2687,7 +2687,26 @@ async function viewAdmin() {
               el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'GA4:'),
               ga4Input,
               el('button', { class: 'btn sm', onclick: saveGa4 }, 'Save')
-            )
+            ),
+            (() => {
+              const skInput = el('input', { type: 'password', placeholder: 'sk_live_...', value: c.stripe_secret_key ? '••••••••' : '', style: 'width:160px' });
+              const saveKey = async () => {
+                const val = skInput.value.trim();
+                if (val === '••••••••') return;
+                try {
+                  await api('/api/admin?action=set-stripe-key', {
+                    method: 'POST', body: { client_id: c.id, stripe_secret_key: val }
+                  });
+                  toast('Stripe key saved for ' + c.name);
+                  skInput.value = val ? '••••••••' : '';
+                } catch (e) { toast(e.message, true); }
+              };
+              return el('div', { style: 'display:flex;gap:4px;align-items:center;margin-top:4px' },
+                el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'Stripe:'),
+                skInput,
+                el('button', { class: 'btn sm', onclick: saveKey }, 'Save')
+              );
+            })()
           )
         );
       }))
@@ -3289,9 +3308,24 @@ async function viewAnalytics() {
 }
 
 async function loadSalesSection(container) {
+  // Sync from Stripe button
+  const syncBtn = el('button', { class: 'btn sm', style: 'margin-bottom:12px', onclick: async () => {
+    syncBtn.disabled = true; syncBtn.textContent = 'Syncing from Stripe...';
+    try {
+      const r = await api('/api/portal/sync-sales', { method: 'POST' });
+      toast(`Synced ${r.synced} new sales (${r.skipped} already imported)`);
+      // Refresh the section
+      container.innerHTML = '';
+      container.appendChild(el('h2', {}, '💰 Sales'));
+      loadSalesSection(container);
+    } catch (e) {
+      toast('Sync failed: ' + e.message, true);
+    } finally { syncBtn.disabled = false; syncBtn.textContent = 'Sync Sales from Stripe'; }
+  } }, 'Sync Sales from Stripe');
+
   const statsEl = el('div', {});
   const listEl = el('div', {});
-  container.append(statsEl, listEl);
+  container.append(syncBtn, statsEl, listEl);
 
   try {
     const [stats, list] = await Promise.all([
