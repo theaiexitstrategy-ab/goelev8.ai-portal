@@ -39,6 +39,27 @@ async function getAccessToken() {
     throw new Error('GA4_SERVICE_ACCOUNT_JSON is not valid JSON');
   }
 
+  // Validate required fields before handing to google-auth-library.
+  // The JWT constructor throws an opaque "No key or keyFile set" if
+  // private_key is falsy, which is hard to debug without this check.
+  if (!creds.client_email) {
+    throw new Error('GA4_SERVICE_ACCOUNT_JSON is missing client_email');
+  }
+  if (!creds.private_key) {
+    throw new Error('GA4_SERVICE_ACCOUNT_JSON is missing private_key');
+  }
+
+  // Fix double-escaped newlines — the most common env-var pasting issue.
+  // When the JSON is pasted into Vercel's env var UI, the literal two-char
+  // sequence \n inside the private_key PEM can get stored as \\n (the
+  // backslash itself is escaped). JSON.parse turns \\n into the literal
+  // string "\n" (two chars: backslash + n) instead of a real newline.
+  // google-auth-library can't parse the PEM without real newlines between
+  // the base64 blocks.
+  if (creds.private_key.includes('\\n')) {
+    creds.private_key = creds.private_key.replace(/\\n/g, '\n');
+  }
+
   // Use google-auth-library JWT flow
   const { JWT } = await import('google-auth-library');
   const client = new JWT({
