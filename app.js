@@ -399,6 +399,18 @@ async function viewOverview() {
     cards.appendChild(card('Bookings', bk.bookings.length, 'Scheduled'));
   } catch (e) {}
 
+  // Road To The Stage /r2s analytics — only for Flex Facility client or ab@goelev8.ai
+  const isPlatformAdmin = state.user?.email === 'ab@goelev8.ai';
+  const isFlexClient = state.client?.slug === 'flex-facility';
+  if (isPlatformAdmin || isFlexClient) {
+    const r2sPanel = el('div', { class: 'panel' });
+    r2sPanel.appendChild(el('h2', {}, 'Road To The Stage — /r2s Page Analytics'));
+    r2sPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
+      'GA4 data scoped to the /r2s page on theflexfacility.com · last 30 days'));
+    wrap.appendChild(r2sPanel);
+    loadFlexR2sAnalytics(r2sPanel);
+  }
+
   // Quick top-up panel
   const tu = el('div', { class: 'panel' });
   tu.appendChild(el('h2', {}, 'Buy SMS credits'));
@@ -437,6 +449,98 @@ function card(label, value, sub, cls = '') {
     el('div', { class: 'value' }, String(value)),
     sub ? el('div', { class: 'sub' }, sub) : null
   );
+}
+
+// Renders /r2s GA4 analytics scoped to theflexfacility.com. Server-side
+// endpoint enforces that only ab@goelev8.ai or the Flex Facility client
+// can read it — this loader just calls it and renders the result.
+async function loadFlexR2sAnalytics(container) {
+  const placeholder = el('p', { class: 'muted' }, 'Loading /r2s analytics…');
+  container.appendChild(placeholder);
+  try {
+    const r = await api('/api/portal/flex-r2s');
+    placeholder.remove();
+
+    if (r.configured === false) {
+      container.appendChild(el('p', { class: 'err' }, r.message || 'GA4 not configured for Flex Facility.'));
+      return;
+    }
+    if (r.error) {
+      container.appendChild(el('p', { class: 'err' }, 'GA4 error: ' + r.error));
+      return;
+    }
+
+    const fmtSec = (s) => {
+      if (!s || s < 1) return '0s';
+      if (s < 60) return s.toFixed(0) + 's';
+      const m = Math.floor(s / 60);
+      const r = Math.round(s - m * 60);
+      return `${m}m ${r}s`;
+    };
+
+    // Stat strip
+    container.appendChild(el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:16px' },
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, String(r.page_views || 0)),
+        el('span', { class: 'metric-stat-label' }, 'Page Views')
+      ),
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, String(r.users || 0)),
+        el('span', { class: 'metric-stat-label' }, 'Unique Visitors')
+      ),
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, fmtSec(r.avg_time_on_page)),
+        el('span', { class: 'metric-stat-label' }, 'Avg Time on Page')
+      ),
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat accent' },
+        el('span', { class: 'metric-stat-value' }, String(r.sessions || 0)),
+        el('span', { class: 'metric-stat-label' }, 'Sessions')
+      )
+    ));
+
+    // Top traffic sources to /r2s
+    const srcHeader = el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Top Traffic Sources to /r2s');
+    container.appendChild(srcHeader);
+    if ((r.top_sources || []).length) {
+      const total = r.top_sources.reduce((s, x) => s + x.sessions, 0);
+      container.appendChild(el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'Source'), el('th', {}, 'Sessions'), el('th', {}, 'Users'), el('th', {}, '%')
+        )),
+        el('tbody', {}, ...r.top_sources.map(s => el('tr', {},
+          el('td', {}, s.source),
+          el('td', {}, String(s.sessions)),
+          el('td', {}, String(s.users)),
+          el('td', {}, total > 0 ? ((s.sessions / total) * 100).toFixed(1) + '%' : '—')
+        )))
+      ));
+    } else {
+      container.appendChild(el('p', { class: 'muted' }, 'No traffic sources recorded to /r2s in the last 30 days.'));
+    }
+
+    // Conversion events
+    container.appendChild(el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Conversion Events on /r2s'));
+    const convEntries = Object.entries(r.conversions || {});
+    if (convEntries.length) {
+      const evCards = el('div', { class: 'cards' });
+      for (const [name, count] of convEntries) {
+        evCards.appendChild(card(name, count, 'Last 30 days'));
+      }
+      container.appendChild(evCards);
+    } else {
+      container.appendChild(el('p', { class: 'muted' },
+        'No conversion events tracked yet. Fire lead_captured or booking_initiated GA4 events on /r2s to track conversions.'));
+    }
+
+    container.appendChild(el('p', { class: 'muted', style: 'font-size:0.7rem;margin-top:12px' },
+      `Measurement ID: ${r.measurement_id} · GA4 Property: ${r.property_id}`));
+  } catch (e) {
+    placeholder.remove();
+    container.appendChild(el('p', { class: 'err' }, 'Failed to load /r2s analytics: ' + e.message));
+  }
 }
 
 // ============================================================
