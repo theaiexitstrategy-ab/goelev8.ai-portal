@@ -122,6 +122,9 @@ async function loadMe() {
   state.user = r.user;
   state.client = r.client;
   state.isAdmin = !!r.isAdmin;
+  // Public Supabase config used by the Messages tab realtime channel.
+  // Anon key is safe in the browser; RLS still enforces tenant isolation.
+  state.supabaseConfig = r.supabase || null;
 
   // Fetch booking calendar for the current client context (if any). Used to
   // gate the Bookings tab and to render the link widget. Silent-fail so a
@@ -1135,8 +1138,80 @@ async function viewCalls() {
 // ============================================================
 // MESSAGES (SMS inbox + composer)
 // ============================================================
+//
+// Full bidirectional thread view that mirrors a native SMS app:
+//   • Threads are keyed by the OTHER party's phone number, so every
+//     message — outbound nudges, welcome SMS, blasts, inbound replies —
+//     ends up in the same thread regardless of whether a contact row
+//     exists.
+//   • Lead/contact lookup hydrates a friendly name on the header.
+//   • Outbound bubbles render right-aligned, inbound left-aligned, with
+//     a status badge on outbound (queued / sent / delivered / failed).
+//   • Supabase Realtime subscribes to new messages.client_id=<id>
+//     inserts and merges them in without a refetch.
+//   • An "unread" indicator highlights any thread that received an
+//     inbound message after we last viewed it (per-browser storage).
+//   • Mobile: defaults to thread-list view; tapping a thread slides
+//     full-width to the chat view; the back chevron returns to the list.
+function normPhone(p) {
+  if (!p) return '';
+  return String(p).replace(/[^\d+]/g, '');
+}
+
+const UNREAD_LS_KEY = 'ge8_thread_lastseen';
+function loadLastSeen() {
+  try { return JSON.parse(localStorage.getItem(UNREAD_LS_KEY) || '{}'); }
+  catch { return {}; }
+}
+function saveLastSeen(map) {
+  try { localStorage.setItem(UNREAD_LS_KEY, JSON.stringify(map)); }
+  catch {}
+}
+function markThreadSeen(phoneKey) {
+  if (!phoneKey) return;
+  const map = loadLastSeen();
+  map[phoneKey] = Date.now();
+  saveLastSeen(map);
+}
+
+async function openMessagesRealtime(onInsert) {
+  // Lazy-load the Supabase JS client only when the Messages tab is
+  // opened. The portal exposes the public URL + anon key on /api/portal/me;
+  // RLS still enforces tenant isolation server-side.
+  const cfg = state.supabaseConfig;
+  if (!cfg?.url || !cfg?.anon_key) return null;
+  let createClient;
+  try {
+    ({ createClient } = await import('https://esm.sh/@supabase/supabase-js@2'));
+  } catch (e) {
+    console.warn('[messages] supabase-js load failed, realtime disabled:', e.message);
+    return null;
+  }
+  const sb = createClient(cfg.url, cfg.anon_key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: state.token ? { Authorization: `Bearer ${state.token}` } : {} }
+  });
+  // Forward the portal user's JWT to the realtime websocket so RLS on
+  // public.messages lets the channel see this client's rows. Without
+  // this, postgres_changes runs as anon and the filter returns nothing.
+  if (state.token) {
+    try { sb.realtime.setAuth(state.token); } catch {}
+  }
+  const clientId = state.client?.id || state.impersonating;
+  if (!clientId) return null;
+  const channel = sb.channel(`messages:${clientId}`)
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'messages', filter: `client_id=eq.${clientId}` },
+      (payload) => {
+        try { onInsert(payload.new); }
+        catch (e) { console.warn('[messages] realtime handler error:', e.message); }
+      })
+    .subscribe();
+  return channel;
+}
+
 async function viewMessages() {
-  const wrap = el('div', {});
+  const wrap = el('div', { class: 'messages-tab' });
   wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Messages')));
 
   const layout = el('div', { class: 'chat-layout' });
@@ -1147,99 +1222,280 @@ async function viewMessages() {
   layout.appendChild(list);
   layout.appendChild(pane);
 
-  const [contactsR, msgsR] = await Promise.all([
+  // Start in thread-list view on mobile until the user picks a thread.
+  // The .show-pane class flips to full-width chat view via CSS.
+  if (state.activeThreadKey) layout.classList.add('show-pane');
+
+  const [contactsR, msgsR, leadsR] = await Promise.all([
     api('/api/portal/crm?action=contacts'),
-    api('/api/portal/messages')
+    api('/api/portal/messages'),
+    api('/api/portal/leads?limit=500').catch(() => ({ leads: [] }))
   ]);
-  const contacts = contactsR.contacts;
-  const allMsgs = msgsR.messages;
+  const contacts = contactsR.contacts || [];
+  const allMsgs  = (msgsR.messages || []).slice();
+  const leads    = leadsR.leads || [];
 
-  // Group last message per contact
-  const lastByContact = {};
-  for (const m of allMsgs) {
-    if (!m.contact_id) continue;
-    if (!lastByContact[m.contact_id]) lastByContact[m.contact_id] = m;
-  }
-
-  if (!contacts.length) {
-    list.appendChild(el('div', { style: 'padding:14px; color:var(--muted)' }, 'No contacts yet.'));
-  }
-
-  let activeId = state.activeContactId || contacts[0]?.id || null;
-
+  // ── Phone → contact / lead lookup tables ─────────────────────────
+  const contactByPhone = {};
   for (const c of contacts) {
-    const last = lastByContact[c.id];
-    const item = el('div', {
-      class: 'item' + (c.id === activeId ? ' active' : ''),
-      onclick: () => { state.activeContactId = c.id; render(); }
-    },
-      el('div', { class: 'name' }, c.name),
-      el('div', { class: 'preview' }, last?.body || c.phone)
-    );
-    list.appendChild(item);
+    const k = normPhone(c.phone);
+    if (k) contactByPhone[k] = c;
+  }
+  const leadByPhone = {};
+  const leadById = {};
+  for (const l of leads) {
+    if (l.id) leadById[l.id] = l;
+    const k = normPhone(l.phone);
+    if (k && !leadByPhone[k]) leadByPhone[k] = l;
+  }
+  const lastSeen = loadLastSeen();
+
+  // Closure-mutable working set (so realtime can splice in new rows).
+  let messages = allMsgs;
+  let activeKey = state.activeThreadKey || null;
+
+  function buildThreads() {
+    const threads = {};
+    for (const m of messages) {
+      const otherRaw = m.direction === 'inbound' ? m.from_number : m.to_number;
+      const phoneKey = normPhone(otherRaw);
+      if (!phoneKey) continue;
+      let t = threads[phoneKey];
+      if (!t) {
+        t = threads[phoneKey] = {
+          phone: otherRaw,
+          phoneKey,
+          contact: contactByPhone[phoneKey] || null,
+          lead: (m.lead_id && leadById[m.lead_id]) || leadByPhone[phoneKey] || null,
+          messages: [],
+          lastAt: 0,
+          lastInboundAt: 0,
+          outCount: 0,
+          inCount: 0,
+          segments: 0
+        };
+      }
+      t.messages.push(m);
+      const ts = new Date(m.created_at).getTime();
+      if (ts > t.lastAt) t.lastAt = ts;
+      if (m.direction === 'inbound') {
+        t.inCount++;
+        if (ts > t.lastInboundAt) t.lastInboundAt = ts;
+      } else {
+        t.outCount++;
+      }
+      t.segments += (m.segments || 0);
+    }
+    // Surface contacts with NO messages so users can start a thread.
+    for (const c of contacts) {
+      const k = normPhone(c.phone);
+      if (!k || threads[k]) continue;
+      threads[k] = {
+        phone: c.phone, phoneKey: k, contact: c,
+        lead: leadByPhone[k] || null,
+        messages: [], lastAt: 0, lastInboundAt: 0,
+        outCount: 0, inCount: 0, segments: 0
+      };
+    }
+    return threads;
   }
 
-  if (!activeId) {
-    pane.appendChild(el('div', { style: 'padding:30px; color:var(--muted)' }, 'Select a contact to start messaging.'));
-    return wrap;
+  function threadDisplayName(t) {
+    if (t.lead?.name) return t.lead.name;
+    if (t.contact?.name) return t.contact.name;
+    return t.phone || 'Unknown';
   }
 
-  const contact = contacts.find(c => c.id === activeId);
-  pane.appendChild(el('div', { class: 'chat-header' },
-    el('strong', {}, contact.name), ' ', el('span', { class: 'muted' }, contact.phone)
-  ));
+  function statusBadge(status) {
+    const s = String(status || '').toLowerCase();
+    let cls = 'msg-status';
+    if (s === 'failed' || s === 'undelivered') cls += ' failed';
+    else if (s === 'delivered' || s === 'read') cls += ' delivered';
+    else if (s === 'sent' || s === 'sending' || s === 'queued') cls += ' sent';
+    return el('span', { class: cls }, s || 'pending');
+  }
 
-  const body = el('div', { class: 'chat-body' });
-  const thread = allMsgs.filter(m => m.contact_id === activeId).slice().reverse();
-  for (const m of thread) {
-    body.appendChild(el('div', { class: 'bubble ' + (m.direction === 'inbound' ? 'in' : 'out') },
-      el('div', {}, m.body),
-      el('div', { class: 'ts' }, new Date(m.created_at).toLocaleString() + (m.status ? ` · ${m.status}` : ''))
+  // Render: tear down list/pane and rebuild from current messages array.
+  function rerender() {
+    list.innerHTML = '';
+    pane.innerHTML = '';
+    const threads = buildThreads();
+    const threadList = Object.values(threads).sort((a, b) => b.lastAt - a.lastAt);
+
+    // Resolve active thread, with legacy state.activeContactId fallback.
+    if (!activeKey && state.activeContactId) {
+      const c = contacts.find(x => x.id === state.activeContactId);
+      if (c) activeKey = normPhone(c.phone);
+    }
+    if (!activeKey && threadList[0]) activeKey = threadList[0].phoneKey;
+
+    // Empty state.
+    if (!threadList.length) {
+      list.appendChild(el('div', { class: 'chat-empty-side' }, 'No threads yet.'));
+      pane.appendChild(el('div', { class: 'chat-empty' },
+        el('div', { class: 'chat-empty-title' }, 'No messages yet.'),
+        el('div', { class: 'chat-empty-sub' }, 'Messages will appear here once leads enter your funnel.')
+      ));
+      return;
+    }
+
+    // Sidebar: thread rows.
+    for (const t of threadList) {
+      const last = t.messages.length
+        ? t.messages.reduce((a, b) => (new Date(a.created_at) > new Date(b.created_at) ? a : b))
+        : null;
+      const label = threadDisplayName(t);
+      const previewText = last?.body || t.phone || '';
+      const lastTs = last ? new Date(last.created_at) : null;
+      const previewTime = lastTs ? lastTs.toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+      const seenAt = lastSeen[t.phoneKey] || 0;
+      const isUnread = t.lastInboundAt > seenAt && t.phoneKey !== activeKey;
+      const item = el('div', {
+        class: 'item' + (t.phoneKey === activeKey ? ' active' : '') + (isUnread ? ' unread' : ''),
+        onclick: () => {
+          activeKey = t.phoneKey;
+          state.activeThreadKey = t.phoneKey;
+          state.activeContactId = t.contact?.id || null;
+          markThreadSeen(t.phoneKey);
+          layout.classList.add('show-pane');
+          rerender();
+        }
+      },
+        isUnread ? el('span', { class: 'unread-dot', title: 'New message' }) : null,
+        el('div', { class: 'item-main' },
+          el('div', { class: 'name-row' },
+            el('div', { class: 'name' }, label),
+            previewTime ? el('div', { class: 'time' }, previewTime) : null
+          ),
+          el('div', { class: 'preview' }, previewText)
+        )
+      );
+      list.appendChild(item);
+    }
+
+    // Active thread pane.
+    const active = threads[activeKey];
+    if (!active) {
+      pane.appendChild(el('div', { class: 'chat-empty' },
+        el('div', { class: 'chat-empty-title' }, 'Select a conversation to view the full thread.')
+      ));
+      return;
+    }
+    markThreadSeen(active.phoneKey);
+
+    const headerLabel = threadDisplayName(active);
+    const totalMsgs = active.messages.length;
+    const totalCredits = active.outCount; // 1 credit per outbound send
+    pane.appendChild(el('div', { class: 'chat-header' },
+      el('button', {
+        class: 'chat-back',
+        onclick: () => {
+          layout.classList.remove('show-pane');
+          activeKey = null;
+          state.activeThreadKey = null;
+          state.activeContactId = null;
+          rerender();
+        }
+      }, '←'),
+      el('div', { class: 'chat-header-id' },
+        el('strong', {}, headerLabel),
+        active.phone && active.phone !== headerLabel
+          ? el('span', { class: 'muted' }, active.phone)
+          : null
+      ),
+      el('div', { class: 'chat-header-stats' },
+        `${totalMsgs} msg${totalMsgs === 1 ? '' : 's'} · ${totalCredits} credit${totalCredits === 1 ? '' : 's'}`
+      )
     ));
-  }
-  pane.appendChild(body);
-  setTimeout(() => { body.scrollTop = body.scrollHeight; }, 0);
 
-  // Composer
-  const ta = el('textarea', { placeholder: 'Type a message…' });
-  const suggestionsRow = el('div', { class: 'suggestions' });
-  const composer = el('div', { class: 'composer' },
-    suggestionsRow,
-    el('div', { class: 'composer-row' },
-      ta,
-      el('button', { class: 'btn ghost', onclick: async () => {
-        suggestionsRow.innerHTML = '<span class="muted">Generating…</span>';
-        try {
-          const r = await api('/api/portal/ai-suggest', { method: 'POST', body: { contact_id: activeId } });
-          suggestionsRow.innerHTML = '';
-          if (!r.suggestions?.length) {
-            suggestionsRow.appendChild(el('span', { class: 'muted' }, 'No suggestions'));
-          } else {
-            for (const s of r.suggestions) {
-              suggestionsRow.appendChild(el('button', { onclick: async () => {
-                ta.value = s; await send();
-              }}, s));
-            }
+    const body = el('div', { class: 'chat-body' });
+    const ordered = active.messages.slice().sort((a, b) =>
+      new Date(a.created_at) - new Date(b.created_at));
+    if (!ordered.length) {
+      body.appendChild(el('div', { class: 'chat-thread-empty' }, 'No messages in this thread yet.'));
+    }
+    for (const m of ordered) {
+      const ts = new Date(m.created_at).toLocaleString();
+      const bubble = el('div', { class: 'bubble ' + (m.direction === 'inbound' ? 'in' : 'out') },
+        el('div', { class: 'bubble-body' }, m.body),
+        el('div', { class: 'ts' },
+          ts,
+          m.direction === 'outbound' ? el('span', { class: 'ts-spacer' }, ' · ') : null,
+          m.direction === 'outbound' ? statusBadge(m.status) : null
+        )
+      );
+      body.appendChild(bubble);
+    }
+    pane.appendChild(body);
+    setTimeout(() => { body.scrollTop = body.scrollHeight; }, 0);
+
+    // Composer.
+    const ta = el('textarea', { placeholder: 'Type a message…' });
+    const suggestionsRow = el('div', { class: 'suggestions' });
+    const composer = el('div', { class: 'composer' },
+      suggestionsRow,
+      el('div', { class: 'composer-row' },
+        ta,
+        el('button', { class: 'btn ghost', onclick: async () => {
+          if (!active.contact?.id) {
+            toast('AI suggestions need a saved contact.', true);
+            return;
           }
-        } catch (e) { suggestionsRow.innerHTML = ''; toast(e.message, true); }
-      }}, '✨ AI suggest'),
-      el('button', { class: 'btn', onclick: () => send() }, 'Send')
-    )
-  );
-  pane.appendChild(composer);
+          suggestionsRow.innerHTML = '<span class="muted">Generating…</span>';
+          try {
+            const r = await api('/api/portal/ai-suggest', { method: 'POST', body: { contact_id: active.contact.id } });
+            suggestionsRow.innerHTML = '';
+            if (!r.suggestions?.length) {
+              suggestionsRow.appendChild(el('span', { class: 'muted' }, 'No suggestions'));
+            } else {
+              for (const s of r.suggestions) {
+                suggestionsRow.appendChild(el('button', { onclick: async () => {
+                  ta.value = s; await send();
+                }}, s));
+              }
+            }
+          } catch (e) { suggestionsRow.innerHTML = ''; toast(e.message, true); }
+        }}, '✨ AI suggest'),
+        el('button', { class: 'btn', onclick: () => send() }, 'Send')
+      )
+    );
+    pane.appendChild(composer);
 
-  async function send() {
-    const text = ta.value.trim();
-    if (!text) return;
-    try {
-      await api('/api/portal/messages', { method: 'POST', body: { contact_id: activeId, body: text } });
-      ta.value = '';
-      render();
-    } catch (e) {
-      if (e.message === 'insufficient_credits') toast('Out of credits — top up to send.', true);
-      else toast(e.message, true);
+    async function send() {
+      const text = ta.value.trim();
+      if (!text) return;
+      try {
+        const payload = active.contact?.id
+          ? { contact_id: active.contact.id, body: text }
+          : { to: active.phone, body: text };
+        await api('/api/portal/messages', { method: 'POST', body: payload });
+        ta.value = '';
+        // Refetch the thread so the new outbound row + Twilio sid + status
+        // appear immediately. Realtime will catch any inbound replies on
+        // top of this without a manual refetch.
+        const fresh = await api('/api/portal/messages');
+        messages = fresh.messages || [];
+        rerender();
+      } catch (e) {
+        if (e.message === 'insufficient_credits') toast('Out of credits — top up to send.', true);
+        else toast(e.message, true);
+      }
     }
   }
+
+  rerender();
+
+  // Realtime: merge inserts into the working set and re-render. We
+  // dedupe by id so a refetch + realtime fire-back doesn't duplicate.
+  openMessagesRealtime((row) => {
+    if (!row || !row.id) return;
+    if (messages.some(m => m.id === row.id)) return;
+    messages = [row, ...messages];
+    rerender();
+  }).then((channel) => {
+    state._messagesChannel = channel;
+  });
+
   return wrap;
 }
 
@@ -2204,6 +2460,13 @@ async function viewAnalytics() {
 async function render() {
   const root = $('#app');
   if (activityPoll && state.view !== 'activity') { clearInterval(activityPoll); activityPoll = null; }
+  // Tear down the Messages realtime channel any time we leave the
+  // Messages tab (or before re-rendering it). The viewMessages() body
+  // re-creates the channel on each render so we don't leak handlers.
+  if (state._messagesChannel) {
+    try { state._messagesChannel.unsubscribe(); } catch {}
+    state._messagesChannel = null;
+  }
   root.innerHTML = '';
   if (!state.token) { root.appendChild(renderLogin()); return; }
   if (!state.user) {

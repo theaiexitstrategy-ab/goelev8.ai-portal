@@ -4,7 +4,7 @@
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilioForClient } from '../../lib/twilio.js';
+import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -72,11 +72,43 @@ export default async function handler(req, res) {
 
   const tw = twilioForClient(clientRow);
   const fromNumber = clientRow?.twilio_phone_number;
+  const segments = estimateSegments(finalMessage);
   let sent = 0, failed = 0;
   for (const lead of recipients) {
     try {
-      await tw.messages.create({ to: lead.phone, from: fromNumber, body: finalMessage });
+      const twilioMsg = await tw.messages.create({
+        to: lead.phone,
+        from: fromNumber,
+        body: finalMessage,
+        statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
+      });
       sent++;
+
+      // Resolve contact_id for thread linkage (best-effort).
+      let contactId = null;
+      const { data: existing } = await supabaseAdmin
+        .from('contacts').select('id')
+        .eq('client_id', clientId).eq('phone', lead.phone).maybeSingle();
+      contactId = existing?.id || null;
+
+      // Log the send so it shows up in the Messages tab thread view.
+      // Blasts iterate over leads directly, so the lead_id is known.
+      await supabaseAdmin.from('messages').insert({
+        client_id: clientId,
+        contact_id: contactId,
+        lead_id: lead.id,
+        direction: 'outbound',
+        body: finalMessage,
+        segments,
+        twilio_sid: twilioMsg.sid,
+        status: twilioMsg.status,
+        to_number: lead.phone,
+        from_number: fromNumber,
+        credits_charged: 1
+      });
+      await supabaseAdmin.from('credit_ledger').insert({
+        client_id: clientId, delta: -1, reason: 'sms_blast', ref_id: twilioMsg.sid
+      });
     } catch {
       failed++;
     }

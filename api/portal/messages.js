@@ -8,15 +8,21 @@ export default async function handler(req, res) {
   const { sb, clientId } = ctx;
 
   // GET: list messages, optionally for one contact (?contact_id=)
+  // Uses supabaseAdmin (service-role) instead of the user-scoped client
+  // because inbound messages are inserted by the Twilio webhook handler
+  // (also via supabaseAdmin). The user-scoped JWT+RLS path can fail to
+  // surface those rows when the session context for current_client_id()
+  // doesn't propagate cleanly. The clientId is already validated by
+  // requireUser(), so tenant isolation is still enforced.
   if (req.method === 'GET') {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const contactId = url.searchParams.get('contact_id');
-    let q = sb.from('messages').select('*').eq('client_id', clientId)
-      .order('created_at', { ascending: false }).limit(500);
+    let q = supabaseAdmin.from('messages').select('*').eq('client_id', clientId)
+      .order('created_at', { ascending: false }).limit(1000);
     if (contactId) q = q.eq('contact_id', contactId);
     const { data, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
-    return res.status(200).json({ messages: data });
+    return res.status(200).json({ messages: data || [] });
   }
 
   // POST: send an SMS
