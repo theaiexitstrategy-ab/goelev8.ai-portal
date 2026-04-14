@@ -72,6 +72,35 @@ function setImpersonation(clientId) {
   state.view = 'overview';
 }
 
+// Populates the sidebar impersonation tabs with all clients from DB.
+// Only invoked when logged in as ab@goelev8.ai. Ensures the four required
+// clients exist by delegating to an admin ensure endpoint.
+async function loadImpersonateTabs() {
+  if (state.user?.email !== 'ab@goelev8.ai') return;
+  const container = document.getElementById('impersonate-tabs');
+  if (!container) return;
+  try {
+    await api('/api/admin?action=ensure-default-clients', { method: 'POST' }).catch(() => {});
+    const r = await api('/api/admin?action=list-clients');
+    const clients = (r.clients || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    container.innerHTML = '';
+    if (!clients.length) {
+      container.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem' }, 'No clients'));
+      return;
+    }
+    clients.forEach(c => {
+      const active = state.impersonating === c.id;
+      container.appendChild(el('button', {
+        class: 'impersonate-tab' + (active ? ' active' : ''),
+        onclick: () => { setImpersonation(c.id); render(); }
+      }, c.name || c.slug));
+    });
+  } catch (e) {
+    container.innerHTML = '';
+    container.appendChild(el('div', { class: 'err', style: 'font-size:0.75rem' }, 'Failed to load clients'));
+  }
+}
+
 // ============================================================
 // LOGIN VIEW
 // ============================================================
@@ -184,6 +213,18 @@ const ADMIN_TABS = ['admin','booking_admin','activity','analytics'];
 function shell(content) {
   const navBtn = (id, label) =>
     el('button', { class: state.view === id ? 'active' : '', onclick: () => { state.view = id; render(); } }, label);
+
+  // Impersonation switcher — only for ab@goelev8.ai
+  const isGlobalAdminEmail = state.user?.email === 'ab@goelev8.ai';
+  const impersonateSwitcher = isGlobalAdminEmail
+    ? el('div', { class: 'impersonate-switcher' },
+        el('div', { class: 'impersonate-label' }, 'Impersonate as'),
+        el('div', { class: 'impersonate-tabs', id: 'impersonate-tabs' },
+          el('div', { class: 'muted', style: 'font-size:0.75rem' }, 'Loading…')
+        )
+      )
+    : null;
+  if (impersonateSwitcher) loadImpersonateTabs();
 
   const adminSection = state.isAdmin && state.impersonating
     ? el('div', { class: 'admin-section' },
@@ -310,6 +351,7 @@ function shell(content) {
       (state.client || state.isAdmin)
         ? el('div', { class: 'nav' }, ...navButtons)
         : null,
+      impersonateSwitcher,
       adminSection,
       el('button', { class: 'signout', onclick: () => { closeNav(); logout(); } }, 'Sign out')
     ),

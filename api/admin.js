@@ -250,6 +250,29 @@ async function setGa4(req, res) {
   return res.status(200).json({ client: data });
 }
 
+async function ensureDefaultClients(req, res) {
+  const required = [
+    { slug: 'dlp', name: 'DLP' },
+    { slug: 'goelev8', name: 'GoElev8.ai' },
+    { slug: 'flex-facility', name: 'The Flex Facility' },
+    { slug: 'islay-studios', name: 'iSlay Studios' }
+  ];
+  const { data: existing } = await supabaseAdmin
+    .from('clients').select('id, slug, name');
+  const existingSlugs = new Set((existing || []).map(c => c.slug));
+  const existingNames = new Set((existing || []).map(c => (c.name || '').toLowerCase()));
+  const toInsert = required.filter(r =>
+    !existingSlugs.has(r.slug) && !existingNames.has(r.name.toLowerCase())
+  );
+  let inserted = 0;
+  if (toInsert.length) {
+    const { error } = await supabaseAdmin.from('clients').insert(toInsert);
+    if (error) return res.status(400).json({ error: error.message });
+    inserted = toInsert.length;
+  }
+  return res.status(200).json({ ensured: required.length, inserted });
+}
+
 async function setStripeKey(req, res) {
   const body = await readJson(req);
   const { client_id, stripe_secret_key } = body || {};
@@ -291,6 +314,7 @@ export default async function handler(req, res) {
       case 'set-tier':       return await setTier(req, res);
       case 'set-ga4':        return await setGa4(req, res);
       case 'set-stripe-key': return await setStripeKey(req, res);
+      case 'ensure-default-clients': return await ensureDefaultClients(req, res);
       case 'analytics':      return await analytics(req, res);
       case 'list-admins':    return await listAdmins(req, res);
       default:               return res.status(400).json({ error: 'unknown_action' });

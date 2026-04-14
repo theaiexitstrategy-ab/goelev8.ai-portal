@@ -986,6 +986,44 @@ tbody tr:last-child td { border-bottom: none; }
 .integration-status { font-size: 0.85rem; text-align: right; }
 
 /* ============================================================
+   Impersonation switcher (admin-only)
+   ============================================================ */
+.impersonate-switcher {
+  margin: 16px 12px;
+  padding: 12px;
+  background: rgba(0, 207, 255, 0.04);
+  border: 1px solid rgba(0, 207, 255, 0.2);
+  border-radius: var(--r-sm, 8px);
+}
+.impersonate-label {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--brand-1, #00CFFF);
+  margin-bottom: 8px;
+}
+.impersonate-tabs { display: flex; flex-direction: column; gap: 4px; }
+.impersonate-tab {
+  text-align: left;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: 6px;
+  color: var(--text, #e0e0e0);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.impersonate-tab:hover {
+  background: rgba(0, 207, 255, 0.08);
+  border-color: var(--brand-1, #00CFFF);
+}
+.impersonate-tab.active {
+  background: var(--brand-1, #00CFFF);
+  color: #000;
+  border-color: var(--brand-1, #00CFFF);
+  font-weight: 600;
+}
+
+/* ============================================================
    Badges & toasts
    ============================================================ */
 .badge {
