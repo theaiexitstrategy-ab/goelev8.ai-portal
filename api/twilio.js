@@ -97,6 +97,19 @@ export default async function handler(req, res) {
     // STOP/START/HELP are TCPA-required responses — return them directly
     // instead of forwarding to Vapi, since compliance takes priority.
     if (reply) {
+      // Log the auto-reply as an outbound message so it appears in the
+      // Messages tab thread.
+      await supabaseAdmin.from('messages').insert({
+        client_id: client.id,
+        contact_id: contact?.id || null,
+        lead_id: leadId,
+        direction: 'outbound',
+        body: reply,
+        segments: estimateSegments(reply),
+        status: 'sent',
+        to_number: from,
+        from_number: to
+      });
       res.setHeader('Content-Type', 'text/xml');
       return res.status(200).send(`<Response><Message>${reply}</Message></Response>`);
     }
@@ -105,6 +118,11 @@ export default async function handler(req, res) {
     // can continue its conversation. Return Vapi's TwiML response to
     // Twilio. If Vapi is unreachable, return an empty TwiML so Twilio
     // doesn't error out.
+    //
+    // Vapi's TwiML response contains the assistant's reply inside a
+    // <Message> tag. We parse it out and log it as an outbound message
+    // so the reply appears in the Messages tab thread alongside the
+    // lead's inbound message.
     try {
       const vapiRes = await fetch(VAPI_SMS_FORWARD_URL, {
         method: 'POST',
@@ -112,6 +130,27 @@ export default async function handler(req, res) {
         body: rawBody
       });
       const vapiTwiml = await vapiRes.text();
+
+      // Extract reply text from TwiML: <Message>...reply...</Message>
+      // Simple regex — TwiML from Vapi is well-formed single-message.
+      const msgMatch = vapiTwiml.match(/<Message(?:\s[^>]*)?>([\s\S]*?)<\/Message>/i);
+      if (msgMatch && msgMatch[1]) {
+        const replyText = msgMatch[1].trim();
+        if (replyText) {
+          await supabaseAdmin.from('messages').insert({
+            client_id: client.id,
+            contact_id: contact?.id || null,
+            lead_id: leadId,
+            direction: 'outbound',
+            body: replyText,
+            segments: estimateSegments(replyText),
+            status: 'sent',
+            to_number: from,
+            from_number: to
+          });
+        }
+      }
+
       res.setHeader('Content-Type', 'text/xml');
       return res.status(200).send(vapiTwiml);
     } catch (err) {
