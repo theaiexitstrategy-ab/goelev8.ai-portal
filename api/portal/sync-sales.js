@@ -16,13 +16,18 @@ export default async function handler(req, res) {
   const { clientId } = ctx;
 
   // Get the client's own Stripe key
-  const { data: client } = await supabaseAdmin
+  const { data: client, error: clientErr } = await supabaseAdmin
     .from('clients').select('stripe_secret_key, name').eq('id', clientId).maybeSingle();
-
+  if (clientErr && /column .*stripe_secret_key.* does not exist/i.test(clientErr.message)) {
+    return res.status(400).json({
+      error: 'migration_required',
+      message: 'Run migration 0020 in Supabase: ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS stripe_secret_key text;'
+    });
+  }
   if (!client?.stripe_secret_key) {
     return res.status(400).json({
       error: 'no_stripe_key',
-      message: 'No Stripe secret key configured for this client. Set stripe_secret_key in the clients table.'
+      message: 'No Stripe secret key configured for this client. Set it in Master Admin → Stripe field.'
     });
   }
 

@@ -23,7 +23,7 @@ import { twilioForClient, estimateSegments } from '../lib/twilio.js';
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
     .from('clients')
-    .select('id, slug, name, twilio_phone_number, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at, tier, conversion_label, business_name, logo_url, brand_color, ga4_property_id, stripe_secret_key')
+    .select('id, slug, name, twilio_phone_number, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at, tier, conversion_label, business_name, logo_url, brand_color, ga4_property_id')
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
 
@@ -284,7 +284,15 @@ async function setStripeKey(req, res) {
   const { data, error } = await supabaseAdmin
     .from('clients').update({ stripe_secret_key: value })
     .eq('id', client_id).select('id, name').single();
-  if (error) return res.status(400).json({ error: error.message });
+  if (error) {
+    if (/column .*stripe_secret_key.* does not exist/i.test(error.message)) {
+      return res.status(400).json({
+        error: 'Run migration 0020_client_stripe_key.sql in Supabase SQL editor: ' +
+               'ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS stripe_secret_key text;'
+      });
+    }
+    return res.status(400).json({ error: error.message });
+  }
   return res.status(200).json({ client: data, key_set: !!value });
 }
 

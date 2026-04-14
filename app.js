@@ -3058,16 +3058,15 @@ async function viewAdmin() {
               el('button', { class: 'btn sm', onclick: saveGa4 }, 'Save')
             ),
             (() => {
-              const skInput = el('input', { type: 'password', placeholder: 'sk_live_...', value: c.stripe_secret_key ? '••••••••' : '', style: 'width:160px' });
+              const skInput = el('input', { type: 'password', placeholder: 'sk_live_... (paste to set)', style: 'width:160px' });
               const saveKey = async () => {
                 const val = skInput.value.trim();
-                if (val === '••••••••') return;
                 try {
                   await api('/api/admin?action=set-stripe-key', {
                     method: 'POST', body: { client_id: c.id, stripe_secret_key: val }
                   });
                   toast('Stripe key saved for ' + c.name);
-                  skInput.value = val ? '••••••••' : '';
+                  skInput.value = '';
                 } catch (e) { toast(e.message, true); }
               };
               return el('div', { style: 'display:flex;gap:4px;align-items:center;margin-top:4px' },

@@ -46,12 +46,22 @@ export default async function handler(req, res) {
     return res.status(403).json({ error: 'forbidden' });
   }
 
-  // Check if Stripe is connected for this client
-  const { data: flex } = await supabaseAdmin
-    .from('clients')
-    .select('stripe_secret_key, stripe_connected_account_id')
-    .eq('id', flexClientId).maybeSingle();
-  const stripeConnected = !!(flex?.stripe_secret_key || flex?.stripe_connected_account_id);
+  // Check if Stripe is connected for this client (tolerant if stripe_secret_key
+  // column hasn't been migrated yet — fall back to Connect-only detection)
+  let stripeConnected = false;
+  {
+    const { data: flex, error: flexErr } = await supabaseAdmin
+      .from('clients')
+      .select('stripe_secret_key, stripe_connected_account_id')
+      .eq('id', flexClientId).maybeSingle();
+    if (flexErr && /column .*stripe_secret_key.* does not exist/i.test(flexErr.message)) {
+      const { data: flex2 } = await supabaseAdmin
+        .from('clients').select('stripe_connected_account_id').eq('id', flexClientId).maybeSingle();
+      stripeConnected = !!flex2?.stripe_connected_account_id;
+    } else {
+      stripeConnected = !!(flex?.stripe_secret_key || flex?.stripe_connected_account_id);
+    }
+  }
 
   // ---------- POST: manual sale entry ----------
   if (req.method === 'POST') {
