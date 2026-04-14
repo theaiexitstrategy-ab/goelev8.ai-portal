@@ -3091,51 +3091,110 @@ async function viewActivity() {
 // ============================================================
 // MASTER ADMIN VIEW
 // ============================================================
+// Renders a single client management card for the Master Admin grid.
+// Shows business name, active status, credit balance, last activity,
+// and three quick actions: Impersonate · Add Credits · View Analytics.
+function renderClientCard(c) {
+  const fmtAgo = (ts) => {
+    if (!ts) return 'No activity yet';
+    const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (diff < 60)    return diff + 's ago';
+    if (diff < 3600)  return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    if (diff < 30 * 86400) return Math.floor(diff / 86400) + 'd ago';
+    return new Date(ts).toLocaleDateString();
+  };
+  const isActive = !c.billing_paused;
+  const displayName = c.business_name || c.name || c.slug;
+
+  const statusBadge = isActive
+    ? el('span', { class: 'badge green' }, 'Active')
+    : el('span', { class: 'badge red' }, 'Paused');
+
+  const impersonateBtn = el('button', {
+    class: 'btn sm primary',
+    onclick: () => { setImpersonation(c.id); state.view = 'overview'; render(); }
+  }, 'Impersonate');
+
+  const addCreditsBtn = el('button', {
+    class: 'btn sm',
+    onclick: async () => {
+      const raw = prompt(`Adjust SMS credits for ${displayName}\n\nEnter a number. Positive = add, negative = remove.`, '20');
+      if (raw == null) return;
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n === 0) { toast('Enter a non-zero integer', true); return; }
+      try {
+        const r = await api('/api/admin?action=set-credits', {
+          method: 'POST',
+          body: { client_id: c.id, delta: n, note: `admin card ${n > 0 ? '+' : ''}${n}` }
+        });
+        toast(`${displayName}: ${r.client.credit_balance} credits`);
+        state.view = 'admin'; render();
+      } catch (e) { toast('Credit adjust failed: ' + e.message, true); }
+    }
+  }, 'Add Credits');
+
+  const analyticsBtn = el('button', {
+    class: 'btn sm',
+    onclick: () => { setImpersonation(c.id); state.view = 'analytics'; render(); }
+  }, 'View Analytics');
+
+  return el('div', { class: 'client-card' },
+    el('div', { class: 'client-card-header' },
+      el('div', { class: 'client-card-name' }, displayName),
+      statusBadge
+    ),
+    el('div', { class: 'client-card-slug muted' },
+      el('code', {}, c.slug)
+    ),
+    el('div', { class: 'client-card-stats' },
+      el('div', { class: 'client-card-stat' },
+        el('div', { class: 'client-card-stat-value' }, String(c.credit_balance ?? 0)),
+        el('div', { class: 'client-card-stat-label muted' }, 'SMS Credits')
+      ),
+      el('div', { class: 'client-card-stat' },
+        el('div', { class: 'client-card-stat-value' }, fmtAgo(c.last_activity_at)),
+        el('div', { class: 'client-card-stat-label muted' }, 'Last Activity')
+      )
+    ),
+    el('div', { class: 'client-card-actions' },
+      impersonateBtn, addCreditsBtn, analyticsBtn
+    )
+  );
+}
+
 async function viewAdmin() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Master Admin'),
     el('div', { class: 'muted' }, 'Cross-tenant operations · only visible to platform admins')));
 
-  // ----- Take over a client portal (prominent impersonation tabs) -----
-  const takeOverPanel = el('div', { class: 'panel takeover-panel' });
-  takeOverPanel.appendChild(el('h2', {}, 'Take Over a Client Portal'));
-  takeOverPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
-    'Click a client to enter their portal and see exactly what they see. Use "Stop Impersonating" or the banner "Exit" link to return here.'));
-  const takeOverTabs = el('div', { class: 'takeover-tabs' },
+  // ----- Client management (richer cards with quick actions) -----
+  const clientMgmtPanel = el('div', { class: 'panel client-mgmt-panel' });
+  clientMgmtPanel.appendChild(el('h2', {}, 'Client Accounts'));
+  clientMgmtPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
+    'Manage every tenant portal from one place. Click Impersonate to enter a client\'s view.'));
+  const clientCardGrid = el('div', { class: 'client-card-grid' },
     el('div', { class: 'muted' }, 'Loading clients…'));
-  takeOverPanel.appendChild(takeOverTabs);
-  wrap.appendChild(takeOverPanel);
+  clientMgmtPanel.appendChild(clientCardGrid);
+  wrap.appendChild(clientMgmtPanel);
 
-  // Load tabs in the background — renders one card per client, click = impersonate
+  // Load cards in the background
   (async () => {
     try {
       await api('/api/admin?action=ensure-default-clients', { method: 'POST' }).catch(() => {});
       const r = await api('/api/admin?action=list-clients');
-      const clients = (r.clients || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-      takeOverTabs.innerHTML = '';
+      const clients = (r.clients || []).slice().sort((a, b) =>
+        (a.business_name || a.name || '').localeCompare(b.business_name || b.name || ''));
+      clientCardGrid.innerHTML = '';
       if (!clients.length) {
-        takeOverTabs.appendChild(el('div', { class: 'muted' }, 'No clients in database.'));
+        clientCardGrid.appendChild(el('div', { class: 'muted' }, 'No clients in database.'));
         return;
       }
-      clients.forEach(c => {
-        const card = el('button', {
-          class: 'takeover-tab',
-          onclick: () => {
-            setImpersonation(c.id);
-            state.view = 'overview';
-            render();
-          }
-        },
-          el('div', { class: 'takeover-tab-name' }, c.name || c.slug),
-          el('div', { class: 'takeover-tab-slug muted' }, c.slug),
-          el('div', { class: 'takeover-tab-cta' }, 'Enter portal →')
-        );
-        takeOverTabs.appendChild(card);
-      });
+      clients.forEach(c => clientCardGrid.appendChild(renderClientCard(c)));
     } catch (e) {
-      takeOverTabs.innerHTML = '';
-      takeOverTabs.appendChild(el('div', { class: 'err' }, 'Failed to load clients: ' + e.message));
+      clientCardGrid.innerHTML = '';
+      clientCardGrid.appendChild(el('div', { class: 'err' }, 'Failed to load clients: ' + e.message));
     }
   })();
 

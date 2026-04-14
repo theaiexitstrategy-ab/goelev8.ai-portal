@@ -31,17 +31,34 @@ async function listClients(req, res) {
   const since = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
   const ids = clients.map((c) => c.id);
   const usage = {};
+  const lastActivity = {};
   if (ids.length) {
     const { data: rows } = await supabaseAdmin
       .from('messages')
-      .select('client_id')
+      .select('client_id, created_at, direction')
       .in('client_id', ids)
-      .eq('direction', 'outbound')
       .gte('created_at', since);
-    for (const r of rows || []) usage[r.client_id] = (usage[r.client_id] || 0) + 1;
+    for (const r of rows || []) {
+      if (r.direction === 'outbound') usage[r.client_id] = (usage[r.client_id] || 0) + 1;
+      const prev = lastActivity[r.client_id];
+      if (!prev || new Date(r.created_at) > new Date(prev)) lastActivity[r.client_id] = r.created_at;
+    }
+    // Also consider leads + bookings for last-activity
+    const [leadsR, bkR] = await Promise.all([
+      supabaseAdmin.from('leads').select('client_id, created_at').in('client_id', ids).order('created_at', { ascending: false }).limit(500),
+      supabaseAdmin.from('bookings').select('client_id, created_at').in('client_id', ids).order('created_at', { ascending: false }).limit(500)
+    ]);
+    for (const r of (leadsR.data || []).concat(bkR.data || [])) {
+      const prev = lastActivity[r.client_id];
+      if (!prev || new Date(r.created_at) > new Date(prev)) lastActivity[r.client_id] = r.created_at;
+    }
   }
   return res.status(200).json({
-    clients: clients.map((c) => ({ ...c, sent_30d: usage[c.id] || 0 }))
+    clients: clients.map((c) => ({
+      ...c,
+      sent_30d: usage[c.id] || 0,
+      last_activity_at: lastActivity[c.id] || null
+    }))
   });
 }
 
@@ -288,13 +305,13 @@ async function activityFeed(req, res) {
 
 async function ensureDefaultClients(req, res) {
   const required = [
-    { slug: 'dlp', name: 'DLP' },
-    { slug: 'goelev8', name: 'GoElev8.ai' },
-    { slug: 'flex-facility', name: 'The Flex Facility' },
-    { slug: 'islay-studios', name: 'iSlay Studios' }
+    { slug: 'dlp',           name: 'DLP',               business_name: 'DLP' },
+    { slug: 'goelev8',       name: 'GoElev8.ai',        business_name: 'GoElev8.ai' },
+    { slug: 'flex-facility', name: 'The Flex Facility', business_name: 'The Flex Facility LLC' },
+    { slug: 'islay-studios', name: 'iSlay Studios',     business_name: 'iSlay Studios LLC' }
   ];
   const { data: existing } = await supabaseAdmin
-    .from('clients').select('id, slug, name');
+    .from('clients').select('id, slug, name, business_name');
   const existingSlugs = new Set((existing || []).map(c => c.slug));
   const existingNames = new Set((existing || []).map(c => (c.name || '').toLowerCase()));
   const toInsert = required.filter(r =>
@@ -302,9 +319,26 @@ async function ensureDefaultClients(req, res) {
   );
   let inserted = 0;
   if (toInsert.length) {
-    const { error } = await supabaseAdmin.from('clients').insert(toInsert);
+    // Try with business_name first; if that column doesn't exist, retry without it
+    let { error } = await supabaseAdmin.from('clients').insert(toInsert);
+    if (error && /column .*business_name.* does not exist/i.test(error.message)) {
+      const trimmed = toInsert.map(({ business_name, ...rest }) => rest);
+      ({ error } = await supabaseAdmin.from('clients').insert(trimmed));
+    }
     if (error) return res.status(400).json({ error: error.message });
     inserted = toInsert.length;
+  }
+  // Backfill business_name for any existing rows that are missing it
+  const missingBiz = (existing || []).filter(c =>
+    required.some(r => r.slug === c.slug) && !c.business_name
+  );
+  for (const c of missingBiz) {
+    const target = required.find(r => r.slug === c.slug);
+    if (!target?.business_name) continue;
+    await supabaseAdmin.from('clients')
+      .update({ business_name: target.business_name })
+      .eq('id', c.id)
+      .then(() => {}, () => {});
   }
   return res.status(200).json({ ensured: required.length, inserted });
 }

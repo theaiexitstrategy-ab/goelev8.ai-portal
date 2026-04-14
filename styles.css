@@ -1138,7 +1138,63 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
-   Master Admin — "Take Over a Client Portal" tabs
+   Master Admin — Client management cards
+   ============================================================ */
+.client-mgmt-panel {
+  border: 1px solid rgba(0, 207, 255, 0.25);
+}
+.client-mgmt-panel h2 {
+  color: var(--brand-1, #00CFFF);
+}
+.client-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.client-card {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 18px;
+  background: var(--bg-elevated, #141c2e);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-md, 12px);
+  transition: border-color 0.15s, transform 0.15s;
+}
+.client-card:hover {
+  border-color: var(--brand-1, #00CFFF);
+  transform: translateY(-2px);
+}
+.client-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+}
+.client-card-name {
+  font-size: 1.05rem; font-weight: 700;
+  color: var(--text, #e0e0e0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.client-card-slug {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;
+  margin-top: -4px;
+}
+.client-card-stats {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  padding: 10px 0; border-top: 1px solid var(--border, #2a3a5c);
+  border-bottom: 1px solid var(--border, #2a3a5c);
+}
+.client-card-stat-value {
+  font-size: 1.05rem; font-weight: 700; color: var(--text, #e0e0e0);
+}
+.client-card-stat-label {
+  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.client-card-actions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.client-card-actions .btn { flex: 1; min-width: fit-content; }
+
+/* ============================================================
+   Master Admin — "Take Over a Client Portal" tabs (legacy)
    ============================================================ */
 .takeover-panel {
   border: 1px solid rgba(0, 207, 255, 0.3);
