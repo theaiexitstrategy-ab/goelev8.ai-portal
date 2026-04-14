@@ -1063,6 +1063,50 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Master Admin — "Take Over a Client Portal" tabs
+   ============================================================ */
+.takeover-panel {
+  border: 1px solid rgba(0, 207, 255, 0.3);
+  background: linear-gradient(180deg, rgba(0, 207, 255, 0.04), transparent);
+}
+.takeover-panel h2 {
+  color: var(--brand-1, #00CFFF);
+}
+.takeover-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.takeover-tab {
+  display: flex; flex-direction: column; gap: 4px;
+  text-align: left;
+  padding: 16px;
+  background: var(--bg-elevated, #141c2e);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-md, 12px);
+  color: var(--text, #e0e0e0);
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s, background 0.15s;
+}
+.takeover-tab:hover {
+  transform: translateY(-2px);
+  border-color: var(--brand-1, #00CFFF);
+  background: rgba(0, 207, 255, 0.06);
+}
+.takeover-tab-name {
+  font-size: 1rem; font-weight: 700;
+}
+.takeover-tab-slug {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+}
+.takeover-tab-cta {
+  margin-top: 6px;
+  color: var(--brand-1, #00CFFF);
+  font-size: 0.8rem; font-weight: 600;
+}
+
+/* ============================================================
    Impersonation switcher (admin-only)
    ============================================================ */
 .impersonate-switcher {

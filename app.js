@@ -2915,6 +2915,48 @@ async function viewAdmin() {
     el('h1', {}, 'Master Admin'),
     el('div', { class: 'muted' }, 'Cross-tenant operations · only visible to platform admins')));
 
+  // ----- Take over a client portal (prominent impersonation tabs) -----
+  const takeOverPanel = el('div', { class: 'panel takeover-panel' });
+  takeOverPanel.appendChild(el('h2', {}, 'Take Over a Client Portal'));
+  takeOverPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
+    'Click a client to enter their portal and see exactly what they see. Use "Stop Impersonating" or the banner "Exit" link to return here.'));
+  const takeOverTabs = el('div', { class: 'takeover-tabs' },
+    el('div', { class: 'muted' }, 'Loading clients…'));
+  takeOverPanel.appendChild(takeOverTabs);
+  wrap.appendChild(takeOverPanel);
+
+  // Load tabs in the background — renders one card per client, click = impersonate
+  (async () => {
+    try {
+      await api('/api/admin?action=ensure-default-clients', { method: 'POST' }).catch(() => {});
+      const r = await api('/api/admin?action=list-clients');
+      const clients = (r.clients || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      takeOverTabs.innerHTML = '';
+      if (!clients.length) {
+        takeOverTabs.appendChild(el('div', { class: 'muted' }, 'No clients in database.'));
+        return;
+      }
+      clients.forEach(c => {
+        const card = el('button', {
+          class: 'takeover-tab',
+          onclick: () => {
+            setImpersonation(c.id);
+            state.view = 'overview';
+            render();
+          }
+        },
+          el('div', { class: 'takeover-tab-name' }, c.name || c.slug),
+          el('div', { class: 'takeover-tab-slug muted' }, c.slug),
+          el('div', { class: 'takeover-tab-cta' }, 'Enter portal →')
+        );
+        takeOverTabs.appendChild(card);
+      });
+    } catch (e) {
+      takeOverTabs.innerHTML = '';
+      takeOverTabs.appendChild(el('div', { class: 'err' }, 'Failed to load clients: ' + e.message));
+    }
+  })();
+
   // ----- Analytics cards -----
   const cards = el('div', { class: 'cards' });
   wrap.appendChild(cards);
