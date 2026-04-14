@@ -13,7 +13,7 @@ const el = (tag, attrs = {}, ...children) => {
   }
   for (const c of children.flat()) {
     if (c == null || c === false) continue;
-    node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    node.appendChild(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c);
   }
   return node;
 };
