@@ -2841,16 +2841,67 @@ async function viewSettings() {
 let activityPoll = null;
 async function viewActivity() {
   if (activityPoll) { clearInterval(activityPoll); activityPoll = null; }
+  if (state._activityChannels) {
+    for (const ch of state._activityChannels) { try { ch.unsubscribe(); } catch {} }
+    state._activityChannels = null;
+  }
+
+  // Hard gate: Activity is admin-only. Non-admins get sent to Overview.
+  if (!state.isAdmin || state.user?.email !== 'ab@goelev8.ai') {
+    const deny = el('div', {});
+    deny.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Activity')));
+    deny.appendChild(el('div', { class: 'panel' },
+      el('p', { class: 'err' }, 'This page is restricted to platform admins.')));
+    return deny;
+  }
 
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Activity'),
-    el('div', { class: 'muted' }, 'Live form submissions, leads & bookings from your sites')
+    el('div', { class: 'muted' }, 'Cross-tenant live feed of lead submissions & bookings')
   ));
 
-  const list = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
+  // ----- Filter state (kept in closure so realtime handler can read it) -----
+  const filters = {
+    clientId: 'all',          // 'all' | <uuid>
+    eventType: 'all',         // 'all' | 'lead' | 'booking'
+    from: '',                 // YYYY-MM-DD
+    to: ''                    // YYYY-MM-DD
+  };
+  let allEvents = [];         // master list (unfiltered)
+  let clientsById = {};       // { id: { name, slug } }
+
+  // ----- Filter bar -----
+  const filterBar = el('div', { class: 'activity-filters panel' });
+  const clientSel = el('select', {},
+    el('option', { value: 'all' }, 'All clients')
+  );
+  const typeSel = el('select', {},
+    el('option', { value: 'all' }, 'All events'),
+    el('option', { value: 'lead' }, 'Leads only'),
+    el('option', { value: 'booking' }, 'Bookings only')
+  );
+  const fromIn = el('input', { type: 'date' });
+  const toIn   = el('input', { type: 'date' });
+  const resetBtn = el('button', { class: 'btn sm' }, 'Reset');
+
+  const liveDot = el('span', { class: 'live-dot' });
+  const liveLabel = el('span', { class: 'live-label muted' }, 'Connecting…');
+  filterBar.appendChild(el('div', { class: 'activity-filter-row' },
+    el('label', {}, el('span', { class: 'muted' }, 'Client'), clientSel),
+    el('label', {}, el('span', { class: 'muted' }, 'Type'), typeSel),
+    el('label', {}, el('span', { class: 'muted' }, 'From'), fromIn),
+    el('label', {}, el('span', { class: 'muted' }, 'To'), toIn),
+    resetBtn,
+    el('div', { class: 'activity-live' }, liveDot, liveLabel)
+  ));
+  wrap.appendChild(filterBar);
+
+  // ----- Feed panel -----
+  const list = el('div', { class: 'panel activity-feed' }, el('div', { class: 'muted' }, 'Loading…'));
   wrap.appendChild(list);
 
+  // ----- Helpers -----
   const fmt = (ts) => {
     const d = new Date(ts); const now = Date.now();
     const diff = Math.floor((now - d.getTime()) / 1000);
@@ -2860,49 +2911,180 @@ async function viewActivity() {
     return d.toLocaleString();
   };
 
-  const renderRows = (events) => {
+  const applyFilters = () => {
+    const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
+    const to   = filters.to   ? new Date(filters.to   + 'T23:59:59') : null;
+    return allEvents.filter(ev => {
+      if (filters.clientId !== 'all' && ev.client_id !== filters.clientId) return false;
+      if (filters.eventType !== 'all' && ev.type !== filters.eventType) return false;
+      const t = new Date(ev.ts);
+      if (from && t < from) return false;
+      if (to && t > to) return false;
+      return true;
+    });
+  };
+
+  const renderRows = () => {
+    const events = applyFilters().slice(0, 200);
     list.innerHTML = '';
     if (!events.length) {
       list.appendChild(el('div', { class: 'muted', style: 'padding:24px;text-align:center' },
-        'No activity yet. Webhook events from your client sites will appear here.'));
+        'No activity matching current filters.'));
       return;
     }
     const table = el('div', { class: 'event-list' });
     for (const ev of events) {
-      const meta = [ev.source, ev.source_path].filter(Boolean).join('');
-      const who = ev.contact_name || ev.contact_email || ev.contact_phone || '—';
-      const row = el('div', { class: 'event-row' },
-        el('div', { class: 'event-type' }, ev.event_type),
+      const c = clientsById[ev.client_id];
+      const clientLabel = c ? c.name : 'Unknown tenant';
+      const funnelLabel = ev.funnel ? ` — ${ev.funnel}` : '';
+      const typeBadge = el('div', {
+        class: 'event-type ' + (ev.type === 'lead' ? 'ev-lead' : 'ev-booking')
+      }, ev.type === 'lead' ? 'Lead Submitted' : 'Booking Made');
+
+      const actionBtn = el('button', { class: 'btn sm', onclick: (e) => {
+        e.stopPropagation();
+        setImpersonation(ev.client_id);
+        state.view = ev.type === 'lead' ? 'leads' : 'bookings';
+        render();
+      } }, 'View record →');
+
+      const row = el('div', { class: 'event-row' + (ev._new ? ' event-new' : '') },
+        typeBadge,
         el('div', { class: 'event-body' },
-          el('div', { class: 'event-title' }, ev.title || who),
-          el('div', { class: 'event-meta muted' }, meta + (who && (ev.title) ? ' · ' + who : ''))
+          el('div', { class: 'event-title' },
+            el('strong', {}, `${clientLabel}${funnelLabel}`)),
+          el('div', { class: 'event-meta muted' },
+            (ev.who || '—'),
+            ev.contact ? ` · ${ev.contact}` : ''
+          )
         ),
-        el('div', { class: 'event-time muted' }, fmt(ev.occurred_at))
+        el('div', { class: 'event-time muted' }, fmt(ev.ts)),
+        actionBtn
       );
-      row.addEventListener('click', () => {
-        const pre = el('pre', { class: 'event-payload' }, JSON.stringify(ev.payload, null, 2));
-        if (row.nextSibling && row.nextSibling.classList?.contains('event-payload')) {
-          row.nextSibling.remove();
-        } else {
-          row.after(pre);
-        }
-      });
       table.appendChild(row);
+      if (ev._new) setTimeout(() => { row.classList.remove('event-new'); ev._new = false; }, 3000);
     }
     list.appendChild(table);
   };
 
-  const load = async () => {
-    try {
-      const r = await api('/api/events?action=list&limit=100');
-      renderRows(r.events || []);
-    } catch (e) {
-      list.innerHTML = '';
-      list.appendChild(el('div', { class: 'err' }, 'Failed to load: ' + e.message));
+  // ----- Normalize raw lead / booking rows to a common Event shape -----
+  const toEvent = (row, type) => {
+    if (type === 'lead') {
+      return {
+        type: 'lead',
+        id: 'l:' + row.id,
+        client_id: row.client_id,
+        ts: row.created_at,
+        funnel: row.funnel || row.source || null,
+        who: row.name || null,
+        contact: row.phone || row.email || null,
+        raw: row
+      };
     }
+    return {
+      type: 'booking',
+      id: 'b:' + row.id,
+      client_id: row.client_id,
+      ts: row.created_at || row.starts_at,
+      funnel: row.service || null,
+      who: row.contact_name || row.lead_name || null,
+      contact: row.contact_phone || row.contact_email || null,
+      raw: row
+    };
   };
-  await load();
-  activityPoll = setInterval(load, 5000);
+
+  const upsertEvent = (ev, markNew) => {
+    const i = allEvents.findIndex(x => x.id === ev.id);
+    if (markNew) ev._new = true;
+    if (i >= 0) allEvents[i] = ev; else allEvents.unshift(ev);
+    allEvents.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    if (allEvents.length > 1000) allEvents.length = 1000;
+    renderRows();
+  };
+
+  // ----- Initial fetch: pull leads + bookings + clients via a new admin endpoint -----
+  try {
+    const r = await api('/api/admin?action=activity-feed&limit=500');
+    clientsById = {};
+    for (const c of (r.clients || [])) { clientsById[c.id] = { name: c.name, slug: c.slug }; }
+    // Populate client filter dropdown
+    const sortedClients = Object.entries(clientsById)
+      .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
+    for (const [id, c] of sortedClients) {
+      clientSel.appendChild(el('option', { value: id }, c.name || c.slug));
+    }
+    // Merge leads + bookings into the master list
+    allEvents = [
+      ...(r.leads || []).map(x => toEvent(x, 'lead')),
+      ...(r.bookings || []).map(x => toEvent(x, 'booking'))
+    ].sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    renderRows();
+  } catch (e) {
+    list.innerHTML = '';
+    list.appendChild(el('div', { class: 'err' }, 'Failed to load feed: ' + e.message));
+    return wrap;
+  }
+
+  // ----- Filter handlers -----
+  clientSel.addEventListener('change', () => { filters.clientId = clientSel.value; renderRows(); });
+  typeSel.addEventListener('change',   () => { filters.eventType = typeSel.value; renderRows(); });
+  fromIn.addEventListener('change',    () => { filters.from = fromIn.value; renderRows(); });
+  toIn.addEventListener('change',      () => { filters.to = toIn.value; renderRows(); });
+  resetBtn.addEventListener('click', () => {
+    filters.clientId = 'all'; filters.eventType = 'all'; filters.from = ''; filters.to = '';
+    clientSel.value = 'all'; typeSel.value = 'all'; fromIn.value = ''; toIn.value = '';
+    renderRows();
+  });
+
+  // ----- Supabase Realtime subscriptions (leads + bookings) -----
+  (async () => {
+    const cfg = state.supabaseConfig;
+    if (!cfg?.url || !cfg?.anon_key) {
+      liveLabel.textContent = 'Realtime unavailable (auto-refresh 5s)';
+      activityPoll = setInterval(async () => {
+        try {
+          const r = await api('/api/admin?action=activity-feed&limit=200');
+          allEvents = [
+            ...(r.leads || []).map(x => toEvent(x, 'lead')),
+            ...(r.bookings || []).map(x => toEvent(x, 'booking'))
+          ].sort((a, b) => new Date(b.ts) - new Date(a.ts));
+          renderRows();
+        } catch {}
+      }, 5000);
+      return;
+    }
+
+    let createClient;
+    try {
+      ({ createClient } = await import('https://esm.sh/@supabase/supabase-js@2'));
+    } catch (e) {
+      liveLabel.textContent = 'Realtime load failed';
+      return;
+    }
+    const sb = createClient(cfg.url, cfg.anon_key, {
+      realtime: { params: { eventsPerSecond: 10 } }
+    });
+    try { sb.realtime.setAuth(state.token); } catch {}
+
+    const leadsCh = sb.channel('admin:activity:leads')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'leads' }, (p) => {
+        upsertEvent(toEvent(p.new, 'lead'), true);
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          liveDot.classList.add('on');
+          liveLabel.textContent = 'Live';
+        }
+      });
+    const bookingsCh = sb.channel('admin:activity:bookings')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'bookings' }, (p) => {
+        upsertEvent(toEvent(p.new, 'booking'), true);
+      })
+      .subscribe();
+
+    state._activityChannels = [leadsCh, bookingsCh];
+  })();
+
   return wrap;
 }
 
@@ -3760,6 +3942,10 @@ async function loadSalesSection(container) {
 async function render() {
   const root = $('#app');
   if (activityPoll && state.view !== 'activity') { clearInterval(activityPoll); activityPoll = null; }
+  if (state._activityChannels && state.view !== 'activity') {
+    for (const ch of state._activityChannels) { try { ch.unsubscribe(); } catch {} }
+    state._activityChannels = null;
+  }
   // Tear down the Messages realtime channel any time we leave the
   // Messages tab (or before re-rendering it). The viewMessages() body
   // re-creates the channel on each render so we don't leak handlers.
@@ -3797,7 +3983,7 @@ async function render() {
     switch (state.view) {
       case 'admin':     view = await viewAdmin(); break;
       case 'overview':  view = await viewOverview(); break;
-      case 'activity':  view = await viewActivity(); break;
+      case 'activity':  view = (state.isAdmin && state.user?.email === 'ab@goelev8.ai') ? await viewActivity() : await viewOverview(); break;
       case 'contacts':  view = await viewContacts(); break;
       case 'leads':     view = await viewLeads(); break;
       case 'calls':     view = await viewCalls(); break;

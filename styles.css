@@ -1063,6 +1063,81 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Activity tab (admin-only cross-tenant feed)
+   ============================================================ */
+.activity-filters { padding: 14px; }
+.activity-filter-row {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px;
+}
+.activity-filter-row label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 0.7rem; min-width: 140px;
+}
+.activity-filter-row select, .activity-filter-row input[type="date"] {
+  padding: 6px 8px;
+  background: var(--bg-1, #0d1117);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: 6px;
+  color: var(--text, #e0e0e0);
+  font-size: 0.85rem;
+}
+.activity-live {
+  margin-left: auto; display: flex; align-items: center; gap: 6px;
+  font-size: 0.75rem;
+}
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--warning, #f0ad4e);
+  box-shadow: 0 0 6px rgba(240, 173, 78, 0.6);
+}
+.live-dot.on {
+  background: var(--success, #27ae60);
+  box-shadow: 0 0 8px rgba(39, 174, 96, 0.7);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.activity-feed .event-row {
+  display: grid;
+  grid-template-columns: 130px 1fr auto auto;
+  gap: 12px; align-items: center;
+  padding: 12px;
+  border-bottom: 1px solid var(--border, #2a3a5c);
+  transition: background 0.3s;
+}
+.activity-feed .event-row:last-child { border-bottom: none; }
+.activity-feed .event-new {
+  background: rgba(0, 207, 255, 0.12);
+  animation: event-flash 3s ease-out;
+}
+@keyframes event-flash {
+  0%   { background: rgba(0, 207, 255, 0.25); }
+  100% { background: transparent; }
+}
+.event-type.ev-lead {
+  background: rgba(0, 207, 255, 0.12);
+  color: #7dd3fc;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 0.72rem; font-weight: 700; text-align: center;
+  border: 1px solid rgba(0, 207, 255, 0.3);
+}
+.event-type.ev-booking {
+  background: rgba(39, 174, 96, 0.12);
+  color: #86efac;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 0.72rem; font-weight: 700; text-align: center;
+  border: 1px solid rgba(39, 174, 96, 0.3);
+}
+@media (max-width: 600px) {
+  .activity-feed .event-row {
+    grid-template-columns: 1fr; gap: 6px;
+  }
+  .activity-live { margin-left: 0; }
+}
+
+/* ============================================================
    Master Admin — "Take Over a Client Portal" tabs
    ============================================================ */
 .takeover-panel {

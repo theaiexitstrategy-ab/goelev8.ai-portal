@@ -250,6 +250,42 @@ async function setGa4(req, res) {
   return res.status(200).json({ client: data });
 }
 
+async function activityFeed(req, res) {
+  const url = new URL(req.url, 'http://x');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10), 1000);
+
+  // Fetch clients, leads, bookings in parallel — service-role bypasses RLS
+  // so we get cross-tenant data. This endpoint is admin-gated by the outer
+  // handler (requireAdmin), so non-admins can never reach it.
+  const [clientsR, leadsR, bookingsR] = await Promise.all([
+    supabaseAdmin.from('clients').select('id, slug, name').order('name'),
+    supabaseAdmin.from('leads')
+      .select('id, client_id, name, phone, email, source, funnel, created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit),
+    supabaseAdmin.from('bookings')
+      .select('id, client_id, service, status, starts_at, created_at, contact_name, contact_phone, contact_email, lead_name')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+  ]);
+
+  if (clientsR.error)  return res.status(500).json({ error: clientsR.error.message });
+  // Leads/bookings may fail with a missing-column error on older schemas —
+  // surface a friendly empty list rather than 500.
+  const leads = leadsR.error ? [] : (leadsR.data || []);
+  const bookings = bookingsR.error ? [] : (bookingsR.data || []);
+
+  return res.status(200).json({
+    clients:  clientsR.data || [],
+    leads,
+    bookings,
+    errors: {
+      leads: leadsR.error?.message || null,
+      bookings: bookingsR.error?.message || null
+    }
+  });
+}
+
 async function ensureDefaultClients(req, res) {
   const required = [
     { slug: 'dlp', name: 'DLP' },
@@ -323,6 +359,7 @@ export default async function handler(req, res) {
       case 'set-ga4':        return await setGa4(req, res);
       case 'set-stripe-key': return await setStripeKey(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
+      case 'activity-feed':  return await activityFeed(req, res);
       case 'analytics':      return await analytics(req, res);
       case 'list-admins':    return await listAdmins(req, res);
       default:               return res.status(400).json({ error: 'unknown_action' });
