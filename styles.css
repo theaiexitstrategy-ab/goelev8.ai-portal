@@ -986,6 +986,83 @@ tbody tr:last-child td { border-bottom: none; }
 .integration-status { font-size: 0.85rem; text-align: right; }
 
 /* ============================================================
+   Road To The Stage ebook panel (Flex Facility only)
+   ============================================================ */
+.r2s-ebook-panel { border: 1px solid rgba(0, 207, 255, 0.25); }
+.r2s-ebook-header {
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border, #2a3a5c);
+}
+.r2s-ebook-header h2 {
+  background: linear-gradient(90deg, var(--brand-1, #00CFFF), #7dd3fc);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent; font-size: 1.15rem;
+}
+.r2s-chart-panel {
+  background: rgba(0, 207, 255, 0.03);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-sm, 8px);
+  padding: 14px; margin: 12px 0;
+}
+.r2s-chart {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 110px; padding-top: 8px;
+}
+.r2s-chart-bar {
+  flex: 1; display: flex; flex-direction: column;
+  justify-content: flex-end; align-items: center;
+  min-width: 0; cursor: default;
+}
+.r2s-chart-fill {
+  width: 100%;
+  background: linear-gradient(180deg, var(--brand-1, #00CFFF), rgba(0, 207, 255, 0.4));
+  border-radius: 3px 3px 0 0; min-height: 2px;
+  transition: opacity 0.15s;
+}
+.r2s-chart-bar:hover .r2s-chart-fill { opacity: 0.75; }
+.r2s-chart-label {
+  font-size: 0.65rem; color: var(--text-mute, #666); margin-top: 4px;
+}
+.r2s-link-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0; margin-bottom: 4px;
+}
+.r2s-link {
+  color: var(--brand-1, #00CFFF); font-weight: 600;
+  text-decoration: none; font-size: 0.9rem;
+}
+.r2s-link:hover { text-decoration: underline; }
+.r2s-cta-card {
+  background: rgba(0, 207, 255, 0.06);
+  border: 1px solid rgba(0, 207, 255, 0.3);
+  border-radius: var(--r-md, 12px);
+  padding: 16px; margin: 12px 0;
+}
+.r2s-manual-form {
+  margin-top: 16px; padding-top: 16px;
+  border-top: 1px solid var(--border, #2a3a5c);
+}
+.r2s-manual-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+}
+.r2s-manual-grid label { display: flex; flex-direction: column; gap: 4px; }
+.r2s-manual-grid input {
+  width: 100%; padding: 8px 10px;
+  background: var(--bg-1, #0d1117);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: 6px;
+  color: var(--text, #e0e0e0); font-size: 0.85rem;
+}
+.r2s-manual-grid input:focus {
+  outline: none;
+  border-color: var(--brand-1, #00CFFF);
+}
+@media (max-width: 600px) {
+  .r2s-manual-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
    Impersonation switcher (admin-only)
    ============================================================ */
 .impersonate-switcher {

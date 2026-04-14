@@ -411,6 +411,14 @@ async function viewOverview() {
     loadFlexR2sAnalytics(r2sPanel);
   }
 
+  // Road To The Stage ebook sales — Flex Facility only (platform admin included
+  // so ab@goelev8.ai can review when impersonating).
+  if (isFlexClient) {
+    const ebookPanel = el('div', { class: 'panel r2s-ebook-panel' });
+    wrap.appendChild(ebookPanel);
+    loadR2sEbookSection(ebookPanel);
+  }
+
   // Quick top-up panel
   const tu = el('div', { class: 'panel' });
   tu.appendChild(el('h2', {}, 'Buy SMS credits'));
@@ -541,6 +549,179 @@ async function loadFlexR2sAnalytics(container) {
     placeholder.remove();
     container.appendChild(el('p', { class: 'err' }, 'Failed to load /r2s analytics: ' + e.message));
   }
+}
+
+// Renders the Road To The Stage ebook sales section. Only called from
+// viewOverview when the current tenant is The Flex Facility. Server-side
+// endpoint enforces the same tenant gate.
+async function loadR2sEbookSection(container) {
+  // Header card (always shown, even while loading)
+  container.appendChild(el('div', { class: 'r2s-ebook-header' },
+    el('h2', {}, 'Road To The Stage — Ebook Sales'),
+    el('p', { class: 'muted', style: 'margin-top:4px;font-size:0.85rem' },
+      'Track sales and performance for The Road To The Stage ebook.')
+  ));
+
+  const body = el('div', {});
+  container.appendChild(body);
+  const placeholder = el('p', { class: 'muted' }, 'Loading ebook sales…');
+  body.appendChild(placeholder);
+
+  let data;
+  try {
+    data = await api('/api/portal/r2s-sales');
+  } catch (e) {
+    placeholder.remove();
+    body.appendChild(el('p', { class: 'err' }, 'Failed to load ebook sales: ' + e.message));
+    return;
+  }
+  placeholder.remove();
+
+  // Metrics strip (always shown, zero-safe)
+  const units = data.total_units || 0;
+  const revenueCents = data.total_revenue_cents || 0;
+  body.appendChild(el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:12px' },
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, String(units)),
+      el('span', { class: 'metric-stat-label' }, 'Total Units Sold')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat accent' },
+      el('span', { class: 'metric-stat-value' }, `$${(revenueCents / 100).toFixed(2)}`),
+      el('span', { class: 'metric-stat-label' }, 'Total Revenue')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, units > 0 ? `$${(revenueCents / units / 100).toFixed(2)}` : '—'),
+      el('span', { class: 'metric-stat-label' }, 'Avg Sale Price')
+    )
+  ));
+
+  // Sales over time chart (last 30 days) — simple bar chart
+  const days = Object.entries(data.by_day || {});
+  const chartPanel = el('div', { class: 'r2s-chart-panel' });
+  chartPanel.appendChild(el('h3', { style: 'font-size:0.9rem;margin-bottom:8px' }, 'Sales Over Time (last 30 days)'));
+  if (days.length && days.some(([_, v]) => v.units > 0)) {
+    const max = Math.max(...days.map(([_, v]) => v.units), 1);
+    const chart = el('div', { class: 'r2s-chart' });
+    days.forEach(([date, v]) => {
+      const bar = el('div', {
+        class: 'r2s-chart-bar',
+        title: `${date}: ${v.units} sale${v.units === 1 ? '' : 's'} · $${(v.revenue_cents / 100).toFixed(2)}`
+      },
+        el('div', { class: 'r2s-chart-fill', style: `height:${Math.max(2, (v.units / max) * 100)}%` }),
+        el('div', { class: 'r2s-chart-label' }, new Date(date).getDate())
+      );
+      chart.appendChild(bar);
+    });
+    chartPanel.appendChild(chart);
+  } else {
+    chartPanel.appendChild(el('p', { class: 'muted' }, 'No sales recorded in the last 30 days.'));
+  }
+  body.appendChild(chartPanel);
+
+  // Sales page link
+  body.appendChild(el('div', { class: 'r2s-link-row' },
+    el('span', { class: 'muted', style: 'font-size:0.8rem' }, 'Sales page:'),
+    el('a', {
+      href: 'https://www.theflexfacility.com/r2s',
+      target: '_blank', rel: 'noopener noreferrer',
+      class: 'r2s-link'
+    }, 'theflexfacility.com/r2s →')
+  ));
+
+  // Stripe-not-connected branch: show CTA + manual entry fallback
+  if (!data.stripe_connected) {
+    const ctaCard = el('div', { class: 'r2s-cta-card' },
+      el('h3', { style: 'font-size:1rem;margin-bottom:6px' }, 'Connect Stripe to auto-import sales'),
+      el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+        'Link The Flex Facility Stripe account so ebook sales flow into this dashboard automatically. Until then, you can log sales manually below.'),
+      el('button', { class: 'btn primary', onclick: async () => {
+        try {
+          const r = await api('/api/portal/connect?action=start', { method: 'POST' });
+          window.location.href = r.url;
+        } catch (e) { toast('Stripe setup failed: ' + e.message, true); }
+      } }, 'Connect Stripe')
+    );
+    body.appendChild(ctaCard);
+
+    // Manual entry form
+    body.appendChild(renderManualSaleForm(container));
+  } else if (!data.sales?.length) {
+    // Stripe connected but nothing matched — still expose manual entry for edge cases
+    body.appendChild(el('p', { class: 'muted', style: 'margin-top:12px;font-size:0.85rem' },
+      'Stripe is connected but no sales yet match "Road To The Stage" or "r2s". New Stripe sales will appear here automatically.'));
+    body.appendChild(renderManualSaleForm(container));
+  }
+
+  // Recent sales list
+  if (data.sales?.length) {
+    body.appendChild(el('h3', { style: 'font-size:0.9rem;margin:16px 0 8px' }, 'Recent Sales'));
+    body.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Date'), el('th', {}, 'Customer'), el('th', {}, 'Product'),
+        el('th', {}, 'Amount'), el('th', {}, 'Source')
+      )),
+      el('tbody', {}, ...data.sales.map(s => el('tr', {},
+        el('td', {}, new Date(s.created_at).toLocaleDateString()),
+        el('td', {}, s.customer_name || s.customer_email || '—'),
+        el('td', {}, s.product_name || 'Road To The Stage'),
+        el('td', { style: 'font-weight:600' }, `$${(s.amount_cents / 100).toFixed(2)}`),
+        el('td', {}, el('span', { class: 'badge' + (s.source?.startsWith('r2s_manual') ? ' warn' : ' info') },
+          s.source?.startsWith('r2s_manual') ? 'manual' : (s.source || 'stripe')))
+      )))
+    ));
+  }
+}
+
+// Manual sale entry form used by the R2S ebook panel.
+function renderManualSaleForm(parentContainer) {
+  const nameIn  = el('input', { type: 'text', placeholder: 'Customer name' });
+  const emailIn = el('input', { type: 'email', placeholder: 'customer@example.com' });
+  const amtIn   = el('input', { type: 'number', min: '1', step: '0.01', placeholder: '27.00' });
+  const noteIn  = el('input', { type: 'text', placeholder: 'Note (optional)' });
+  const submit  = el('button', { class: 'btn primary', onclick: async () => {
+    const amt = parseFloat(amtIn.value);
+    if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount', true); return; }
+    submit.disabled = true; submit.textContent = 'Saving…';
+    try {
+      await api('/api/portal/r2s-sales', { method: 'POST', body: {
+        customer_name: nameIn.value.trim() || null,
+        customer_email: emailIn.value.trim() || null,
+        amount_cents: Math.round(amt * 100),
+        note: noteIn.value.trim() || null
+      }});
+      toast('Sale recorded');
+      // Re-render the entire panel from fresh data
+      parentContainer.innerHTML = '';
+      loadR2sEbookSection(parentContainer);
+    } catch (e) {
+      toast('Save failed: ' + e.message, true);
+    } finally { submit.disabled = false; submit.textContent = 'Log Sale'; }
+  } }, 'Log Sale');
+
+  return el('div', { class: 'r2s-manual-form' },
+    el('h3', { style: 'font-size:0.9rem;margin-bottom:8px' }, 'Log a manual sale'),
+    el('div', { class: 'r2s-manual-grid' },
+      el('label', {},
+        el('span', { class: 'muted', style: 'font-size:0.75rem' }, 'Customer name'),
+        nameIn
+      ),
+      el('label', {},
+        el('span', { class: 'muted', style: 'font-size:0.75rem' }, 'Email'),
+        emailIn
+      ),
+      el('label', {},
+        el('span', { class: 'muted', style: 'font-size:0.75rem' }, 'Amount ($)'),
+        amtIn
+      ),
+      el('label', {},
+        el('span', { class: 'muted', style: 'font-size:0.75rem' }, 'Note'),
+        noteIn
+      )
+    ),
+    el('div', { style: 'margin-top:10px' }, submit)
+  );
 }
 
 // ============================================================
