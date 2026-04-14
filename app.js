@@ -3167,6 +3167,36 @@ async function viewAnalytics() {
   }
   restOfPage.appendChild(pagePanel);
 
+  // Funnel page performance
+  const funnelPanel = el('div', { class: 'panel' });
+  funnelPanel.appendChild(el('h2', {}, '🔗 Funnel Page Performance'));
+  const funnelPages = (ga.top_pages || []).filter(p =>
+    p.path && (p.path.startsWith('/r') || p.path.startsWith('/fit') || p.path === '/' || p.path.startsWith('/book'))
+  );
+  if (funnelPages.length) {
+    const totalPageViews = (ga.top_pages || []).reduce((s, p) => s + p.views, 0);
+    funnelPanel.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Page'), el('th', {}, 'Views'), el('th', {}, 'Sessions'), el('th', {}, '% of Traffic')
+      )),
+      el('tbody', {}, ...funnelPages.map(p => el('tr', {},
+        el('td', {}, el('code', {}, p.path)),
+        el('td', {}, String(p.views)),
+        el('td', {}, String(p.sessions)),
+        el('td', {}, totalPageViews > 0 ? ((p.views / totalPageViews) * 100).toFixed(1) + '%' : '—')
+      )))
+    ));
+  } else {
+    funnelPanel.appendChild(el('p', { class: 'muted' }, 'No funnel page data yet. Funnel pages like /r2s, /fit, /book will appear here once they receive traffic.'));
+  }
+  restOfPage.appendChild(funnelPanel);
+
+  // Sales tracking section
+  const salesPanel = el('div', { class: 'panel' });
+  salesPanel.appendChild(el('h2', {}, '💰 Sales'));
+  restOfPage.appendChild(salesPanel);
+  loadSalesSection(salesPanel);
+
   // Custom portal events
   const eventPanel = el('div', { class: 'panel' });
   eventPanel.appendChild(el('h2', {}, '⚡ Portal Events'));
@@ -3184,6 +3214,70 @@ async function viewAnalytics() {
   restOfPage.appendChild(eventPanel);
 
   return wrap;
+}
+
+async function loadSalesSection(container) {
+  const statsEl = el('div', {});
+  const listEl = el('div', {});
+  container.append(statsEl, listEl);
+
+  try {
+    const [stats, list] = await Promise.all([
+      api('/api/portal/sales?action=stats'),
+      api('/api/portal/sales?action=list')
+    ]);
+
+    // Revenue stat strip
+    const changeDir = stats.month_change > 0 ? '+' : '';
+    statsEl.appendChild(el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:16px' },
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, `$${(stats.total_revenue / 100).toFixed(2)}`),
+        el('span', { class: 'metric-stat-label' }, 'Total Revenue')
+      ),
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, `$${(stats.this_month_revenue / 100).toFixed(2)}`),
+        el('span', { class: 'metric-stat-label' }, `This Month (${changeDir}${stats.month_change}%)`)
+      ),
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, `$${(stats.today_revenue / 100).toFixed(2)}`),
+        el('span', { class: 'metric-stat-label' }, `Today (${stats.today_count} sales)`)
+      ),
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat accent' },
+        el('span', { class: 'metric-stat-value' }, String(stats.total_count)),
+        el('span', { class: 'metric-stat-label' }, 'Total Sales')
+      )
+    ));
+
+    // Sales list table
+    const sales = list.sales || [];
+    if (!sales.length) {
+      listEl.appendChild(el('p', { class: 'muted' }, 'No sales recorded yet. Sales from Stripe will appear here automatically.'));
+      return;
+    }
+    listEl.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Date'), el('th', {}, 'Customer'), el('th', {}, 'Product'),
+        el('th', {}, 'Amount'), el('th', {}, 'Status')
+      )),
+      el('tbody', {}, ...sales.map(s => el('tr', {},
+        el('td', {}, new Date(s.created_at).toLocaleDateString()),
+        el('td', {}, s.customer_name || s.customer_email || '—'),
+        el('td', {}, s.products?.name || '—'),
+        el('td', { style: 'font-weight:600' }, `$${(Number(s.amount) / 100).toFixed(2)}`),
+        el('td', {}, el('span', { class: 'badge' + (s.payment_status === 'paid' ? ' green' : s.payment_status === 'refunded' ? ' red' : '') }, s.payment_status || '—'))
+      )))
+    ));
+    if (list.pages > 1) {
+      listEl.appendChild(el('p', { class: 'muted', style: 'margin-top:8px;font-size:0.8rem' },
+        `Showing ${sales.length} of ${list.total} sales`
+      ));
+    }
+  } catch (e) {
+    statsEl.appendChild(el('p', { class: 'muted' }, 'Could not load sales data.'));
+  }
 }
 
 // ============================================================
