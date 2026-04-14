@@ -147,7 +147,7 @@ async function handleContactsImport(req, res, ctx) {
   for (let i = 0; i < contacts.length; i += BATCH) {
     const batch = contacts.slice(i, i + BATCH).map(c => ({
       client_id: clientId,
-      name: [c.first_name, c.last_name].filter(Boolean).join(' ').trim() || 'Unknown',
+      name: (c.name || [c.first_name, c.last_name].filter(Boolean).join(' ')).trim() || 'Unknown',
       phone: (c.phone || '').replace(/[^\d+]/g, ''),
       email: c.email || null,
       tags: c.tag ? [c.tag] : [],

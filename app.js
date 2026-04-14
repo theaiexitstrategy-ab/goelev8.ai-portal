@@ -581,9 +581,52 @@ async function viewBookings() {
   function renderAll() {
     renderSubTabBar();
     content.replaceChildren();
-    if (subTab === 'appointments') renderAppointments();
+    if (subTab === 'appointments') { renderAppointments(); renderGoelev8Bookings(); }
     else if (subTab === 'availability') renderAvailability();
     else renderServices();
+  }
+
+
+  // ----- book.goelev8.ai bookings (goelev8_bookings table) -----
+  async function renderGoelev8Bookings() {
+    const panel = el('div', { class: 'panel' });
+    panel.appendChild(el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px' },
+      el('h2', { style: 'margin:0' }, 'book.goelev8.ai Bookings'),
+      el('div', { class: 'muted', style: 'font-size:11px' }, 'From your AI booking page')));
+    panel.appendChild(el('p', { class: 'muted' }, 'Loading…'));
+    content.appendChild(panel);
+    try {
+      const r = await api('/api/portal/goelev8-bookings');
+      while (panel.childNodes.length > 1) panel.removeChild(panel.lastChild);
+      if (!r.tenant) {
+        panel.appendChild(el('p', { class: 'muted' }, 'No book.goelev8.ai page linked to this account.'));
+        return;
+      }
+      const bkUrl = r.tenant.custom_domain ? 'https://' + r.tenant.custom_domain : 'https://book.goelev8.ai/' + r.tenant.slug;
+      panel.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:16px;font-size:13px' },
+        el('code', { style: 'color:#93c5fd' }, r.tenant.custom_domain || ('book.goelev8.ai/' + r.tenant.slug)),
+        el('button', { class: 'btn sm ghost', onclick: () => window.open(bkUrl, '_blank') }, 'Open')));
+      if (!r.bookings.length) {
+        panel.appendChild(el('p', { class: 'muted' }, 'No bookings yet from this page.'));
+        return;
+      }
+      panel.appendChild(el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'Client'), el('th', {}, 'Phone'), el('th', {}, 'Service'),
+          el('th', {}, 'Date'), el('th', {}, 'Time'), el('th', {}, 'Status'), el('th', {}, 'Booked At'))),
+        el('tbody', {}, ...r.bookings.map(b =>
+          el('tr', {},
+            el('td', {}, el('strong', {}, b.client_name || '—')),
+            el('td', { class: 'mono' }, b.client_phone || '—'),
+            el('td', {}, b.service || '—'),
+            el('td', { class: 'mono' }, b.booking_date || '—'),
+            el('td', { class: 'mono' }, b.booking_time || '—'),
+            el('td', {}, el('span', { class: 'badge' + (b.status === 'confirmed' ? ' green' : b.status === 'cancelled' ? ' red' : '') }, b.status || '—')),
+            el('td', { class: 'muted' }, new Date(b.created_at).toLocaleString()))))));
+    } catch (e) {
+      while (panel.childNodes.length > 1) panel.removeChild(panel.lastChild);
+      panel.appendChild(el('p', { class: 'err' }, 'Failed to load: ' + e.message));
+    }
   }
 
   // ----- Appointments sub-view -----
@@ -1051,6 +1094,12 @@ async function viewLeads() {
     el('h1', {}, 'Leads'),
     el('div', { class: 'muted' }, 'Captured by Vapi voice agents and web forms')
   ));
+
+  // --- Views vs Conversion metrics ---
+  const metricsPanel = el('div', { class: 'leads-metrics' });
+  wrap.appendChild(metricsPanel);
+  loadLeadMetrics(metricsPanel);
+
   const panel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
   wrap.appendChild(panel);
   try {
@@ -1077,14 +1126,66 @@ async function viewLeads() {
           el('td', {}, el('span', { class: 'badge' }, l.status || 'new')),
           el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
             if (!confirm('Delete lead?')) return;
-            await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: l.id } });
-            render();
+            try {
+              await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: l.id } });
+              toast('Lead deleted');
+              render();
+            } catch (e) { toast('Delete failed: ' + e.message, true); }
           }}, 'Delete'))
         )
       ))
     ));
   } catch (e) { panel.innerHTML = `<p class="err">${e.message}</p>`; }
   return wrap;
+}
+
+async function loadLeadMetrics(container) {
+  try {
+    const [fv, lr] = await Promise.all([
+      api('/api/portal/funnel-views'),
+      api('/api/portal/crm?action=leads')
+    ]);
+    const views = fv.total_30d || 0;
+    const leads = (lr.leads || []).length;
+    const rate = views > 0 ? ((leads / views) * 100).toFixed(1) : '0.0';
+
+    container.innerHTML = '';
+    container.appendChild(el('div', { class: 'leads-metrics-cards' },
+      el('div', { class: 'metric-card' },
+        el('div', { class: 'metric-value' }, String(views)),
+        el('div', { class: 'metric-label' }, 'Funnel Views (30d)')
+      ),
+      el('div', { class: 'metric-card' },
+        el('div', { class: 'metric-value' }, String(leads)),
+        el('div', { class: 'metric-label' }, 'Leads Captured')
+      ),
+      el('div', { class: 'metric-card accent' },
+        el('div', { class: 'metric-value' }, `${rate}%`),
+        el('div', { class: 'metric-label' }, 'Conversion Rate')
+      )
+    ));
+
+    if (fv.by_source && fv.by_source.length) {
+      container.appendChild(el('div', { class: 'panel', style: 'margin-top:12px' },
+        el('h3', { style: 'margin-bottom:8px;font-size:0.9rem' }, 'Views by Source (30d)'),
+        el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Source'), el('th', {}, 'Views'), el('th', {}, '% of Total')
+          )),
+          el('tbody', {}, ...fv.by_source.slice(0, 10).map(s =>
+            el('tr', {},
+              el('td', {}, s.source),
+              el('td', {}, String(s.count)),
+              el('td', {}, views > 0 ? ((s.count / views) * 100).toFixed(1) + '%' : '—')
+            )
+          ))
+        )
+      ));
+    }
+  } catch (e) {
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'muted', style: 'padding:8px' }, 'Could not load conversion metrics.'));
+  }
 }
 
 // ============================================================
@@ -1725,14 +1826,22 @@ async function loadBlastsContacts(container) {
     const tbl = el('table', {},
       el('thead', {}, el('tr', {},
         el('th', {}, 'Name'), el('th', {}, 'Phone'), el('th', {}, 'Email'),
-        el('th', {}, 'Tags'), el('th', {}, 'Source')
+        el('th', {}, 'Tags'), el('th', {}, 'Source'), el('th', {}, '')
       )),
       el('tbody', {}, ...contacts.map(c => el('tr', {},
         el('td', {}, c.name || '—'),
         el('td', {}, c.phone || '—'),
         el('td', {}, c.email || '—'),
         el('td', {}, (c.tags || []).join(', ') || '—'),
-        el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual'))
+        el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual')),
+        el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
+          if (!confirm('Delete contact?')) return;
+          try {
+            await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
+            toast('Contact deleted');
+            loadBlastsContacts(container);
+          } catch (e) { toast('Delete failed: ' + e.message, true); }
+        } }, 'Delete'))
       )))
     );
     container.appendChild(tbl);
@@ -1752,6 +1861,7 @@ function openContactImportModal(contactsBody) {
   let mappings = {};
   const FIELD_OPTIONS = [
     { value: 'skip', label: 'Skip' },
+    { value: 'name', label: 'Full Name' },
     { value: 'first_name', label: 'First Name' },
     { value: 'last_name', label: 'Last Name' },
     { value: 'phone', label: 'Phone' },
@@ -1764,7 +1874,7 @@ function openContactImportModal(contactsBody) {
     phone: 'phone', mobile: 'phone', cell: 'phone', telephone: 'phone', 'phone number': 'phone', phone_number: 'phone', phonenumber: 'phone',
     first: 'first_name', 'first name': 'first_name', first_name: 'first_name', firstname: 'first_name', 'given name': 'first_name',
     last: 'last_name', 'last name': 'last_name', last_name: 'last_name', lastname: 'last_name', surname: 'last_name', 'family name': 'last_name',
-    name: 'first_name', 'full name': 'first_name', fullname: 'first_name',
+    name: 'name', 'full name': 'name', fullname: 'name', 'contact name': 'name', 'client name': 'name', customer: 'name',
     email: 'email', 'e-mail': 'email', email_address: 'email', 'email address': 'email',
     tag: 'tag', tags: 'tag', group: 'tag', category: 'tag', segment: 'tag',
     notes: 'notes', note: 'notes', comment: 'notes', comments: 'notes', description: 'notes'
@@ -1928,7 +2038,7 @@ function openContactImportModal(contactsBody) {
     function renderList() {
       listEl.innerHTML = '';
       mapped.forEach((r, i) => {
-        const name = [r.first_name, r.last_name].filter(Boolean).join(' ') || '—';
+        const name = r.name || [r.first_name, r.last_name].filter(Boolean).join(' ') || '—';
         listEl.appendChild(el('div', { class: 'import-review-row' },
           el('span', { style: 'flex:1;min-width:0' },
             el('strong', {}, name), ' ',
@@ -1952,7 +2062,7 @@ function openContactImportModal(contactsBody) {
       importBtn.disabled = true; importBtn.textContent = 'Importing...';
       try {
         const payload = mapped.map(r => ({
-          first_name: r.first_name || '', last_name: r.last_name || '',
+          name: r.name || '', first_name: r.first_name || '', last_name: r.last_name || '',
           phone: r.phone, email: r.email || '', tag: r.tag || '', notes: r.notes || ''
         }));
         const res = await api('/api/portal/crm?action=contacts-import', { method: 'POST', body: { contacts: payload } });

@@ -944,6 +944,35 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Leads metrics cards
+   ============================================================ */
+.leads-metrics { margin-bottom: 16px; }
+.leads-metrics-cards {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+}
+.metric-card {
+  background: var(--bg-elevated, #141c2e);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-md, 12px);
+  padding: 20px; text-align: center;
+}
+.metric-card.accent {
+  border-color: var(--brand-1, #00CFFF);
+  background: rgba(0, 207, 255, 0.06);
+}
+.metric-value {
+  font-size: 2rem; font-weight: 700; line-height: 1.1;
+  color: var(--text, #e0e0e0);
+}
+.metric-card.accent .metric-value { color: var(--brand-1, #00CFFF); }
+.metric-label {
+  font-size: 0.8rem; color: var(--text-mute, #666); margin-top: 4px;
+}
+@media (max-width: 600px) {
+  .leads-metrics-cards { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
    Badges & toasts
    ============================================================ */
 .badge {
