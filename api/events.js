@@ -32,6 +32,7 @@ import crypto from 'node:crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireUser, methodGuard, readJson } from '../lib/auth.js';
 import { sendWelcomeForEvent } from '../lib/welcome.js';
+import { scheduleNudgeSequence } from '../lib/nudge-sms.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -434,20 +435,29 @@ async function handleLead(req, res) {
 
   if (error) return res.status(500).json({ error: error.message });
 
-  // Fire welcome SMS if enabled for this client
-  let welcome = { sent: false, reason: 'no_phone' };
+  // Fire the 5-message nudge drip sequence. Message #1 sends
+  // immediately (delay_minutes=0) and replaces the legacy welcome SMS
+  // for the funnel-form path — both would otherwise hit the lead
+  // back-to-back. Messages 2–5 are scheduled (in-process for ≤10 min,
+  // queued in nudge_queue for longer delays). Each send writes a
+  // messages row, so the Messages tab thread will fill in over time.
+  //
+  // The legacy welcome SMS path is still used by handleIngest (events
+  // pushed from a separate Supabase project) where the nudge sequence
+  // may not be appropriate.
+  let nudges = { sent: false, reason: 'no_phone' };
   if (phone) {
     try {
-      welcome = await sendWelcomeForEvent({
+      nudges = await scheduleNudgeSequence({
         client,
-        event: { contact_phone: phone, contact_name: name, contact_email: email, source: body.source || 'web_form' }
+        lead: { id: lead?.id || null, name, phone, email, source: body.source || 'web_form' }
       });
     } catch (e) {
-      welcome = { sent: false, reason: 'error: ' + e.message };
+      nudges = { sent: false, reason: 'error: ' + e.message };
     }
   }
 
-  return res.status(200).json({ ok: true, lead_id: lead?.id || null, welcome });
+  return res.status(200).json({ ok: true, lead_id: lead?.id || null, nudges });
 }
 
 export default async function handler(req, res) {

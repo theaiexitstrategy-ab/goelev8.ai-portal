@@ -8,7 +8,9 @@ const base = process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai';
 
 const NUMBERS = [
   '+18775153539',  // Flex Facility
-  '+18332787529'   // iSlay Studios
+  '+18332787529',  // iSlay Studios
+  '+18882951321',  // Daniels Legacy Planning
+  '+18883020649'   // GoElev8.AI
 ];
 
 const list = await twilio.incomingPhoneNumbers.list({ limit: 200 });
