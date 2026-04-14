@@ -157,7 +157,7 @@ const TAB_LABELS = {
   nudges:    'Nudges',
   analytics: 'Analytics',
   admin:     'Master Admin',
-  booking_admin: 'Booking Calendar'
+  booking_admin: 'book.goelev8.ai'
 };
 
 const TAB_ICONS = {
@@ -175,11 +175,11 @@ const TAB_ICONS = {
   nudges:    '⚡',
   analytics: '📈',
   admin:     '🛡️',
-  booking_admin: '📅'
+  booking_admin: '🗓️'
 };
 
 const DEFAULT_TABS = ['overview','leads','messages','settings'];
-const ADMIN_TABS = ['admin','activity','analytics','booking_admin'];
+const ADMIN_TABS = ['admin','booking_admin','activity','analytics'];
 
 function shell(content) {
   const navBtn = (id, label) =>
@@ -2315,8 +2315,8 @@ async function viewAdmin() {
 async function viewBookingAdmin() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
-    el('h1', {}, 'Booking Calendar'),
-    el('div', { class: 'muted' }, 'book.goelev8.ai management · tenants, bookings, and activity')));
+    el('h1', {}, 'book.goelev8.ai'),
+    el('div', { class: 'muted' }, 'AI Booking Platform · all signups, tenants, bookings, and revenue across every client')));
 
   // ----- Sub-tab state -----
   let subTab = 'dashboard';
