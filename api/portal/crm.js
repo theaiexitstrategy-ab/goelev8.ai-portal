@@ -109,6 +109,11 @@ async function handleLeads(req, res, ctx) {
   if (req.method === 'DELETE') {
     const { id } = await readJson(req);
     if (!id) return res.status(400).json({ error: 'id_required' });
+    // Nullify lead_id in related tables to avoid FK constraint errors
+    await sb.from('bookings').update({ lead_id: null }).eq('lead_id', id);
+    await sb.from('vapi_calls').update({ lead_id: null }).eq('lead_id', id);
+    await sb.from('messages').update({ lead_id: null }).eq('lead_id', id);
+    await sb.from('nudge_queue').update({ lead_id: null }).eq('lead_id', id);
     const { error } = await sb.from('leads').delete().eq('id', id);
     if (error) return res.status(400).json({ error: error.message });
     return res.status(200).json({ ok: true });

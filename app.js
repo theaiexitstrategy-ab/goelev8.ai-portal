@@ -1141,47 +1141,31 @@ async function viewLeads() {
 
 async function loadLeadMetrics(container) {
   try {
-    const [fv, lr] = await Promise.all([
-      api('/api/portal/funnel-views'),
+    const [ga, lr] = await Promise.all([
+      api('/api/portal/ga4'),
       api('/api/portal/crm?action=leads')
     ]);
-    const views = fv.total_30d || 0;
+    const views = ga.page_views || ga.sessions || 0;
     const leads = (lr.leads || []).length;
     const rate = views > 0 ? ((leads / views) * 100).toFixed(1) : '0.0';
 
     container.innerHTML = '';
-    container.appendChild(el('div', { class: 'leads-metrics-cards' },
-      el('div', { class: 'metric-card' },
-        el('div', { class: 'metric-value' }, String(views)),
-        el('div', { class: 'metric-label' }, 'Funnel Views (30d)')
+    container.appendChild(el('div', { class: 'leads-metrics-strip' },
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, String(views)),
+        el('span', { class: 'metric-stat-label' }, 'Page Views (30d)')
       ),
-      el('div', { class: 'metric-card' },
-        el('div', { class: 'metric-value' }, String(leads)),
-        el('div', { class: 'metric-label' }, 'Leads Captured')
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat' },
+        el('span', { class: 'metric-stat-value' }, String(leads)),
+        el('span', { class: 'metric-stat-label' }, 'Leads Captured')
       ),
-      el('div', { class: 'metric-card accent' },
-        el('div', { class: 'metric-value' }, `${rate}%`),
-        el('div', { class: 'metric-label' }, 'Conversion Rate')
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat accent' },
+        el('span', { class: 'metric-stat-value' }, `${rate}%`),
+        el('span', { class: 'metric-stat-label' }, 'Conversion Rate')
       )
     ));
-
-    if (fv.by_source && fv.by_source.length) {
-      container.appendChild(el('div', { class: 'panel', style: 'margin-top:12px' },
-        el('h3', { style: 'margin-bottom:8px;font-size:0.9rem' }, 'Views by Source (30d)'),
-        el('table', {},
-          el('thead', {}, el('tr', {},
-            el('th', {}, 'Source'), el('th', {}, 'Views'), el('th', {}, '% of Total')
-          )),
-          el('tbody', {}, ...fv.by_source.slice(0, 10).map(s =>
-            el('tr', {},
-              el('td', {}, s.source),
-              el('td', {}, String(s.count)),
-              el('td', {}, views > 0 ? ((s.count / views) * 100).toFixed(1) + '%' : '—')
-            )
-          ))
-        )
-      ));
-    }
   } catch (e) {
     container.innerHTML = '';
     container.appendChild(el('p', { class: 'muted', style: 'padding:8px' }, 'Could not load conversion metrics.'));
