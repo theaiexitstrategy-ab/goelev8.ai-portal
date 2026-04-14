@@ -1660,9 +1660,21 @@ async function viewBlasts() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'SMS Blasts'),
-    el('button', { class: 'btn primary', onclick: () => openBlastModal(wrap) }, '+ New Blast')
+    el('div', { style: 'display:flex;gap:8px' },
+      el('button', { class: 'btn', onclick: () => openContactImportModal(contactsBody) }, 'Import Contacts'),
+      el('button', { class: 'btn primary', onclick: () => openBlastModal(wrap) }, '+ New Blast')
+    )
   ));
 
+  // --- Contacts list section ---
+  const contactsPanel = el('div', { class: 'panel' });
+  contactsPanel.appendChild(el('h2', {}, 'Contacts'));
+  const contactsBody = el('div', {});
+  contactsPanel.appendChild(contactsBody);
+  wrap.appendChild(contactsPanel);
+  loadBlastsContacts(contactsBody);
+
+  // --- Past blasts section ---
   const table = el('div', { class: 'panel' });
   table.appendChild(el('h2', {}, 'Past Blasts'));
   const tbody = el('div', {});
@@ -1696,6 +1708,290 @@ async function viewBlasts() {
     tbody.appendChild(el('p', { class: 'err' }, 'Failed to load blasts: ' + e.message));
   }
   return wrap;
+}
+
+async function loadBlastsContacts(container) {
+  container.innerHTML = '';
+  container.appendChild(el('p', { class: 'muted' }, 'Loading contacts...'));
+  try {
+    const r = await api('/api/portal/crm?action=contacts');
+    container.innerHTML = '';
+    const contacts = r.contacts || [];
+    if (!contacts.length) {
+      container.appendChild(el('p', { class: 'muted' }, 'No contacts yet. Click "Import Contacts" to add from a file or spreadsheet.'));
+      return;
+    }
+    container.appendChild(el('p', { class: 'muted', style: 'margin-bottom:8px' }, `${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`));
+    const tbl = el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Name'), el('th', {}, 'Phone'), el('th', {}, 'Email'),
+        el('th', {}, 'Tags'), el('th', {}, 'Source')
+      )),
+      el('tbody', {}, ...contacts.map(c => el('tr', {},
+        el('td', {}, c.name || '—'),
+        el('td', {}, c.phone || '—'),
+        el('td', {}, c.email || '—'),
+        el('td', {}, (c.tags || []).join(', ') || '—'),
+        el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual'))
+      )))
+    );
+    container.appendChild(tbl);
+  } catch (e) {
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'err' }, 'Failed to load contacts: ' + e.message));
+  }
+}
+
+function openContactImportModal(contactsBody) {
+  const existing = document.querySelector('.import-modal-bg');
+  if (existing) existing.remove();
+
+  let step = 1;
+  let parsedRows = [];
+  let headers = [];
+  let mappings = {};
+  const FIELD_OPTIONS = [
+    { value: 'skip', label: 'Skip' },
+    { value: 'first_name', label: 'First Name' },
+    { value: 'last_name', label: 'Last Name' },
+    { value: 'phone', label: 'Phone' },
+    { value: 'email', label: 'Email' },
+    { value: 'tag', label: 'Tag' },
+    { value: 'notes', label: 'Notes' }
+  ];
+
+  const GUESS_MAP = {
+    phone: 'phone', mobile: 'phone', cell: 'phone', telephone: 'phone', 'phone number': 'phone', phone_number: 'phone', phonenumber: 'phone',
+    first: 'first_name', 'first name': 'first_name', first_name: 'first_name', firstname: 'first_name', 'given name': 'first_name',
+    last: 'last_name', 'last name': 'last_name', last_name: 'last_name', lastname: 'last_name', surname: 'last_name', 'family name': 'last_name',
+    name: 'first_name', 'full name': 'first_name', fullname: 'first_name',
+    email: 'email', 'e-mail': 'email', email_address: 'email', 'email address': 'email',
+    tag: 'tag', tags: 'tag', group: 'tag', category: 'tag', segment: 'tag',
+    notes: 'notes', note: 'notes', comment: 'notes', comments: 'notes', description: 'notes'
+  };
+
+  function guessMapping(header) {
+    return GUESS_MAP[header.toLowerCase().trim()] || 'skip';
+  }
+
+  function parseInput(text) {
+    const result = Papa.parse(text.trim(), { header: true, skipEmptyLines: true, dynamicTyping: false });
+    headers = result.meta.fields || [];
+    parsedRows = result.data || [];
+    mappings = {};
+    headers.forEach(h => { mappings[h] = guessMapping(h); });
+  }
+
+  const content = el('div', {});
+  const stepIndicator = el('div', { class: 'import-steps' });
+  const footer = el('div', { class: 'import-footer' });
+
+  function updateStepIndicator() {
+    stepIndicator.innerHTML = '';
+    ['Upload', 'Map Columns', 'Review & Import'].forEach((label, i) => {
+      const n = i + 1;
+      stepIndicator.appendChild(el('div', { class: 'import-step' + (n === step ? ' active' : '') + (n < step ? ' done' : '') },
+        el('span', { class: 'import-step-num' }, n < step ? '\u2713' : String(n)),
+        el('span', {}, label)
+      ));
+    });
+  }
+
+  // --- Step 1: Upload ---
+  function renderStep1() {
+    content.innerHTML = '';
+    footer.innerHTML = '';
+
+    const fileInput = el('input', { type: 'file', accept: '.csv,.xlsx,.tsv,.txt', style: 'display:none' });
+    const pasteArea = el('textarea', { rows: '5', placeholder: 'Or paste rows here (tab or comma separated, first row = headers)...',
+      style: 'width:100%;padding:10px;background:var(--bg-1,#0d1117);border:1px solid var(--border,#2a3a5c);border-radius:8px;color:var(--text,#e0e0e0);font-size:0.85rem;resize:vertical;margin-top:12px' });
+    const statusMsg = el('div', { style: 'margin-top:8px;font-size:0.8rem;color:var(--muted,#888)' });
+
+    const dropzone = el('div', { class: 'import-dropzone' },
+      el('div', { style: 'font-size:2rem;margin-bottom:8px' }, '\uD83D\uDCC1'),
+      el('div', {}, 'Drag & drop a file here'),
+      el('div', { class: 'muted', style: 'font-size:0.8rem;margin:4px 0 12px' }, '.csv, .xlsx, .tsv, .txt'),
+      el('button', { class: 'btn sm', onclick: () => fileInput.click() }, 'Browse Files'),
+      fileInput
+    );
+
+    function handleFile(file) {
+      statusMsg.textContent = `Reading ${file.name}...`;
+      if (file.name.endsWith('.xlsx')) {
+        statusMsg.textContent = 'XLSX files: please save as CSV first, then re-upload.';
+        statusMsg.style.color = 'var(--warning,#f0ad4e)';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        parseInput(e.target.result);
+        if (!headers.length || !parsedRows.length) {
+          statusMsg.textContent = 'Could not detect columns. Check your file format.';
+          statusMsg.style.color = 'var(--danger,#e74c3c)';
+          return;
+        }
+        statusMsg.textContent = `Detected ${headers.length} columns, ${parsedRows.length} rows.`;
+        statusMsg.style.color = 'var(--success,#27ae60)';
+        step = 2; renderCurrentStep();
+      };
+      reader.readAsText(file);
+    }
+
+    dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.classList.remove('dragover'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+    const pasteBtn = el('button', { class: 'btn sm', style: 'margin-top:8px', onclick: () => {
+      const text = pasteArea.value.trim();
+      if (!text) { statusMsg.textContent = 'Paste some data first.'; statusMsg.style.color = 'var(--warning,#f0ad4e)'; return; }
+      parseInput(text);
+      if (!headers.length || !parsedRows.length) {
+        statusMsg.textContent = 'Could not detect columns. Check your format.';
+        statusMsg.style.color = 'var(--danger,#e74c3c)';
+        return;
+      }
+      statusMsg.textContent = `Detected ${headers.length} columns, ${parsedRows.length} rows.`;
+      statusMsg.style.color = 'var(--success,#27ae60)';
+      step = 2; renderCurrentStep();
+    } }, 'Parse Pasted Data');
+
+    content.append(dropzone, pasteArea, pasteBtn, statusMsg);
+    footer.appendChild(el('button', { class: 'btn', onclick: () => bg.remove() }, 'Cancel'));
+  }
+
+  // --- Step 2: Map Columns ---
+  function renderStep2() {
+    content.innerHTML = '';
+    footer.innerHTML = '';
+
+    const mappingErr = el('div', { style: 'color:var(--danger,#e74c3c);font-size:0.8rem;margin-top:8px' });
+
+    const rows = headers.map(h => {
+      const sel = el('select', {}, ...FIELD_OPTIONS.map(f =>
+        el('option', { value: f.value, ...(mappings[h] === f.value ? { selected: 'selected' } : {}) }, f.label)
+      ));
+      sel.value = mappings[h] || 'skip';
+      sel.addEventListener('change', () => { mappings[h] = sel.value; });
+      const preview = parsedRows.slice(0, 3).map(r => r[h] || '').join(', ');
+      return el('tr', {},
+        el('td', { style: 'font-weight:600' }, h),
+        el('td', {}, sel),
+        el('td', { class: 'muted', style: 'font-size:0.8rem' }, preview || '—')
+      );
+    });
+
+    const tbl = el('table', { class: 'import-map-table' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'File Column'), el('th', {}, 'Maps To'), el('th', {}, 'Preview')
+      )),
+      el('tbody', {}, ...rows)
+    );
+
+    content.append(
+      el('p', { style: 'font-size:0.85rem;margin-bottom:12px;color:var(--muted,#888)' }, 'Map each file column to a contact field. Phone is required.'),
+      tbl, mappingErr
+    );
+
+    footer.append(
+      el('button', { class: 'btn', onclick: () => { step = 1; renderCurrentStep(); } }, 'Back'),
+      el('button', { class: 'btn primary', onclick: () => {
+        const vals = Object.values(mappings);
+        if (!vals.includes('phone')) {
+          mappingErr.textContent = 'You must map at least one column to Phone.';
+          return;
+        }
+        step = 3; renderCurrentStep();
+      } }, 'Next')
+    );
+  }
+
+  // --- Step 3: Review & Import ---
+  function renderStep3() {
+    content.innerHTML = '';
+    footer.innerHTML = '';
+
+    let mapped = parsedRows.map((row, idx) => {
+      const out = { _idx: idx };
+      for (const h of headers) {
+        const field = mappings[h];
+        if (field && field !== 'skip') out[field] = (row[h] || '').trim();
+      }
+      return out;
+    }).filter(r => r.phone);
+
+    const countLabel = el('p', { style: 'font-size:0.85rem;margin-bottom:8px;color:var(--muted,#888)' },
+      `${mapped.length} contacts ready to import (${parsedRows.length - mapped.length} skipped — missing phone).`
+    );
+
+    const listEl = el('div', { class: 'import-review-list' });
+    function renderList() {
+      listEl.innerHTML = '';
+      mapped.forEach((r, i) => {
+        const name = [r.first_name, r.last_name].filter(Boolean).join(' ') || '—';
+        listEl.appendChild(el('div', { class: 'import-review-row' },
+          el('span', { style: 'flex:1;min-width:0' },
+            el('strong', {}, name), ' ',
+            el('span', { class: 'muted' }, r.phone),
+            r.email ? el('span', { class: 'muted' }, ` | ${r.email}`) : ''
+          ),
+          el('button', { class: 'btn sm danger', onclick: () => {
+            mapped.splice(i, 1);
+            countLabel.textContent = `${mapped.length} contacts ready to import.`;
+            renderList();
+          } }, '\u00D7')
+        ));
+      });
+      if (!mapped.length) listEl.appendChild(el('p', { class: 'muted' }, 'No contacts to import.'));
+    }
+    renderList();
+
+    const resultMsg = el('div', { style: 'margin-top:12px;font-size:0.85rem' });
+    const importBtn = el('button', { class: 'btn primary', onclick: async () => {
+      if (!mapped.length) return;
+      importBtn.disabled = true; importBtn.textContent = 'Importing...';
+      try {
+        const payload = mapped.map(r => ({
+          first_name: r.first_name || '', last_name: r.last_name || '',
+          phone: r.phone, email: r.email || '', tag: r.tag || '', notes: r.notes || ''
+        }));
+        const res = await api('/api/portal/crm?action=contacts-import', { method: 'POST', body: { contacts: payload } });
+        const errCount = (res.errors || []).length;
+        resultMsg.style.color = errCount ? 'var(--warning,#f0ad4e)' : 'var(--success,#27ae60)';
+        resultMsg.textContent = `Done! ${res.created || 0} contacts imported.` + (errCount ? ` ${errCount} batch error(s).` : '');
+        toast(`${res.created || 0} contacts imported!`);
+        if (contactsBody) loadBlastsContacts(contactsBody);
+        setTimeout(() => bg.remove(), 1500);
+      } catch (e) {
+        resultMsg.textContent = 'Import failed: ' + e.message;
+        resultMsg.style.color = 'var(--danger,#e74c3c)';
+      } finally { importBtn.disabled = false; importBtn.textContent = 'Import Contacts'; }
+    } }, 'Import Contacts');
+
+    content.append(countLabel, listEl, resultMsg);
+    footer.append(
+      el('button', { class: 'btn', onclick: () => { step = 2; renderCurrentStep(); } }, 'Back'),
+      importBtn
+    );
+  }
+
+  function renderCurrentStep() {
+    updateStepIndicator();
+    if (step === 1) renderStep1();
+    else if (step === 2) renderStep2();
+    else renderStep3();
+  }
+
+  const modal = el('div', { class: 'modal import-modal' },
+    el('h2', {}, 'Import Contacts'),
+    stepIndicator, content, footer
+  );
+  modal.style.maxWidth = '600px';
+
+  const bg = el('div', { class: 'modal-bg import-modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); } }, modal);
+  document.body.appendChild(bg);
+
+  renderCurrentStep();
 }
 
 function openBlastModal(wrap) {

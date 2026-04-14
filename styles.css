@@ -888,6 +888,62 @@ tbody tr:last-child td { border-bottom: none; }
 .field { margin-bottom: 14px; }
 
 /* ============================================================
+   Contact Import modal
+   ============================================================ */
+.import-modal { max-width: 600px; }
+.import-steps {
+  display: flex; gap: 4px; margin-bottom: 20px;
+  border-bottom: 1px solid var(--border, #2a3a5c); padding-bottom: 14px;
+}
+.import-step {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.8rem; color: var(--text-mute, #666);
+  flex: 1; justify-content: center;
+}
+.import-step.active { color: var(--brand-1, #00CFFF); font-weight: 600; }
+.import-step.done { color: var(--success, #27ae60); }
+.import-step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--bg-glass-strong, rgba(255,255,255,0.06));
+  font-size: 0.7rem; font-weight: 700;
+}
+.import-step.active .import-step-num { background: var(--brand-1, #00CFFF); color: #000; }
+.import-step.done .import-step-num { background: var(--success, #27ae60); color: #fff; }
+
+.import-dropzone {
+  border: 2px dashed var(--border, #2a3a5c); border-radius: var(--r-md, 12px);
+  padding: 32px 20px; text-align: center; cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.import-dropzone:hover, .import-dropzone.dragover {
+  border-color: var(--brand-1, #00CFFF);
+  background: rgba(0, 207, 255, 0.04);
+}
+
+.import-map-table { width: 100%; }
+.import-map-table select {
+  width: 100%; padding: 6px 8px;
+  background: var(--bg-1, #0d1117); border: 1px solid var(--border, #2a3a5c);
+  border-radius: 6px; color: var(--text, #e0e0e0); font-size: 0.8rem;
+}
+
+.import-review-list {
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid var(--border, #2a3a5c); border-radius: var(--r-sm, 8px);
+}
+.import-review-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border, #2a3a5c);
+  font-size: 0.85rem;
+}
+.import-review-row:last-child { border-bottom: none; }
+
+.import-footer {
+  display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;
+}
+
+/* ============================================================
    Badges & toasts
    ============================================================ */
 .badge {
@@ -910,6 +966,11 @@ tbody tr:last-child td { border-bottom: none; }
   background: rgba(239, 68, 68, 0.12);
   color: #fca5a5;
   border-color: rgba(239, 68, 68, 0.3);
+}
+.badge.info {
+  background: rgba(0, 207, 255, 0.12);
+  color: #7dd3fc;
+  border-color: rgba(0, 207, 255, 0.3);
 }
 .badge.warn {
   background: rgba(245, 158, 11, 0.12);
