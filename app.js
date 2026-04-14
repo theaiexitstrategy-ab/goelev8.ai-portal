@@ -156,7 +156,8 @@ const TAB_LABELS = {
   blasts:    'SMS Blasts',
   nudges:    'Nudges',
   analytics: 'Analytics',
-  admin:     'Master Admin'
+  admin:     'Master Admin',
+  booking_admin: 'Booking Calendar'
 };
 
 const TAB_ICONS = {
@@ -173,11 +174,12 @@ const TAB_ICONS = {
   blasts:    '📣',
   nudges:    '⚡',
   analytics: '📈',
-  admin:     '🛡️'
+  admin:     '🛡️',
+  booking_admin: '📅'
 };
 
 const DEFAULT_TABS = ['overview','leads','messages','settings'];
-const ADMIN_TABS = ['admin','activity','analytics'];
+const ADMIN_TABS = ['admin','activity','analytics','booking_admin'];
 
 function shell(content) {
   const navBtn = (id, label) =>
@@ -2308,6 +2310,338 @@ async function viewAdmin() {
 }
 
 // ============================================================
+// BOOKING CALENDAR ADMIN (book.goelev8.ai management)
+// ============================================================
+async function viewBookingAdmin() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Booking Calendar'),
+    el('div', { class: 'muted' }, 'book.goelev8.ai management · tenants, bookings, and activity')));
+
+  // ----- Sub-tab state -----
+  let subTab = 'dashboard';
+  let detailSlug = null;
+
+  const subNav = el('div', { class: 'filter-bar' });
+  const content = el('div', {});
+  wrap.appendChild(subNav);
+  wrap.appendChild(content);
+
+  function renderSubNav() {
+    subNav.innerHTML = '';
+    const tabs = [
+      ['dashboard', 'Dashboard'],
+      ['tenants', 'All Tenants'],
+      ['bookings', 'All Bookings'],
+    ];
+    if (detailSlug) tabs.push(['detail', detailSlug]);
+    for (const [id, label] of tabs) {
+      subNav.appendChild(el('button', {
+        class: 'chip' + (subTab === id ? ' active' : ''),
+        onclick: () => { subTab = id; renderContent(); }
+      }, label));
+    }
+  }
+
+  // ----- Dashboard -----
+  async function renderDashboard() {
+    content.innerHTML = '';
+    content.appendChild(el('div', { class: 'muted' }, 'Loading...'));
+    try {
+      const d = await api('/api/admin-booking?action=dashboard');
+      content.innerHTML = '';
+
+      // Stat cards
+      const cards = el('div', { class: 'cards' });
+      const card = (label, value, sub) => el('div', { class: 'card' },
+        el('div', { class: 'label' }, label),
+        el('div', { class: 'value' }, String(value)),
+        sub ? el('div', { class: 'sub muted' }, sub) : null);
+      cards.appendChild(card('Total Tenants', d.total_tenants, `${d.new_tenants_30d} new in 30d`));
+      cards.appendChild(card('Total Bookings', d.total_bookings, `${d.bookings_7d} in last 7d`));
+      cards.appendChild(card('Bookings Today', d.bookings_today, new Date().toLocaleDateString()));
+      content.appendChild(cards);
+
+      // Recent signups
+      const signupPanel = el('div', { class: 'panel' });
+      signupPanel.appendChild(el('h2', {}, 'Recent Signups'));
+      if (!d.recent_tenants.length) {
+        signupPanel.appendChild(el('div', { class: 'muted' }, 'No tenants yet.'));
+      } else {
+        const table = el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Business'),
+            el('th', {}, 'Slug'),
+            el('th', {}, 'Plan'),
+            el('th', {}, 'Signed Up'),
+          )),
+          el('tbody', {}, ...d.recent_tenants.map(t =>
+            el('tr', { style: 'cursor:pointer', onclick: () => { detailSlug = t.slug; subTab = 'detail'; renderContent(); } },
+              el('td', {},
+                el('span', { style: `display:inline-block;width:10px;height:10px;border-radius:50%;background:${t.brand_color || '#c8a96e'};margin-right:8px;vertical-align:middle` }),
+                el('strong', {}, t.business_name)),
+              el('td', {}, el('code', {}, t.slug)),
+              el('td', {}, el('span', { class: 'badge' + (t.plan === 'free' ? '' : ' green') }, t.plan || 'free')),
+              el('td', { class: 'muted' }, new Date(t.created_at).toLocaleDateString()),
+            )
+          ))
+        );
+        signupPanel.appendChild(table);
+      }
+      content.appendChild(signupPanel);
+
+      // Recent bookings
+      const bookPanel = el('div', { class: 'panel' });
+      bookPanel.appendChild(el('h2', {}, 'Recent Bookings'));
+      if (!d.recent_bookings.length) {
+        bookPanel.appendChild(el('div', { class: 'muted' }, 'No bookings yet.'));
+      } else {
+        const table = el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Client'),
+            el('th', {}, 'Tenant'),
+            el('th', {}, 'Service'),
+            el('th', {}, 'Date / Time'),
+            el('th', {}, 'Status'),
+          )),
+          el('tbody', {}, ...d.recent_bookings.map(b =>
+            el('tr', {},
+              el('td', {}, el('strong', {}, b.client_name || '—')),
+              el('td', {}, el('code', {}, b.tenant_slug)),
+              el('td', {}, b.service || '—'),
+              el('td', { class: 'mono' }, `${b.booking_date || '—'} ${b.booking_time || ''}`),
+              el('td', {}, el('span', { class: 'badge' + (b.status === 'confirmed' ? ' green' : b.status === 'cancelled' ? ' red' : '') }, b.status || '—')),
+            )
+          ))
+        );
+        bookPanel.appendChild(table);
+      }
+      content.appendChild(bookPanel);
+    } catch (e) {
+      content.innerHTML = '';
+      content.appendChild(el('div', { class: 'err' }, e.message));
+    }
+  }
+
+  // ----- All Tenants -----
+  async function renderTenants() {
+    content.innerHTML = '';
+    content.appendChild(el('div', { class: 'muted' }, 'Loading...'));
+    try {
+      const d = await api('/api/admin-booking?action=tenants');
+      content.innerHTML = '';
+
+      const panel = el('div', { class: 'panel' });
+      panel.appendChild(el('h2', {}, `All Tenants (${d.tenants.length})`));
+
+      if (!d.tenants.length) {
+        panel.appendChild(el('div', { class: 'muted' }, 'No tenants.'));
+      } else {
+        const table = el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Business'),
+            el('th', {}, 'Slug'),
+            el('th', {}, 'Owner'),
+            el('th', {}, 'Services'),
+            el('th', {}, 'Bookings'),
+            el('th', {}, 'Plan'),
+            el('th', {}, 'Payment'),
+            el('th', {}, 'Created'),
+            el('th', {}, ''),
+          )),
+          el('tbody', {}, ...d.tenants.map(t =>
+            el('tr', {},
+              el('td', {},
+                el('span', { style: `display:inline-block;width:10px;height:10px;border-radius:50%;background:${t.brand_color || '#c8a96e'};margin-right:8px;vertical-align:middle` }),
+                el('strong', {}, t.business_name)),
+              el('td', {}, el('a', { href: `https://book.goelev8.ai/${t.slug}`, target: '_blank', class: 'link' }, t.slug)),
+              el('td', { class: 'muted' }, t.owner_email || '—'),
+              el('td', {}, String(t.service_count)),
+              el('td', {}, el('strong', {}, String(t.booking_count))),
+              el('td', {}, el('span', { class: 'badge' + (t.plan === 'free' ? '' : ' green') }, t.plan || 'free')),
+              el('td', { class: 'muted' }, t.payment_preference || '—'),
+              el('td', { class: 'muted' }, new Date(t.created_at).toLocaleDateString()),
+              el('td', {},
+                el('button', { class: 'btn sm ghost', onclick: () => { detailSlug = t.slug; subTab = 'detail'; renderContent(); } }, 'View'),
+              ),
+            )
+          ))
+        );
+        panel.appendChild(table);
+      }
+      content.appendChild(panel);
+    } catch (e) {
+      content.innerHTML = '';
+      content.appendChild(el('div', { class: 'err' }, e.message));
+    }
+  }
+
+  // ----- All Bookings -----
+  async function renderBookings() {
+    content.innerHTML = '';
+    content.appendChild(el('div', { class: 'muted' }, 'Loading...'));
+    try {
+      const d = await api('/api/admin-booking?action=bookings');
+      content.innerHTML = '';
+
+      const panel = el('div', { class: 'panel' });
+      panel.appendChild(el('h2', {}, `All Bookings (${d.bookings.length})`));
+
+      if (!d.bookings.length) {
+        panel.appendChild(el('div', { class: 'muted' }, 'No bookings yet.'));
+      } else {
+        const table = el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Client Name'),
+            el('th', {}, 'Phone'),
+            el('th', {}, 'Email'),
+            el('th', {}, 'Tenant'),
+            el('th', {}, 'Service'),
+            el('th', {}, 'Date'),
+            el('th', {}, 'Time'),
+            el('th', {}, 'Status'),
+            el('th', {}, 'Booked At'),
+          )),
+          el('tbody', {}, ...d.bookings.map(b =>
+            el('tr', {},
+              el('td', {}, el('strong', {}, b.client_name || '—')),
+              el('td', { class: 'mono' }, b.client_phone || '—'),
+              el('td', { class: 'muted' }, b.client_email || '—'),
+              el('td', {}, el('code', {}, b.tenant_slug)),
+              el('td', {}, b.service || '—'),
+              el('td', { class: 'mono' }, b.booking_date || '—'),
+              el('td', { class: 'mono' }, b.booking_time || '—'),
+              el('td', {}, el('span', { class: 'badge' + (b.status === 'confirmed' ? ' green' : b.status === 'cancelled' ? ' red' : '') }, b.status || '—')),
+              el('td', { class: 'muted' }, new Date(b.created_at).toLocaleString()),
+            )
+          ))
+        );
+        panel.appendChild(table);
+      }
+      content.appendChild(panel);
+    } catch (e) {
+      content.innerHTML = '';
+      content.appendChild(el('div', { class: 'err' }, e.message));
+    }
+  }
+
+  // ----- Tenant Detail -----
+  async function renderDetail() {
+    if (!detailSlug) { subTab = 'dashboard'; renderContent(); return; }
+    content.innerHTML = '';
+    content.appendChild(el('div', { class: 'muted' }, 'Loading...'));
+    try {
+      const d = await api(`/api/admin-booking?action=tenant-detail&slug=${encodeURIComponent(detailSlug)}`);
+      content.innerHTML = '';
+      const t = d.tenant;
+
+      // Tenant info panel
+      const infoPanel = el('div', { class: 'panel' });
+      infoPanel.appendChild(el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:16px' },
+        el('h2', { style: 'margin:0' }, t.business_name),
+        el('div', { style: 'display:flex;gap:8px;align-items:center' },
+          el('a', { href: `https://book.goelev8.ai/${t.slug}`, target: '_blank', class: 'btn sm' }, 'View Booking Page'),
+          el('button', { class: 'btn sm danger', onclick: async () => {
+            if (!confirm(`Delete tenant "${t.business_name}" and all their bookings? This cannot be undone.`)) return;
+            try {
+              await api('/api/admin-booking?action=delete-tenant', { method: 'POST', body: { slug: t.slug } });
+              toast(`Deleted ${t.business_name}`);
+              detailSlug = null; subTab = 'tenants'; renderContent();
+            } catch (e) { toast(e.message, true); }
+          }}, 'Delete'),
+        )
+      ));
+
+      const grid = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:14px' });
+      const row = (label, value) => el('div', {},
+        el('div', { class: 'muted', style: 'font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px' }, label),
+        el('div', {}, value || '—'));
+
+      grid.appendChild(row('Slug', el('code', {}, t.slug)));
+      grid.appendChild(row('Email', t.owner_email));
+      grid.appendChild(row('Phone', t.owner_phone || '—'));
+      grid.appendChild(row('Plan', t.plan || 'free'));
+      grid.appendChild(row('Brand Color', el('span', {},
+        el('span', { style: `display:inline-block;width:12px;height:12px;border-radius:50%;background:${t.brand_color};margin-right:6px;vertical-align:middle` }),
+        t.brand_color)));
+      grid.appendChild(row('Staff', t.staff_count || '1'));
+      grid.appendChild(row('Payments', t.payment_preference || 'none'));
+      grid.appendChild(row('Stripe ID', t.stripe_customer_id || '—'));
+
+      const avail = t.availability || {};
+      grid.appendChild(row('Availability', `${(avail.days || []).join(', ')} · ${avail.open || '?'} – ${avail.close || '?'}`));
+      grid.appendChild(row('Created', new Date(t.created_at).toLocaleString()));
+      infoPanel.appendChild(grid);
+
+      // Services
+      const services = Array.isArray(t.services) ? t.services : [];
+      if (services.length) {
+        infoPanel.appendChild(el('h3', { style: 'margin-top:20px;margin-bottom:8px' }, 'Services'));
+        const svcTable = el('table', {},
+          el('thead', {}, el('tr', {}, el('th', {}, 'Name'), el('th', {}, 'Duration'), el('th', {}, 'Price'))),
+          el('tbody', {}, ...services.map(s => el('tr', {},
+            el('td', {}, s.name),
+            el('td', {}, `${s.duration} min`),
+            el('td', {}, `$${s.price}`),
+          )))
+        );
+        infoPanel.appendChild(svcTable);
+      }
+      content.appendChild(infoPanel);
+
+      // Bookings panel
+      const bookPanel = el('div', { class: 'panel' });
+      bookPanel.appendChild(el('h2', {}, `Bookings (${d.bookings.length})`));
+      if (!d.bookings.length) {
+        bookPanel.appendChild(el('div', { class: 'muted' }, 'No bookings for this tenant.'));
+      } else {
+        const table = el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Client'),
+            el('th', {}, 'Phone'),
+            el('th', {}, 'Service'),
+            el('th', {}, 'Date'),
+            el('th', {}, 'Time'),
+            el('th', {}, 'Status'),
+            el('th', {}, 'Booked At'),
+          )),
+          el('tbody', {}, ...d.bookings.map(b =>
+            el('tr', {},
+              el('td', {}, el('strong', {}, b.client_name || '—')),
+              el('td', { class: 'mono' }, b.client_phone || '—'),
+              el('td', {}, b.service || '—'),
+              el('td', { class: 'mono' }, b.booking_date || '—'),
+              el('td', { class: 'mono' }, b.booking_time || '—'),
+              el('td', {}, el('span', { class: 'badge' + (b.status === 'confirmed' ? ' green' : b.status === 'cancelled' ? ' red' : '') }, b.status || '—')),
+              el('td', { class: 'muted' }, new Date(b.created_at).toLocaleString()),
+            )
+          ))
+        );
+        bookPanel.appendChild(table);
+      }
+      content.appendChild(bookPanel);
+    } catch (e) {
+      content.innerHTML = '';
+      content.appendChild(el('div', { class: 'err' }, e.message));
+    }
+  }
+
+  // ----- Render router -----
+  async function renderContent() {
+    renderSubNav();
+    switch (subTab) {
+      case 'dashboard': await renderDashboard(); break;
+      case 'tenants':   await renderTenants(); break;
+      case 'bookings':  await renderBookings(); break;
+      case 'detail':    await renderDetail(); break;
+    }
+  }
+
+  await renderContent();
+  return wrap;
+}
+
+// ============================================================
 // ANALYTICS (admin-only — ab@goelev8.ai)
 // ============================================================
 async function viewAnalytics() {
@@ -2508,6 +2842,7 @@ async function render() {
       case 'blasts':    view = await viewBlasts(); break;
       case 'nudges':    view = await viewNudges(); break;
       case 'settings':  view = await viewSettings(); break;
+      case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
       case 'analytics': view = state.user?.email === 'ab@goelev8.ai' ? await viewAnalytics() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
