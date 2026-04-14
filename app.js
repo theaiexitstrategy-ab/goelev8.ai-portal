@@ -3239,7 +3239,7 @@ async function viewAnalytics() {
   }
   restOfPage.appendChild(srcPanel);
 
-  // Top pages
+  // Top pages (show first 15 in main table)
   const pagePanel = el('div', { class: 'panel' });
   pagePanel.appendChild(el('h2', {}, '📄 Top Pages'));
   if ((ga.top_pages || []).length) {
@@ -3247,7 +3247,7 @@ async function viewAnalytics() {
       el('thead', {}, el('tr', {},
         el('th', {}, 'Page'), el('th', {}, 'Views'), el('th', {}, 'Sessions')
       )),
-      el('tbody', {}, ...ga.top_pages.map(p => el('tr', {},
+      el('tbody', {}, ...ga.top_pages.slice(0, 15).map(p => el('tr', {},
         el('td', {}, el('code', {}, p.path)),
         el('td', {}, String(p.views)),
         el('td', {}, String(p.sessions))

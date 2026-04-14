@@ -153,13 +153,13 @@ export default async function handler(req, res) {
         orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
         limit: 10
       }),
-      // 4. Top pages
+      // 4. Top pages (raised limit so funnel pages like /r2s appear even if lower traffic)
       runReport(propertyId, {
         dateRanges: [{ startDate: '30daysAgo', endDate: 'today' }],
         dimensions: [{ name: 'pagePath' }],
         metrics: [{ name: 'screenPageViews' }, { name: 'sessions' }],
         orderBys: [{ metric: { metricName: 'screenPageViews' }, desc: true }],
-        limit: 10
+        limit: 50
       }),
       // 5. Custom event totals
       runReport(propertyId, {
