@@ -131,14 +131,54 @@ async function handleVapiCalls(req, res, ctx) {
   return res.status(200).json({ vapi_calls: data || [] });
 }
 
+async function handleContactsImport(req, res, ctx) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const { sb, clientId } = ctx;
+  const body = await readJson(req);
+  const { contacts } = body;
+  if (!Array.isArray(contacts) || !contacts.length)
+    return res.status(400).json({ error: 'contacts_array_required' });
+  if (contacts.length > 5000)
+    return res.status(400).json({ error: 'max_5000_contacts_per_import' });
+
+  let created = 0, updated = 0, errors = [];
+  // Process in batches of 200 for upsert
+  const BATCH = 200;
+  for (let i = 0; i < contacts.length; i += BATCH) {
+    const batch = contacts.slice(i, i + BATCH).map(c => ({
+      client_id: clientId,
+      name: [c.first_name, c.last_name].filter(Boolean).join(' ').trim() || 'Unknown',
+      phone: (c.phone || '').replace(/[^\d+]/g, ''),
+      email: c.email || null,
+      tags: c.tag ? [c.tag] : [],
+      notes: c.notes || null,
+      source: 'import'
+    })).filter(c => c.phone);
+
+    if (!batch.length) continue;
+
+    const { data, error } = await sb.from('contacts')
+      .upsert(batch, { onConflict: 'client_id,phone', ignoreDuplicates: false })
+      .select('id');
+    if (error) {
+      errors.push({ batch: i, message: error.message });
+    } else {
+      created += (data || []).length;
+    }
+  }
+
+  return res.status(200).json({ created, updated, errors, total: contacts.length });
+}
+
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST', 'PATCH', 'DELETE'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
   const url = new URL(req.url, 'http://x');
   const action = url.searchParams.get('action');
-  if (action === 'contacts')   return handleContacts(req, res, ctx);
-  if (action === 'bookings')   return handleBookings(req, res, ctx);
-  if (action === 'leads')      return handleLeads(req, res, ctx);
-  if (action === 'vapi_calls') return handleVapiCalls(req, res, ctx);
+  if (action === 'contacts')        return handleContacts(req, res, ctx);
+  if (action === 'contacts-import') return handleContactsImport(req, res, ctx);
+  if (action === 'bookings')        return handleBookings(req, res, ctx);
+  if (action === 'leads')           return handleLeads(req, res, ctx);
+  if (action === 'vapi_calls')      return handleVapiCalls(req, res, ctx);
   return res.status(400).json({ error: 'unknown_action' });
 }

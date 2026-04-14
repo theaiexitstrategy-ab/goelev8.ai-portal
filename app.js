@@ -2822,7 +2822,7 @@ async function render() {
   }
   // Admins land on the admin view by default — but allow switching to
   // other admin-accessible tabs (activity, analytics).
-  const ADMIN_VIEWS = ['admin', 'activity', 'analytics'];
+  const ADMIN_VIEWS = ['admin', 'activity', 'analytics', 'booking_admin'];
   if (state.isAdmin && !state.impersonating && !ADMIN_VIEWS.includes(state.view)) {
     state.view = 'admin';
   }
