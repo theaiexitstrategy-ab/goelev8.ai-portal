@@ -975,6 +975,17 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Integration status rows
+   ============================================================ */
+.integration-row {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 12px 0; border-bottom: 1px solid var(--border, #2a3a5c);
+}
+.integration-row:last-child { border-bottom: none; }
+.integration-label { font-weight: 600; font-size: 0.9rem; min-width: 160px; }
+.integration-status { font-size: 0.85rem; text-align: right; }
+
+/* ============================================================
    Badges & toasts
    ============================================================ */
 .badge {

@@ -2237,6 +2237,72 @@ async function viewNudges() {
 // ============================================================
 // SETTINGS
 // ============================================================
+async function loadIntegrationStatus(container) {
+  const rows = el('div', {});
+  container.appendChild(rows);
+
+  // GA4 status
+  const ga4Row = el('div', { class: 'integration-row' });
+  ga4Row.appendChild(el('div', { class: 'integration-label' }, 'Google Analytics (GA4)'));
+  const ga4Status = el('div', { class: 'integration-status' }, 'Checking...');
+  ga4Row.appendChild(ga4Status);
+  rows.appendChild(ga4Row);
+
+  // Stripe Connect status
+  const stripeRow = el('div', { class: 'integration-row' });
+  stripeRow.appendChild(el('div', { class: 'integration-label' }, 'Stripe Payments'));
+  const stripeStatus = el('div', { class: 'integration-status' }, 'Checking...');
+  stripeRow.appendChild(stripeStatus);
+  rows.appendChild(stripeRow);
+
+  // Twilio status
+  const twilioRow = el('div', { class: 'integration-row' });
+  twilioRow.appendChild(el('div', { class: 'integration-label' }, 'Twilio SMS'));
+  const twilioStatus = el('div', { class: 'integration-status' });
+  twilioStatus.appendChild(state.client?.twilio_phone_number
+    ? el('span', { class: 'badge green' }, state.client.twilio_phone_number)
+    : el('span', { class: 'badge red' }, 'Not configured'));
+  twilioRow.appendChild(twilioStatus);
+  rows.appendChild(twilioRow);
+
+  // Fetch GA4
+  try {
+    const ga = await api('/api/portal/ga4');
+    ga4Status.innerHTML = '';
+    if (ga.configured === false) {
+      ga4Status.appendChild(el('span', { class: 'badge red' }, 'Not configured'));
+      ga4Status.appendChild(el('p', { class: 'muted', style: 'font-size:0.75rem;margin-top:4px' },
+        'Set ga4_property_id in Admin panel or contact GoElev8 support.'));
+    } else {
+      ga4Status.appendChild(el('span', { class: 'badge green' }, 'Connected'));
+      ga4Status.appendChild(el('span', { class: 'muted', style: 'margin-left:8px;font-size:0.8rem' },
+        `Property ${ga.property_id} · ${ga.property_label}`));
+    }
+  } catch { ga4Status.textContent = 'Error checking GA4'; }
+
+  // Fetch Stripe Connect
+  try {
+    const sc = await api('/api/portal/connect?action=status');
+    stripeStatus.innerHTML = '';
+    if (!sc.connected) {
+      stripeStatus.appendChild(el('span', { class: 'badge red' }, 'Not connected'));
+      stripeStatus.appendChild(el('button', { class: 'btn sm', style: 'margin-left:8px', onclick: async () => {
+        try {
+          const r = await api('/api/portal/connect?action=start', { method: 'POST' });
+          window.location.href = r.url;
+        } catch (e) { toast('Stripe setup failed: ' + e.message, true); }
+      } }, 'Connect Stripe'));
+    } else {
+      const statusBadge = sc.charges_enabled
+        ? el('span', { class: 'badge green' }, 'Active')
+        : el('span', { class: 'badge warn' }, 'Onboarding incomplete');
+      stripeStatus.appendChild(statusBadge);
+      stripeStatus.appendChild(el('span', { class: 'muted', style: 'margin-left:8px;font-size:0.8rem' },
+        `Account ${sc.account_id}` + (sc.charges_enabled ? ' · Charges enabled' : '')));
+    }
+  } catch { stripeStatus.textContent = 'Error checking Stripe'; }
+}
+
 async function viewSettings() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Settings')));
@@ -2342,6 +2408,12 @@ async function viewSettings() {
   panel.appendChild(el('p', {}, `Email: ${state.user?.email || ''}`));
   panel.appendChild(el('p', {}, `Client: ${state.client?.name || ''}`));
   wrap.appendChild(panel);
+
+  // ----- Integrations status -----
+  const intPanel = el('div', { class: 'panel' });
+  intPanel.appendChild(el('h2', {}, 'Integrations'));
+  wrap.appendChild(intPanel);
+  loadIntegrationStatus(intPanel);
 
   // ----- Welcome SMS -----
   const wsms = el('div', { class: 'panel' });
