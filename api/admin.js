@@ -304,8 +304,12 @@ async function activityFeed(req, res) {
 }
 
 async function ensureDefaultClients(req, res) {
+  // DLP was a duplicate/acronym for Daniels Legacy Planning. Remove any row
+  // matching the stale slug OR literal name so it never re-appears in lists.
+  await supabaseAdmin.from('clients').delete().eq('slug', 'dlp').then(() => {}, () => {});
+  await supabaseAdmin.from('clients').delete().ilike('name', 'dlp').then(() => {}, () => {});
+
   const required = [
-    { slug: 'dlp',           name: 'DLP',               business_name: 'DLP' },
     { slug: 'goelev8',       name: 'GoElev8.ai',        business_name: 'GoElev8.ai' },
     { slug: 'flex-facility', name: 'The Flex Facility', business_name: 'The Flex Facility LLC' },
     { slug: 'islay-studios', name: 'iSlay Studios',     business_name: 'iSlay Studios LLC' }

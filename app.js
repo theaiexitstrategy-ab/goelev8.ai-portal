@@ -3169,34 +3169,9 @@ async function viewAdmin() {
     el('h1', {}, 'Master Admin'),
     el('div', { class: 'muted' }, 'Cross-tenant operations · only visible to platform admins')));
 
-  // ----- Client management (richer cards with quick actions) -----
-  const clientMgmtPanel = el('div', { class: 'panel client-mgmt-panel' });
-  clientMgmtPanel.appendChild(el('h2', {}, 'Client Accounts'));
-  clientMgmtPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
-    'Manage every tenant portal from one place. Click Impersonate to enter a client\'s view.'));
-  const clientCardGrid = el('div', { class: 'client-card-grid' },
-    el('div', { class: 'muted' }, 'Loading clients…'));
-  clientMgmtPanel.appendChild(clientCardGrid);
-  wrap.appendChild(clientMgmtPanel);
-
-  // Load cards in the background
-  (async () => {
-    try {
-      await api('/api/admin?action=ensure-default-clients', { method: 'POST' }).catch(() => {});
-      const r = await api('/api/admin?action=list-clients');
-      const clients = (r.clients || []).slice().sort((a, b) =>
-        (a.business_name || a.name || '').localeCompare(b.business_name || b.name || ''));
-      clientCardGrid.innerHTML = '';
-      if (!clients.length) {
-        clientCardGrid.appendChild(el('div', { class: 'muted' }, 'No clients in database.'));
-        return;
-      }
-      clients.forEach(c => clientCardGrid.appendChild(renderClientCard(c)));
-    } catch (e) {
-      clientCardGrid.innerHTML = '';
-      clientCardGrid.appendChild(el('div', { class: 'err' }, 'Failed to load clients: ' + e.message));
-    }
-  })();
+  // Seed defaults once; also deletes any stale DLP row so it doesn't keep
+  // showing up as a duplicate/acronym for Daniels Legacy Planning.
+  await api('/api/admin?action=ensure-default-clients', { method: 'POST' }).catch(() => {});
 
   // ----- Analytics cards -----
   const cards = el('div', { class: 'cards' });
@@ -3215,18 +3190,26 @@ async function viewAdmin() {
     cards.appendChild(card('Purchases this month', a.purchases_this_month, 'credit pack buys'));
   } catch (e) { cards.innerHTML = ''; cards.appendChild(el('div', { class: 'err' }, e.message)); }
 
-  // ----- Clients table -----
-  const tablePanel = el('div', { class: 'panel' });
-  tablePanel.appendChild(el('h2', {}, 'All clients'));
+  // ----- Client Accounts (merged: full management table, no slug, no DLP,
+  //       horizontal scroll so every control is reachable on any screen) -----
+  const tablePanel = el('div', { class: 'panel client-mgmt-panel' });
+  tablePanel.appendChild(el('h2', {}, 'Client Accounts'));
+  tablePanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
+    'Manage every tenant portal. Click Impersonate to enter a client\'s view.'));
+  const tableScroller = el('div', { class: 'admin-table-scroller' });
   const tableHost = el('div', {}, el('div', { class: 'muted' }, 'Loading…'));
-  tablePanel.appendChild(tableHost);
+  tableScroller.appendChild(tableHost);
+  tablePanel.appendChild(tableScroller);
   wrap.appendChild(tablePanel);
 
   let allClients = [];
   const onClientsLoaded = [];
   const refresh = async () => {
     const r = await api('/api/admin?action=list-clients');
-    allClients = r.clients || [];
+    // DLP is a duplicate/acronym for Daniels Legacy Planning — never show it.
+    allClients = (r.clients || []).filter(c =>
+      c.slug !== 'dlp' && (c.name || '').toLowerCase() !== 'dlp'
+    );
     for (const fn of onClientsLoaded) { try { fn(allClients); } catch {} }
     tableHost.innerHTML = '';
     if (!allClients.length) {
@@ -3236,14 +3219,23 @@ async function viewAdmin() {
     const table = el('table', { class: 'admin-table' },
       el('thead', {}, el('tr', {},
         el('th', {}, 'Client'),
-        el('th', {}, 'Slug'),
         el('th', {}, 'Twilio'),
         el('th', {}, 'Credits'),
         el('th', {}, 'Sent 30d'),
+        el('th', {}, 'Last Activity'),
         el('th', {}, 'Status'),
         el('th', {}, 'Actions')
       )),
       el('tbody', {}, ...allClients.map((c) => {
+        const fmtAgo = (ts) => {
+          if (!ts) return '—';
+          const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+          if (diff < 60)    return diff + 's ago';
+          if (diff < 3600)  return Math.floor(diff / 60) + 'm ago';
+          if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+          if (diff < 30 * 86400) return Math.floor(diff / 86400) + 'd ago';
+          return new Date(ts).toLocaleDateString();
+        };
         const amountInput = el('input', { type: 'number', min: '1', value: '20', style: 'width:70px' });
         const noteInput   = el('input', { type: 'text', placeholder: 'note (optional)', style: 'width:140px' });
         const ga4Input    = el('input', { type: 'text', placeholder: 'GA4 property ID', value: c.ga4_property_id || '', style: 'width:140px' });
@@ -3269,18 +3261,21 @@ async function viewAdmin() {
           } catch (e) { toast(e.message, true); }
         };
         return el('tr', {},
-          el('td', {}, el('strong', {}, c.name || '—')),
-          el('td', {}, el('code', {}, c.slug)),
+          el('td', {}, el('strong', {}, c.business_name || c.name || '—')),
           el('td', { class: 'muted mono' }, c.twilio_phone_number || '—'),
           el('td', {}, String(c.credit_balance ?? 0)),
           el('td', { class: 'muted' }, String(c.sent_30d || 0)),
+          el('td', { class: 'muted' }, fmtAgo(c.last_activity_at)),
           el('td', {}, c.billing_paused
               ? el('span', { class: 'pill warn' }, 'PAUSED')
               : el('span', { class: 'pill ok' }, 'active')),
           el('td', { class: 'actions' },
+            el('button', { class: 'btn sm primary', onclick: () => {
+              setImpersonation(c.id); state.view = 'overview'; render();
+            }}, 'Impersonate'),
             el('button', { class: 'btn sm', onclick: () => {
-              setImpersonation(c.id); render();
-            }}, 'View as'),
+              setImpersonation(c.id); state.view = 'analytics'; render();
+            }}, 'View Analytics'),
             amountInput, noteInput,
             el('button', { class: 'btn sm btn-success', onclick: () => adjust(+1) }, '+ Add'),
             el('button', { class: 'btn sm btn-warn',    onclick: () => adjust(-1) }, '− Remove'),

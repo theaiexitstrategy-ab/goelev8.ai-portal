@@ -1193,6 +1193,24 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .client-card-actions .btn { flex: 1; min-width: fit-content; }
 
+/* Horizontal scroll wrapper so the full admin table (including the
+   actions column with GA4/Stripe/credit inputs) stays reachable. */
+.admin-table-scroller {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -4px; /* bleed so scrollbar doesn't hug the panel edge */
+}
+.admin-table-scroller .admin-table {
+  min-width: 960px; /* forces side-scroll until every column fits */
+}
+.admin-table-scroller::-webkit-scrollbar { height: 8px; }
+.admin-table-scroller::-webkit-scrollbar-thumb {
+  background: var(--border, #2a3a5c); border-radius: 4px;
+}
+.admin-table-scroller::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-1, #00CFFF);
+}
+
 /* ============================================================
    Master Admin — "Take Over a Client Portal" tabs (legacy)
    ============================================================ */
