@@ -1,7 +1,7 @@
 import { stripe } from '../../lib/stripe.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getPack } from '../../lib/credits.js';
-import { sendPushToClient } from '../../lib/push.js';
+import { sendPushToClient, sendPushToAdmins } from '../../lib/push.js';
 
 // Disable Vercel body parsing — Stripe needs the raw body for signature verification
 export const config = { api: { bodyParser: false } };
@@ -114,13 +114,10 @@ export default async function handler(req, res) {
             }).catch(() => {});
           }
 
-          // Push notification to client
-          await sendPushToClient(
-            resolvedClientId,
-            'New Sale!',
-            `${productName} — $${amount.toFixed(2)}`,
-            '/sales'
-          );
+          // Push notification to client + admin
+          const saleDesc = `${productName} — $${amount.toFixed(2)}`;
+          await sendPushToClient(resolvedClientId, 'New Sale!', saleDesc, '/sales');
+          sendPushToAdmins('💰 Sale — ' + (productName || 'Unknown'), saleDesc, '/sales').catch(() => {});
         }
         break;
       }

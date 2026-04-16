@@ -33,7 +33,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { requireUser, methodGuard, readJson } from '../lib/auth.js';
 import { sendWelcomeForEvent } from '../lib/welcome.js';
 import { scheduleNudgeSequence } from '../lib/nudge-sms.js';
-import { sendPushToClient } from '../lib/push.js';
+import { sendPushToClient, sendPushToAdmins } from '../lib/push.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -152,11 +152,9 @@ async function handleIngest(req, res) {
       catch (e) { welcome = { sent: false, reason: 'exception: ' + (e.message || e) }; }
     }
     // Push notification for new event
-    sendPushToClient(clientId,
-      '🔔 New ' + (row.event_type || 'Event'),
-      row.contact_name || row.contact_email || row.contact_phone || row.title || 'New interaction',
-      '/leads'
-    ).catch(() => {});
+    const eventDesc = row.contact_name || row.contact_email || row.contact_phone || row.title || 'New interaction';
+    sendPushToClient(clientId, '🔔 New ' + (row.event_type || 'Event'), eventDesc, '/leads').catch(() => {});
+    sendPushToAdmins('🔔 ' + (row.event_type || 'Event') + ' — ' + (client?.name || row.source), eventDesc, '/leads').catch(() => {});
   }
 
   return res.status(200).json({ ok: true, id: data?.id || null, is_new: isNew, welcome });
@@ -365,11 +363,12 @@ async function handleVapi(req, res) {
     }
 
     // Push notification for ended call
-    sendPushToClient(clientId,
-      '📞 New Call Completed',
-      `${name || phone || 'Unknown caller'} — ${msg.summary || structured.intent || 'Call ended'}`,
-      '/calls'
-    ).catch(() => {});
+    const callDesc = `${name || phone || 'Unknown caller'} — ${msg.summary || structured.intent || 'Call ended'}`;
+    sendPushToClient(clientId, '📞 New Call Completed', callDesc, '/calls').catch(() => {});
+    // Admin: resolve client name for context
+    supabaseAdmin.from('clients').select('name').eq('id', clientId).maybeSingle()
+      .then(({ data: c }) => sendPushToAdmins('📞 Call — ' + (c?.name || 'Unknown'), callDesc, '/calls'))
+      .catch(() => {});
 
     // If the assistant captured a booking, write it.
     const bookingStart = structured.booking_time || structured.appointment_time ||
@@ -449,12 +448,10 @@ async function handleLead(req, res) {
 
   if (error) return res.status(500).json({ error: error.message });
 
-  // Push notification to portal users
-  sendPushToClient(client.id,
-    '🔥 New Lead Captured',
-    `${name || email || phone || 'Someone'} just submitted a form${body.funnel ? ' on ' + body.funnel : ''}`,
-    '/leads'
-  ).catch(() => {});
+  // Push notification to portal users + admin
+  const leadDesc = `${name || email || phone || 'Someone'} just submitted a form${body.funnel ? ' on ' + body.funnel : ''}`;
+  sendPushToClient(client.id, '🔥 New Lead Captured', leadDesc, '/leads').catch(() => {});
+  sendPushToAdmins('🔥 New Lead — ' + (client.name || slug), leadDesc, '/leads').catch(() => {});
 
   // Fire the 5-message nudge drip sequence. Message #1 sends
   // immediately (delay_minutes=0) and replaces the legacy welcome SMS

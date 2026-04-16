@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../lib/supabase.js';
 import { estimateSegments } from '../lib/twilio.js';
-import { sendPushToClient } from '../lib/push.js';
+import { sendPushToClient, sendPushToAdmins } from '../lib/push.js';
 
 // Vapi handles SMS conversations on these numbers. After we log the
 // inbound message we forward the original Twilio payload to Vapi and
@@ -143,11 +143,9 @@ export default async function handler(req, res) {
     });
 
     // Push notification for missed call
-    sendPushToClient(client.id,
-      '📵 Missed Call',
-      `Missed call from ${callerPhone} — auto text-back sent`,
-      '/messages'
-    ).catch(() => {});
+    const missedDesc = `Missed call from ${callerPhone} — auto text-back sent`;
+    sendPushToClient(client.id, '📵 Missed Call', missedDesc, '/messages').catch(() => {});
+    sendPushToAdmins('📵 Missed Call — ' + (client.name || calledNumber), missedDesc, '/messages').catch(() => {});
 
     return res.status(200).end();
   }
@@ -160,7 +158,7 @@ export default async function handler(req, res) {
     const sid = params.MessageSid;
 
     const { data: client } = await supabaseAdmin
-      .from('clients').select('id').eq('twilio_phone_number', to).single();
+      .from('clients').select('id, name').eq('twilio_phone_number', to).single();
     if (!client) {
       res.setHeader('Content-Type', 'text/xml');
       return res.status(200).send('<Response></Response>');
@@ -213,11 +211,9 @@ export default async function handler(req, res) {
     // Push notification for inbound SMS (skip TCPA keyword replies)
     if (!reply) {
       const senderName = contact?.name && contact.name !== from ? contact.name : from;
-      sendPushToClient(client.id,
-        '💬 New SMS Reply',
-        `${senderName}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`,
-        '/messages'
-      ).catch(() => {});
+      const smsDesc = `${senderName}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`;
+      sendPushToClient(client.id, '💬 New SMS Reply', smsDesc, '/messages').catch(() => {});
+      sendPushToAdmins('💬 SMS — ' + (client.name || to), smsDesc, '/messages').catch(() => {});
     }
 
     // STOP/START/HELP are TCPA-required responses — return them directly

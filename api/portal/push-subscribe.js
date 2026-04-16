@@ -1,12 +1,12 @@
 // POST /api/portal/push-subscribe — save a browser push subscription
 // DELETE /api/portal/push-subscribe — remove a subscription (on unsubscribe)
+// Admins (no client context) can subscribe with client_id = null.
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['POST', 'DELETE'])) return;
-  const ctx = await requireUser(req, res); if (!ctx) return;
-  const { clientId } = ctx;
+  const ctx = await requireUser(req, res, { requireClient: false }); if (!ctx) return;
 
   if (req.method === 'POST') {
     const body = await readJson(req);
@@ -18,7 +18,7 @@ export default async function handler(req, res) {
     const { error } = await supabaseAdmin
       .from('push_subscriptions')
       .upsert({
-        client_id: clientId,
+        client_id: ctx.clientId || null,
         user_id: ctx.user.id,
         endpoint,
         p256dh: keys.p256dh,
@@ -37,6 +37,6 @@ export default async function handler(req, res) {
     .from('push_subscriptions')
     .delete()
     .eq('endpoint', endpoint)
-    .eq('client_id', clientId);
+    .eq('user_id', ctx.user.id);
   return res.status(200).json({ ok: true });
 }

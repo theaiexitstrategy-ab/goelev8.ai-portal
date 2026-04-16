@@ -693,25 +693,8 @@ async function loadR2sEbookSection(container) {
     }, 'theflexfacility.com/r2s →')
   ));
 
-  // Stripe-not-connected branch: show CTA + manual entry fallback
-  if (!data.stripe_connected) {
-    const ctaCard = el('div', { class: 'r2s-cta-card' },
-      el('h3', { style: 'font-size:1rem;margin-bottom:6px' }, 'Connect Stripe to auto-import sales'),
-      el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
-        'Link The Flex Facility Stripe account so ebook sales flow into this dashboard automatically. Until then, you can log sales manually below.'),
-      el('button', { class: 'btn primary', onclick: async () => {
-        try {
-          const r = await api('/api/portal/connect?action=start', { method: 'POST' });
-          window.location.href = r.url;
-        } catch (e) { toast('Stripe setup failed: ' + e.message, true); }
-      } }, 'Connect Stripe')
-    );
-    body.appendChild(ctaCard);
-
-    // Manual entry form
-    body.appendChild(renderManualSaleForm(container));
-  } else if (!data.sales?.length) {
-    // Stripe connected but nothing matched — still expose manual entry for edge cases
+  // Manual entry fallback when no sales yet
+  if (!data.sales?.length) {
     body.appendChild(el('p', { class: 'muted', style: 'margin-top:12px;font-size:0.85rem' },
       'Stripe is connected but no sales yet match "Road To The Stage" or "r2s". New Stripe sales will appear here automatically.'));
     body.appendChild(renderManualSaleForm(container));
@@ -3265,6 +3248,37 @@ async function viewAdmin() {
   // showing up as a duplicate/acronym for Daniels Legacy Planning.
   await api('/api/admin?action=ensure-default-clients', { method: 'POST' }).catch(() => {});
 
+  // ----- Push Notifications -----
+  const pushPanel = el('div', { class: 'panel' });
+  pushPanel.appendChild(el('h2', {}, 'Push Notifications'));
+  const pushPerm = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
+  const pushLabel = pushPerm === 'granted' ? 'Enabled' :
+    pushPerm === 'denied' ? 'Blocked — unblock in browser settings' :
+    pushPerm === 'unsupported' ? 'Not supported in this browser' : 'Not set up';
+  pushPanel.appendChild(el('p', { class: 'muted', style: 'margin-bottom:8px' },
+    'Receive alerts for all client activity (leads, SMS, calls, sales). Status: ' + pushLabel));
+  if (pushPerm === 'granted') {
+    const testBtn = el('button', { class: 'btn', onclick: async () => {
+      testBtn.disabled = true; testBtn.textContent = 'Sending…';
+      try {
+        const r = await api('/api/portal/push-test', { method: 'POST' });
+        if (r.ok) toast('Test notification sent — check your browser/OS notifications');
+        else toast('Failed: ' + (r.error || JSON.stringify(r)), true);
+      } catch (e) { toast('Failed: ' + e.message, true); }
+      finally { testBtn.disabled = false; testBtn.textContent = 'Send Test Notification'; }
+    } }, 'Send Test Notification');
+    pushPanel.appendChild(testBtn);
+  } else if (pushPerm === 'default') {
+    const enableBtn = el('button', { class: 'btn primary', onclick: async () => {
+      _pushInitDone = false;
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') { await initPushNotifications(); render(); }
+      else toast('Notifications were blocked by your browser', true);
+    } }, 'Enable Push Notifications');
+    pushPanel.appendChild(enableBtn);
+  }
+  wrap.appendChild(pushPanel);
+
   // ----- Analytics cards -----
   const cards = el('div', { class: 'cards' });
   wrap.appendChild(cards);
@@ -4204,22 +4218,6 @@ async function loadR2sAnalyticsSection(container) {
         el('td', {}, total > 0 ? ((s.sessions / total) * 100).toFixed(1) + '%' : '—')
       )))
     ));
-  }
-
-  // Stripe CTA or manual entry
-  if (!salesData.stripe_connected) {
-    container.appendChild(el('div', { class: 'r2s-cta-card', style: 'margin-top:16px' },
-      el('h3', { style: 'font-size:1rem;margin-bottom:6px' }, 'Connect Stripe to auto-import sales'),
-      el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
-        'Link The Flex Facility Stripe account so ebook sales flow in automatically.'),
-      el('button', { class: 'btn primary', onclick: async () => {
-        try {
-          const r = await api('/api/portal/connect?action=start', { method: 'POST' });
-          window.location.href = r.url;
-        } catch (e) { toast('Stripe setup failed: ' + e.message, true); }
-      } }, 'Connect Stripe')
-    ));
-    container.appendChild(renderManualSaleForm(container));
   }
 
   // Recent sales
