@@ -103,7 +103,8 @@ export default async function handler(req, res) {
           { name: 'screenPageViews' },
           { name: 'totalUsers' },
           { name: 'userEngagementDuration' },
-          { name: 'sessions' }
+          { name: 'sessions' },
+          { name: 'bounceRate' }
         ],
         dimensionFilter: PATH_FILTER
       }),
@@ -152,6 +153,7 @@ export default async function handler(req, res) {
     const users = parseInt(ov[1]?.value || '0', 10);
     const engagement_seconds = parseFloat(ov[2]?.value || '0');
     const sessions = parseInt(ov[3]?.value || '0', 10);
+    const bounce_rate = parseFloat(ov[4]?.value || '0');
     const avg_time_on_page = users > 0 ? engagement_seconds / users : 0;
 
     const top_sources = (sources.rows || []).map(r => ({
@@ -184,6 +186,7 @@ export default async function handler(req, res) {
       users,
       sessions,
       avg_time_on_page,
+      bounce_rate,
       top_sources,
       conversions,
       by_day

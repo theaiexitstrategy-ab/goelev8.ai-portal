@@ -13,9 +13,16 @@
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 
+const R2S_PRODUCT_ID = 'prod_UDow85162ftBwR';
+const R2S_PRICE_ID = 'price_1TFNIZIbWb9YjkiPagEvXtJo';
 const R2S_MATCHERS = ['road to the stage', 'r2s', 'road-to-the-stage'];
 
 function isR2sSale(sale) {
+  // Match by Stripe product/price ID first (most reliable)
+  if (sale.stripe_product_id === R2S_PRODUCT_ID) return true;
+  if (sale.stripe_price_id === R2S_PRICE_ID) return true;
+  if (sale.product_id === R2S_PRODUCT_ID) return true;
+  // Fall back to string matching for manual entries / legacy rows
   const hay = [
     sale.products?.name,
     sale.source,

@@ -8,6 +8,7 @@
     { "source": "/api/webhooks/vapi", "destination": "/api/events?action=vapi" },
     { "source": "/api/webhooks/twilio/inbound", "destination": "/api/twilio?action=inbound" },
     { "source": "/api/webhooks/twilio/status",  "destination": "/api/twilio?action=status" },
+    { "source": "/api/webhooks/twilio/missed-call", "destination": "/api/twilio?action=missed_call" },
     { "source": "/api/(.*)",         "destination": "/api/$1" },
     { "source": "/islaystudios/login", "destination": "/clients/islaystudios/login.html" },
     { "source": "/islaystudios/dashboard", "destination": "/clients/islaystudios/leads.html" },

@@ -23,7 +23,7 @@ export default async function handler(req, res) {
   const action = url.searchParams.get('action');
   const { params, raw: rawBody } = await parseForm(req);
 
-  // -------- status callback --------
+  // -------- status callback (message delivery updates) --------
   if (action === 'status') {
     const sid = params.MessageSid;
     const status = params.MessageStatus;
@@ -33,6 +33,114 @@ export default async function handler(req, res) {
         .update({ status, error_code: errorCode })
         .eq('twilio_sid', sid);
     }
+    return res.status(200).end();
+  }
+
+  // -------- missed-call text-back --------
+  // Twilio fires this statusCallback when an inbound call ends.
+  // If the call was NOT answered (no-answer, busy, or failed), send an
+  // auto-text-back SMS from the GoElev8 Twilio number with the client's
+  // business name, and log the caller as a lead.
+  if (action === 'missed_call') {
+    const callStatus = (params.CallStatus || '').toLowerCase();
+    const callerPhone = params.From;     // the person who called
+    const calledNumber = params.To;      // the client's Twilio number
+
+    // Only fire on genuinely missed calls
+    if (!['no-answer', 'busy', 'failed'].includes(callStatus)) {
+      return res.status(200).end();
+    }
+    if (!callerPhone || !calledNumber) {
+      return res.status(200).end();
+    }
+
+    // Look up the client by the Twilio number that was called
+    const { data: client } = await supabaseAdmin
+      .from('clients')
+      .select('id, name, twilio_phone_number, twilio_subaccount_sid, twilio_auth_token')
+      .eq('twilio_phone_number', calledNumber)
+      .maybeSingle();
+    if (!client) {
+      console.warn('[twilio/missed_call] No client found for number', calledNumber);
+      return res.status(200).end();
+    }
+
+    const businessName = client.name || 'our team';
+    const smsBody =
+      `Hey! Sorry we missed your call. We'd love to help — what can we assist you with today? ` +
+      `Reply to this text and we'll get right back to you. - ${businessName}`;
+
+    // Send the auto-text-back SMS
+    const tw = (await import('../lib/twilio.js')).twilioForClient(client);
+    let twilioMsg;
+    try {
+      twilioMsg = await tw.messages.create({
+        from: calledNumber,
+        to: callerPhone,
+        body: smsBody,
+        statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
+      });
+    } catch (err) {
+      console.error('[twilio/missed_call] SMS send failed:', err.message);
+      return res.status(200).end();
+    }
+
+    // Upsert a lead for this caller so it appears in the Leads tab
+    const { data: existingLead } = await supabaseAdmin
+      .from('leads')
+      .select('id')
+      .eq('client_id', client.id)
+      .eq('phone', callerPhone)
+      .maybeSingle();
+    let leadId = existingLead?.id || null;
+    if (!leadId) {
+      const { data: newLead } = await supabaseAdmin
+        .from('leads')
+        .insert({
+          client_id: client.id,
+          phone: callerPhone,
+          name: callerPhone,
+          source: 'missed_call',
+          status: 'new'
+        })
+        .select('id')
+        .single();
+      leadId = newLead?.id || null;
+    }
+
+    // Ensure a contact row exists so the message appears in the Messages
+    // tab thread (the inbound webhook uses contacts for threading).
+    let contactId = null;
+    {
+      let { data: contact } = await supabaseAdmin
+        .from('contacts')
+        .select('id')
+        .eq('client_id', client.id)
+        .eq('phone', callerPhone)
+        .maybeSingle();
+      if (!contact) {
+        const { data: created } = await supabaseAdmin.from('contacts').insert({
+          client_id: client.id, name: callerPhone, phone: callerPhone, source: 'missed_call'
+        }).select('id').single();
+        contact = created;
+      }
+      contactId = contact?.id || null;
+    }
+
+    // Log the outbound auto-reply in the messages table
+    await supabaseAdmin.from('messages').insert({
+      client_id: client.id,
+      contact_id: contactId,
+      lead_id: leadId,
+      direction: 'outbound',
+      body: smsBody,
+      segments: estimateSegments(smsBody),
+      twilio_sid: twilioMsg.sid,
+      status: twilioMsg.status,
+      to_number: callerPhone,
+      from_number: calledNumber
+    });
+
     return res.status(200).end();
   }
 
