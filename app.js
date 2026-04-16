@@ -146,6 +146,56 @@ function renderLogin() {
   return el('div', { class: 'login' }, box);
 }
 
+// ── Push notification registration ─────────────────────────
+// Registers the service worker and subscribes to web push. Runs once
+// after login; subsequent calls are no-ops (SW is already registered,
+// subscription already saved). Silent-fail so push issues never block
+// portal functionality.
+let _pushInitDone = false;
+async function initPushNotifications() {
+  if (_pushInitDone) return;
+  _pushInitDone = true;
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (!state.vapidPublicKey) return;
+
+    const reg = await navigator.serviceWorker.register('/service-worker.js');
+    await navigator.serviceWorker.ready;
+
+    // Check if already subscribed
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      // Request permission (browser shows the prompt)
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') return;
+
+      // Convert VAPID key from base64 URL string to Uint8Array
+      const urlB64ToUint8Array = (b64) => {
+        const pad = '='.repeat((4 - b64.length % 4) % 4);
+        const raw = atob(b64.replace(/-/g, '+').replace(/_/g, '/') + pad);
+        return Uint8Array.from(raw, c => c.charCodeAt(0));
+      };
+
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(state.vapidPublicKey)
+      });
+    }
+
+    // Save subscription to Supabase via our API
+    const subJson = sub.toJSON();
+    await api('/api/portal/push-subscribe', {
+      method: 'POST',
+      body: {
+        endpoint: subJson.endpoint,
+        keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth }
+      }
+    });
+  } catch (e) {
+    console.warn('[push] registration failed (non-fatal):', e.message);
+  }
+}
+
 async function loadMe() {
   const r = await api('/api/portal/me');
   state.user = r.user;
@@ -154,6 +204,11 @@ async function loadMe() {
   // Public Supabase config used by the Messages tab realtime channel.
   // Anon key is safe in the browser; RLS still enforces tenant isolation.
   state.supabaseConfig = r.supabase || null;
+  state.vapidPublicKey = r.vapid_public_key || null;
+
+  // Register service worker + subscribe to push notifications (fire-and-forget).
+  // Only runs once per browser session; the SW handles push events from there.
+  initPushNotifications();
 
   // Fetch booking calendar for the current client context (if any). Used to
   // gate the Bookings tab and to render the link widget. Silent-fail so a

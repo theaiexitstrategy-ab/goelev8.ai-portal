@@ -1,5 +1,6 @@
 import { supabaseAdmin } from '../lib/supabase.js';
 import { estimateSegments } from '../lib/twilio.js';
+import { sendPushToClient } from '../lib/push.js';
 
 // Vapi handles SMS conversations on these numbers. After we log the
 // inbound message we forward the original Twilio payload to Vapi and
@@ -141,6 +142,13 @@ export default async function handler(req, res) {
       from_number: calledNumber
     });
 
+    // Push notification for missed call
+    sendPushToClient(client.id,
+      '📵 Missed Call',
+      `Missed call from ${callerPhone} — auto text-back sent`,
+      '/messages'
+    ).catch(() => {});
+
     return res.status(200).end();
   }
 
@@ -201,6 +209,16 @@ export default async function handler(req, res) {
       body, segments: estimateSegments(body), twilio_sid: sid,
       status: 'received', to_number: to, from_number: from
     });
+
+    // Push notification for inbound SMS (skip TCPA keyword replies)
+    if (!reply) {
+      const senderName = contact?.name && contact.name !== from ? contact.name : from;
+      sendPushToClient(client.id,
+        '💬 New SMS Reply',
+        `${senderName}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`,
+        '/messages'
+      ).catch(() => {});
+    }
 
     // STOP/START/HELP are TCPA-required responses — return them directly
     // instead of forwarding to Vapi, since compliance takes priority.

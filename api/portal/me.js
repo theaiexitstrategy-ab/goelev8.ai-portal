@@ -43,7 +43,8 @@ export default async function handler(req, res) {
       supabase: {
         url: process.env.SUPABASE_URL || null,
         anon_key: process.env.SUPABASE_ANON_KEY || null
-      }
+      },
+      vapid_public_key: process.env.VAPID_PUBLIC_KEY || null
     });
   }
 
