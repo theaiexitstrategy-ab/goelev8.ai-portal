@@ -2697,6 +2697,35 @@ async function viewSettings() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Settings')));
 
+  // ----- Push Notifications -----
+  const pushPanel = el('div', { class: 'panel' });
+  pushPanel.appendChild(el('h2', {}, 'Push Notifications'));
+  const pushStatus = Notification.permission === 'granted' ? 'Enabled' :
+    Notification.permission === 'denied' ? 'Blocked' : 'Not set up';
+  pushPanel.appendChild(el('p', { class: 'muted', style: 'margin-bottom:8px' },
+    'Status: ' + pushStatus + (Notification.permission === 'denied'
+      ? ' — unblock in your browser settings to receive alerts' : '')));
+  if (Notification.permission === 'granted') {
+    const testBtn = el('button', { class: 'btn', onclick: async () => {
+      testBtn.disabled = true; testBtn.textContent = 'Sending…';
+      try {
+        const r = await api('/api/portal/push-test', { method: 'POST' });
+        if (r.ok) toast('Test notification sent — check your browser');
+        else toast('Failed: ' + (r.error || 'unknown'), true);
+      } catch (e) { toast('Failed: ' + e.message, true); }
+      finally { testBtn.disabled = false; testBtn.textContent = 'Send Test Notification'; }
+    } }, 'Send Test Notification');
+    pushPanel.appendChild(testBtn);
+  } else if (Notification.permission === 'default') {
+    const enableBtn = el('button', { class: 'btn primary', onclick: async () => {
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') { initPushNotifications(); render(); }
+      else toast('Notifications were blocked by your browser', true);
+    } }, 'Enable Push Notifications');
+    pushPanel.appendChild(enableBtn);
+  }
+  wrap.appendChild(pushPanel);
+
   // ----- Credits ticker (live) -----
   const ticker = el('div', { class: 'panel credits-ticker' },
     el('div', { class: 'credits-ticker-row' },
