@@ -186,8 +186,7 @@ const TAB_LABELS = {
   nudges:    'Nudges',
   analytics: 'Analytics',
   admin:     'Master Admin',
-  booking_admin: 'book.goelev8.ai',
-  r2s: 'R2S Sales'
+  booking_admin: 'book.goelev8.ai'
 };
 
 const TAB_ICONS = {
@@ -205,8 +204,7 @@ const TAB_ICONS = {
   nudges:    '⚡',
   analytics: '📈',
   admin:     '🛡️',
-  booking_admin: '🗓️',
-  r2s: '📕'
+  booking_admin: '🗓️'
 };
 
 const DEFAULT_TABS = ['overview','leads','messages','settings'];
@@ -265,33 +263,20 @@ function shell(content) {
     t.splice(insertAt, 0, 'bookings');
     return t;
   };
-  // Insert Road To The Stage Sales tab for Flex Facility only
-  const withR2s = (baseTabs) => {
-    const isFlexSlug = state.client?.slug === 'flex-facility';
-    if (!isFlexSlug && !isGlobalAdminEmail) return baseTabs;
-    if (!isFlexSlug && isGlobalAdminEmail && !state.impersonating) return baseTabs;
-    if (baseTabs.includes('r2s')) return baseTabs;
-    const t = [...baseTabs];
-    const anchorIdx = t.indexOf('settings');
-    const insertAt = anchorIdx >= 0 ? anchorIdx : t.length;
-    t.splice(insertAt, 0, 'r2s');
-    return t;
-  };
-
   let tabs;
   if (state.isAdmin && !state.impersonating) {
     // Admin view — no client selected
     tabs = ADMIN_TABS;
   } else if (state.client?.portal_tabs) {
     // Client has custom tabs
-    tabs = isGlobalAdmin ? withAnalytics(state.client.portal_tabs) : state.client.portal_tabs;
+    const isFlexSlug = state.client?.slug === 'flex-facility';
+    tabs = (isGlobalAdmin || isFlexSlug) ? withAnalytics(state.client.portal_tabs) : state.client.portal_tabs;
     tabs = withBookings(tabs);
-    tabs = withR2s(tabs);
   } else {
     // Default client tabs
-    tabs = isGlobalAdmin ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
+    const isFlexSlug = state.client?.slug === 'flex-facility';
+    tabs = (isGlobalAdmin || isFlexSlug) ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
     tabs = withBookings(tabs);
-    tabs = withR2s(tabs);
   }
   const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
 
@@ -745,183 +730,6 @@ function renderManualSaleForm(parentContainer) {
     ),
     el('div', { style: 'margin-top:10px' }, submit)
   );
-}
-
-// ============================================================
-// ROAD TO THE STAGE SALES (dedicated tab — flex-facility only)
-// ============================================================
-// Combines GA4 /r2s page analytics + Stripe ebook sales in one
-// view, with a conversion-rate metric (sales / page views × 100).
-async function viewR2sSales() {
-  const wrap = el('div', {});
-  wrap.appendChild(el('div', { class: 'topbar' },
-    el('h1', {}, 'Road To The Stage Sales')
-  ));
-
-  const panel = el('div', { class: 'panel' });
-  panel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:16px' },
-    'Ebook sales performance + /r2s page analytics · view-to-purchase conversion rate'));
-  wrap.appendChild(panel);
-
-  const placeholder = el('p', { class: 'muted' }, 'Loading sales + analytics data…');
-  panel.appendChild(placeholder);
-
-  let salesData, ga4Data;
-  try {
-    [salesData, ga4Data] = await Promise.all([
-      api('/api/portal/r2s-sales'),
-      api('/api/portal/flex-r2s').catch(() => null)
-    ]);
-  } catch (e) {
-    placeholder.remove();
-    panel.appendChild(el('p', { class: 'err' }, 'Failed to load data: ' + e.message));
-    return wrap;
-  }
-  placeholder.remove();
-
-  const units = salesData.total_units || 0;
-  const revenueCents = salesData.total_revenue_cents || 0;
-  const pageViews = ga4Data?.page_views || 0;
-  const conversionRate = pageViews > 0 ? ((units / pageViews) * 100).toFixed(2) : '—';
-
-  const fmtSec = (s) => {
-    if (!s || s < 1) return '0s';
-    if (s < 60) return s.toFixed(0) + 's';
-    const m = Math.floor(s / 60);
-    const r = Math.round(s - m * 60);
-    return `${m}m ${r}s`;
-  };
-
-  // Top-level metrics strip
-  panel.appendChild(el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:16px;flex-wrap:wrap' },
-    el('div', { class: 'metric-stat accent' },
-      el('span', { class: 'metric-stat-value' }, String(units)),
-      el('span', { class: 'metric-stat-label' }, 'Units Sold')
-    ),
-    el('div', { class: 'metric-divider' }),
-    el('div', { class: 'metric-stat accent' },
-      el('span', { class: 'metric-stat-value' }, `$${(revenueCents / 100).toFixed(2)}`),
-      el('span', { class: 'metric-stat-label' }, 'Total Revenue')
-    ),
-    el('div', { class: 'metric-divider' }),
-    el('div', { class: 'metric-stat' },
-      el('span', { class: 'metric-stat-value' }, String(pageViews)),
-      el('span', { class: 'metric-stat-label' }, '/r2s Page Views')
-    ),
-    el('div', { class: 'metric-divider' }),
-    el('div', { class: 'metric-stat' },
-      el('span', { class: 'metric-stat-value' }, ga4Data ? String(ga4Data.users || 0) : '—'),
-      el('span', { class: 'metric-stat-label' }, 'Unique Visitors')
-    ),
-    el('div', { class: 'metric-divider' }),
-    el('div', { class: 'metric-stat' },
-      el('span', { class: 'metric-stat-value' }, ga4Data ? fmtSec(ga4Data.avg_time_on_page) : '—'),
-      el('span', { class: 'metric-stat-label' }, 'Avg Time on Page')
-    ),
-    el('div', { class: 'metric-divider' }),
-    el('div', { class: 'metric-stat' },
-      el('span', { class: 'metric-stat-value' }, ga4Data?.bounce_rate != null ? (ga4Data.bounce_rate * 100).toFixed(1) + '%' : '—'),
-      el('span', { class: 'metric-stat-label' }, 'Bounce Rate')
-    ),
-    el('div', { class: 'metric-divider' }),
-    el('div', { class: 'metric-stat accent' },
-      el('span', { class: 'metric-stat-value', style: 'font-size:1.4rem' }, typeof conversionRate === 'string' && conversionRate !== '—' ? conversionRate + '%' : conversionRate),
-      el('span', { class: 'metric-stat-label' }, 'Conversion Rate')
-    )
-  ));
-
-  // Sales over time + page views overlay chart
-  const salesDays = Object.entries(salesData.by_day || {});
-  const ga4Days = ga4Data?.by_day || {};
-  const chartPanel = el('div', { class: 'r2s-chart-panel' });
-  chartPanel.appendChild(el('h3', { style: 'font-size:0.9rem;margin-bottom:8px' }, 'Sales + Page Views (last 30 days)'));
-  if (salesDays.length) {
-    const maxUnits = Math.max(...salesDays.map(([_, v]) => v.units), 1);
-    const maxViews = Math.max(...salesDays.map(([d]) => ga4Days[d]?.views || 0), 1);
-    const chart = el('div', { class: 'r2s-chart' });
-    salesDays.forEach(([date, v]) => {
-      const views = ga4Days[date]?.views || 0;
-      const bar = el('div', {
-        class: 'r2s-chart-bar',
-        title: `${date}: ${v.units} sale${v.units === 1 ? '' : 's'} · $${(v.revenue_cents / 100).toFixed(2)} · ${views} views`
-      },
-        el('div', { class: 'r2s-chart-fill', style: `height:${Math.max(2, (v.units / maxUnits) * 100)}%;opacity:1` }),
-        el('div', { class: 'r2s-chart-fill', style: `height:${Math.max(1, (views / maxViews) * 60)}%;opacity:0.3;position:absolute;bottom:0;left:0;right:0` }),
-        el('div', { class: 'r2s-chart-label' }, new Date(date).getDate())
-      );
-      chart.appendChild(bar);
-    });
-    chartPanel.appendChild(chart);
-    chartPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.7rem;margin-top:6px' },
-      'Solid bars = sales · Faded bars = page views'));
-  } else {
-    chartPanel.appendChild(el('p', { class: 'muted' }, 'No data in the last 30 days.'));
-  }
-  panel.appendChild(chartPanel);
-
-  // Traffic sources from GA4
-  if (ga4Data?.top_sources?.length) {
-    panel.appendChild(el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Traffic Sources to /r2s'));
-    const total = ga4Data.top_sources.reduce((s, x) => s + x.sessions, 0);
-    panel.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'Source'), el('th', {}, 'Sessions'), el('th', {}, 'Users'), el('th', {}, '%')
-      )),
-      el('tbody', {}, ...ga4Data.top_sources.map(s => el('tr', {},
-        el('td', {}, s.source),
-        el('td', {}, String(s.sessions)),
-        el('td', {}, String(s.users)),
-        el('td', {}, total > 0 ? ((s.sessions / total) * 100).toFixed(1) + '%' : '—')
-      )))
-    ));
-  }
-
-  // Stripe connection + manual entry
-  if (!salesData.stripe_connected) {
-    panel.appendChild(el('div', { class: 'r2s-cta-card', style: 'margin-top:16px' },
-      el('h3', { style: 'font-size:1rem;margin-bottom:6px' }, 'Connect Stripe to auto-import sales'),
-      el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
-        'Link The Flex Facility Stripe account so ebook sales flow in automatically.'),
-      el('button', { class: 'btn primary', onclick: async () => {
-        try {
-          const r = await api('/api/portal/connect?action=start', { method: 'POST' });
-          window.location.href = r.url;
-        } catch (e) { toast('Stripe setup failed: ' + e.message, true); }
-      } }, 'Connect Stripe')
-    ));
-    panel.appendChild(renderManualSaleForm(panel));
-  }
-
-  // Recent sales table
-  if (salesData.sales?.length) {
-    panel.appendChild(el('h3', { style: 'font-size:0.9rem;margin:16px 0 8px' }, 'Recent Sales'));
-    panel.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'Date'), el('th', {}, 'Customer'), el('th', {}, 'Product'),
-        el('th', {}, 'Amount'), el('th', {}, 'Source')
-      )),
-      el('tbody', {}, ...salesData.sales.map(s => el('tr', {},
-        el('td', {}, new Date(s.created_at).toLocaleDateString()),
-        el('td', {}, s.customer_name || s.customer_email || '—'),
-        el('td', {}, s.product_name || 'Road To The Stage'),
-        el('td', { style: 'font-weight:600' }, `$${(s.amount_cents / 100).toFixed(2)}`),
-        el('td', {}, el('span', { class: 'badge' + (s.source?.startsWith('r2s_manual') ? ' warn' : ' info') },
-          s.source?.startsWith('r2s_manual') ? 'manual' : (s.source || 'stripe')))
-      )))
-    ));
-  }
-
-  // Sales page link
-  panel.appendChild(el('div', { class: 'r2s-link-row', style: 'margin-top:16px' },
-    el('span', { class: 'muted', style: 'font-size:0.8rem' }, 'Sales page:'),
-    el('a', {
-      href: 'https://www.theflexfacility.com/r2s',
-      target: '_blank', rel: 'noopener noreferrer',
-      class: 'r2s-link'
-    }, 'theflexfacility.com/r2s →')
-  ));
-
-  return wrap;
 }
 
 // ============================================================
@@ -4086,6 +3894,18 @@ async function viewAnalytics() {
   }
   restOfPage.appendChild(funnelPanel);
 
+  // Road To The Stage Ebook Sales — only for Flex Facility
+  const isFlexClient = state.client?.slug === 'flex-facility';
+  const isPlatformAdmin = state.user?.email === 'ab@goelev8.ai';
+  if (isFlexClient || isPlatformAdmin) {
+    const r2sPanel = el('div', { class: 'panel' });
+    r2sPanel.appendChild(el('h2', {}, '📕 The Road To The Stage Ebook Sales'));
+    r2sPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+      'Ebook sales + /r2s page analytics · view-to-purchase conversion rate · last 30 days'));
+    restOfPage.appendChild(r2sPanel);
+    loadR2sAnalyticsSection(r2sPanel);
+  }
+
   // Sales tracking section
   const salesPanel = el('div', { class: 'panel' });
   salesPanel.appendChild(el('h2', {}, '💰 Sales'));
@@ -4190,6 +4010,162 @@ async function loadSalesSection(container) {
   }
 }
 
+// Road To The Stage ebook sales + /r2s GA4 analytics section
+// rendered inside the Analytics view for Flex Facility only.
+async function loadR2sAnalyticsSection(container) {
+  const placeholder = el('p', { class: 'muted' }, 'Loading ebook sales + /r2s analytics…');
+  container.appendChild(placeholder);
+
+  let salesData, ga4Data;
+  try {
+    [salesData, ga4Data] = await Promise.all([
+      api('/api/portal/r2s-sales'),
+      api('/api/portal/flex-r2s').catch(() => null)
+    ]);
+  } catch (e) {
+    placeholder.remove();
+    container.appendChild(el('p', { class: 'err' }, 'Failed to load R2S data: ' + e.message));
+    return;
+  }
+  placeholder.remove();
+
+  const units = salesData.total_units || 0;
+  const revenueCents = salesData.total_revenue_cents || 0;
+  const pageViews = ga4Data?.page_views || 0;
+  const conversionRate = pageViews > 0 ? ((units / pageViews) * 100).toFixed(2) + '%' : '—';
+
+  const fmtSec = (s) => {
+    if (!s || s < 1) return '0s';
+    if (s < 60) return s.toFixed(0) + 's';
+    const m = Math.floor(s / 60);
+    const r = Math.round(s - m * 60);
+    return `${m}m ${r}s`;
+  };
+
+  // Metrics strip
+  container.appendChild(el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:16px;flex-wrap:wrap' },
+    el('div', { class: 'metric-stat accent' },
+      el('span', { class: 'metric-stat-value' }, String(units)),
+      el('span', { class: 'metric-stat-label' }, 'Units Sold')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat accent' },
+      el('span', { class: 'metric-stat-value' }, `$${(revenueCents / 100).toFixed(2)}`),
+      el('span', { class: 'metric-stat-label' }, 'Total Revenue')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, String(pageViews)),
+      el('span', { class: 'metric-stat-label' }, '/r2s Page Views')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, ga4Data ? String(ga4Data.users || 0) : '—'),
+      el('span', { class: 'metric-stat-label' }, 'Unique Visitors')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, ga4Data ? fmtSec(ga4Data.avg_time_on_page) : '—'),
+      el('span', { class: 'metric-stat-label' }, 'Avg Time on Page')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, ga4Data?.bounce_rate != null ? (ga4Data.bounce_rate * 100).toFixed(1) + '%' : '—'),
+      el('span', { class: 'metric-stat-label' }, 'Bounce Rate')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat accent' },
+      el('span', { class: 'metric-stat-value', style: 'font-size:1.4rem' }, conversionRate),
+      el('span', { class: 'metric-stat-label' }, 'Conversion Rate')
+    )
+  ));
+
+  // Sales over time chart
+  const salesDays = Object.entries(salesData.by_day || {});
+  const ga4Days = ga4Data?.by_day || {};
+  if (salesDays.length) {
+    container.appendChild(el('h3', { style: 'font-size:0.9rem;margin-bottom:8px' }, 'Sales + Page Views (last 30 days)'));
+    const maxUnits = Math.max(...salesDays.map(([_, v]) => v.units), 1);
+    const maxViews = Math.max(...salesDays.map(([d]) => ga4Days[d]?.views || 0), 1);
+    const chart = el('div', { class: 'r2s-chart' });
+    salesDays.forEach(([date, v]) => {
+      const views = ga4Days[date]?.views || 0;
+      const bar = el('div', {
+        class: 'r2s-chart-bar',
+        title: `${date}: ${v.units} sale${v.units === 1 ? '' : 's'} · $${(v.revenue_cents / 100).toFixed(2)} · ${views} views`
+      },
+        el('div', { class: 'r2s-chart-fill', style: `height:${Math.max(2, (v.units / maxUnits) * 100)}%;opacity:1` }),
+        el('div', { class: 'r2s-chart-fill', style: `height:${Math.max(1, (views / maxViews) * 60)}%;opacity:0.3;position:absolute;bottom:0;left:0;right:0` }),
+        el('div', { class: 'r2s-chart-label' }, new Date(date).getDate())
+      );
+      chart.appendChild(bar);
+    });
+    container.appendChild(chart);
+    container.appendChild(el('p', { class: 'muted', style: 'font-size:0.7rem;margin-top:6px' },
+      'Solid bars = sales · Faded bars = page views'));
+  }
+
+  // Traffic sources
+  if (ga4Data?.top_sources?.length) {
+    container.appendChild(el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Traffic Sources to /r2s'));
+    const total = ga4Data.top_sources.reduce((s, x) => s + x.sessions, 0);
+    container.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Source'), el('th', {}, 'Sessions'), el('th', {}, 'Users'), el('th', {}, '%')
+      )),
+      el('tbody', {}, ...ga4Data.top_sources.map(s => el('tr', {},
+        el('td', {}, s.source),
+        el('td', {}, String(s.sessions)),
+        el('td', {}, String(s.users)),
+        el('td', {}, total > 0 ? ((s.sessions / total) * 100).toFixed(1) + '%' : '—')
+      )))
+    ));
+  }
+
+  // Stripe CTA or manual entry
+  if (!salesData.stripe_connected) {
+    container.appendChild(el('div', { class: 'r2s-cta-card', style: 'margin-top:16px' },
+      el('h3', { style: 'font-size:1rem;margin-bottom:6px' }, 'Connect Stripe to auto-import sales'),
+      el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+        'Link The Flex Facility Stripe account so ebook sales flow in automatically.'),
+      el('button', { class: 'btn primary', onclick: async () => {
+        try {
+          const r = await api('/api/portal/connect?action=start', { method: 'POST' });
+          window.location.href = r.url;
+        } catch (e) { toast('Stripe setup failed: ' + e.message, true); }
+      } }, 'Connect Stripe')
+    ));
+    container.appendChild(renderManualSaleForm(container));
+  }
+
+  // Recent sales
+  if (salesData.sales?.length) {
+    container.appendChild(el('h3', { style: 'font-size:0.9rem;margin:16px 0 8px' }, 'Recent Ebook Sales'));
+    container.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Date'), el('th', {}, 'Customer'), el('th', {}, 'Amount'), el('th', {}, 'Source')
+      )),
+      el('tbody', {}, ...salesData.sales.map(s => el('tr', {},
+        el('td', {}, new Date(s.created_at).toLocaleDateString()),
+        el('td', {}, s.customer_name || s.customer_email || '—'),
+        el('td', { style: 'font-weight:600' }, `$${(s.amount_cents / 100).toFixed(2)}`),
+        el('td', {}, el('span', { class: 'badge' + (s.source?.startsWith('r2s_manual') ? ' warn' : ' info') },
+          s.source?.startsWith('r2s_manual') ? 'manual' : (s.source || 'stripe')))
+      )))
+    ));
+  }
+
+  // Sales page link
+  container.appendChild(el('div', { class: 'r2s-link-row', style: 'margin-top:12px' },
+    el('span', { class: 'muted', style: 'font-size:0.8rem' }, 'Sales page:'),
+    el('a', {
+      href: 'https://www.theflexfacility.com/r2s',
+      target: '_blank', rel: 'noopener noreferrer',
+      class: 'r2s-link'
+    }, 'theflexfacility.com/r2s →')
+  ));
+}
+
 // ============================================================
 // ROUTER / RENDER
 // ============================================================
@@ -4249,8 +4225,7 @@ async function render() {
       case 'nudges':    view = await viewNudges(); break;
       case 'settings':  view = await viewSettings(); break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
-      case 'analytics': view = state.user?.email === 'ab@goelev8.ai' ? await viewAnalytics() : await viewOverview(); break;
-      case 'r2s':       view = await viewR2sSales(); break;
+      case 'analytics': view = (state.user?.email === 'ab@goelev8.ai' || state.client?.slug === 'flex-facility') ? await viewAnalytics() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
   } catch (e) {
