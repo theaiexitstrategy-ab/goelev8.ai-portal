@@ -13,7 +13,7 @@ import { requireUser, methodGuard } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 
 const GA4_BASE = 'https://analyticsdata.googleapis.com/v1beta';
-const FLEX_MEASUREMENT_ID = 'G-HRQWRXXY1D'; // Flex Facility GA4 stream — for display only
+const FLEX_MEASUREMENT_ID = 'G-6T75SN79LV'; // Flex Facility GA4 stream — for display only
 
 let cachedToken = null;
 let cachedTokenExpires = 0;
