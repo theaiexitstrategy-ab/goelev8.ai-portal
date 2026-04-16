@@ -96,7 +96,7 @@ async function fetchGA4Data() {
     // Funnel page views for specific pages
     const funnelPages = {
       '/fit': pageViews['/fit'] || 0,
-      '/rs2': pageViews['/rs2'] || 0,
+      '/r2s': pageViews['/r2s'] || 0,
       '/': pageViews['/'] || 0,
       '/thank-you': pageViews['/thank-you'] || 0
     };
