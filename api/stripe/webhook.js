@@ -116,8 +116,10 @@ export default async function handler(req, res) {
 
           // Push notification to client + admin
           const saleDesc = `${productName} — $${amount.toFixed(2)}`;
-          await sendPushToClient(resolvedClientId, 'New Sale!', saleDesc, '/sales');
-          sendPushToAdmins('💰 Sale — ' + (productName || 'Unknown'), saleDesc, '/sales').catch(() => {});
+          await Promise.all([
+            sendPushToClient(resolvedClientId, 'New Sale!', saleDesc, '/sales'),
+            sendPushToAdmins('💰 Sale — ' + (productName || 'Unknown'), saleDesc, '/sales')
+          ]).catch(() => {});
         }
         break;
       }

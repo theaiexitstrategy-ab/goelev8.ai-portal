@@ -144,8 +144,10 @@ export default async function handler(req, res) {
 
     // Push notification for missed call
     const missedDesc = `Missed call from ${callerPhone} — auto text-back sent`;
-    sendPushToClient(client.id, '📵 Missed Call', missedDesc, '/messages').catch(() => {});
-    sendPushToAdmins('📵 Missed Call — ' + (client.name || calledNumber), missedDesc, '/messages').catch(() => {});
+    await Promise.all([
+      sendPushToClient(client.id, '📵 Missed Call', missedDesc, '/messages').catch(() => {}),
+      sendPushToAdmins('📵 Missed Call — ' + (client.name || calledNumber), missedDesc, '/messages').catch(() => {})
+    ]);
 
     return res.status(200).end();
   }
@@ -212,8 +214,10 @@ export default async function handler(req, res) {
     if (!reply) {
       const senderName = contact?.name && contact.name !== from ? contact.name : from;
       const smsDesc = `${senderName}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`;
-      sendPushToClient(client.id, '💬 New SMS Reply', smsDesc, '/messages').catch(() => {});
-      sendPushToAdmins('💬 SMS — ' + (client.name || to), smsDesc, '/messages').catch(() => {});
+      await Promise.all([
+        sendPushToClient(client.id, '💬 New SMS Reply', smsDesc, '/messages').catch(() => {}),
+        sendPushToAdmins('💬 SMS — ' + (client.name || to), smsDesc, '/messages').catch(() => {})
+      ]);
     }
 
     // STOP/START/HELP are TCPA-required responses — return them directly
