@@ -453,15 +453,10 @@ async function handleLead(req, res) {
   // Push notification to portal users + admin (must await so Vercel
   // doesn't kill the function before the push is delivered)
   const leadDesc = `${name || email || phone || 'Someone'} just submitted a form${body.funnel ? ' on ' + body.funnel : ''}`;
-  let pushDebug = { vapid: !!process.env.VAPID_PUBLIC_KEY && !!process.env.VAPID_PRIVATE_KEY, clientPush: null, adminPush: null };
-  try {
-    await sendPushToClient(client.id, '🔥 New Lead Captured', leadDesc, '/leads');
-    pushDebug.clientPush = 'ok';
-  } catch (e) { pushDebug.clientPush = e.message; console.error('[events/lead] push to client failed:', e.message); }
-  try {
-    await sendPushToAdmins('🔥 New Lead — ' + (client.name || slug), leadDesc, '/leads');
-    pushDebug.adminPush = 'ok';
-  } catch (e) { pushDebug.adminPush = e.message; console.error('[events/lead] push to admins failed:', e.message); }
+  await Promise.all([
+    sendPushToClient(client.id, '🔥 New Lead Captured', leadDesc, '/leads').catch(() => {}),
+    sendPushToAdmins('🔥 New Lead — ' + (client.name || slug), leadDesc, '/leads').catch(() => {})
+  ]);
 
   // Fire the 5-message nudge drip sequence. Message #1 sends
   // immediately (delay_minutes=0) and replaces the legacy welcome SMS
@@ -485,7 +480,7 @@ async function handleLead(req, res) {
     }
   }
 
-  return res.status(200).json({ ok: true, lead_id: lead?.id || null, nudges, push: pushDebug });
+  return res.status(200).json({ ok: true, lead_id: lead?.id || null, nudges });
 }
 
 export default async function handler(req, res) {
