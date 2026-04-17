@@ -20,6 +20,7 @@ const el = (tag, attrs = {}, ...children) => {
 
 const state = {
   token: localStorage.getItem('ge8_token') || null,
+  refreshToken: localStorage.getItem('ge8_refresh') || null,
   user: null,
   client: null,
   isAdmin: false,
@@ -37,7 +38,7 @@ function toast(msg, isError = false) {
   setTimeout(() => t.remove(), 3500);
 }
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, _retried = false) {
   const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
   if (state.token) headers.authorization = `Bearer ${state.token}`;
   if (state.isAdmin && state.impersonating) headers['x-admin-as-client'] = state.impersonating;
@@ -46,16 +47,43 @@ async function api(path, opts = {}) {
     headers,
     body: opts.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined
   });
+  // On 401, try to refresh the token once before logging out
+  if (res.status === 401 && !_retried && state.refreshToken) {
+    const refreshed = await refreshSession();
+    if (refreshed) return api(path, opts, true);
+    logout(); throw new Error('unauthorized');
+  }
   if (res.status === 401) { logout(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
 
+// Refresh the Supabase JWT using the stored refresh token. Returns true
+// on success (state.token is updated), false if the refresh failed.
+async function refreshSession() {
+  try {
+    const r = await fetch('/api/auth?action=refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refresh_token: state.refreshToken })
+    });
+    if (!r.ok) return false;
+    const data = await r.json();
+    state.token = data.access_token;
+    state.refreshToken = data.refresh_token;
+    localStorage.setItem('ge8_token', data.access_token);
+    localStorage.setItem('ge8_refresh', data.refresh_token);
+    return true;
+  } catch { return false; }
+}
+
 function logout() {
   localStorage.removeItem('ge8_token');
+  localStorage.removeItem('ge8_refresh');
   localStorage.removeItem('ge8_impersonate');
-  state.token = null; state.user = null; state.client = null;
+  state.token = null; state.refreshToken = null;
+  state.user = null; state.client = null;
   state.isAdmin = false; state.impersonating = null;
   render();
 }
@@ -120,7 +148,9 @@ function renderLogin() {
           body: { email: emailInput.value, password: pwInput.value }
         });
         localStorage.setItem('ge8_token', r.access_token);
+        localStorage.setItem('ge8_refresh', r.refresh_token);
         state.token = r.access_token;
+        state.refreshToken = r.refresh_token;
         await loadMe();
         if (typeof gtag === 'function') gtag('event', 'client_login', { client_name: state.client?.name || '' });
         render();
