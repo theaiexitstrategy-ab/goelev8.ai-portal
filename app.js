@@ -151,6 +151,7 @@ function renderLogin() {
         localStorage.setItem('ge8_refresh', r.refresh_token);
         state.token = r.access_token;
         state.refreshToken = r.refresh_token;
+        startTokenRefreshTimer();
         await loadMe();
         if (typeof gtag === 'function') gtag('event', 'client_login', { client_name: state.client?.name || '' });
         render();
@@ -224,6 +225,19 @@ async function initPushNotifications() {
   } catch (e) {
     console.warn('[push] registration failed (non-fatal):', e.message);
   }
+}
+
+// Proactive token refresh — runs every 45 minutes so the token never
+// actually expires (Supabase JWTs last 1 hour). This prevents the brief
+// logged-out state that can happen if the user is idle for >1 hour.
+let _refreshInterval = null;
+function startTokenRefreshTimer() {
+  if (_refreshInterval) clearInterval(_refreshInterval);
+  _refreshInterval = setInterval(async () => {
+    if (!state.refreshToken) return;
+    const ok = await refreshSession();
+    if (!ok) { logout(); }
+  }, 45 * 60 * 1000); // 45 minutes
 }
 
 async function loadMe() {
@@ -4298,6 +4312,8 @@ async function render() {
   root.innerHTML = '';
   if (!state.token) { root.appendChild(renderLogin()); return; }
   if (!state.user) {
+    // Start the refresh timer on page load if we have a refresh token
+    if (state.refreshToken) startTokenRefreshTimer();
     try { await loadMe(); } catch { logout(); return; }
   }
   // Client-specific portal redirect: send branded clients to their portal
