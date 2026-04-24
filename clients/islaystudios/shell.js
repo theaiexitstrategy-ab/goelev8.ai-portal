@@ -38,7 +38,7 @@ var TAB_CATALOG = {
 };
 
 // Default tabs when portal_tabs is not set on the client record
-var DEFAULT_TABS = ['dashboard','leads','blasts','calls','artists','credits','analytics','settings'];
+var DEFAULT_TABS = ['leads','messages','blasts','nudges','analytics','settings'];
 
 function getToken() {
   return localStorage.getItem('ge8_token');
