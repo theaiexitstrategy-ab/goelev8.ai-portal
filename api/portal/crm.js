@@ -146,33 +146,44 @@ async function handleContactsImport(req, res, ctx) {
   if (contacts.length > 5000)
     return res.status(400).json({ error: 'max_5000_contacts_per_import' });
 
-  let created = 0, updated = 0, errors = [];
-  // Process in batches of 200 for upsert
-  const BATCH = 200;
-  for (let i = 0; i < contacts.length; i += BATCH) {
-    const batch = contacts.slice(i, i + BATCH).map(c => ({
+  // Normalize + dedupe by phone up front. Postgres ON CONFLICT rejects the
+  // whole statement if the same conflict target appears twice in one batch,
+  // so duplicates in the user's paste/CSV would otherwise zero out the import.
+  const seen = new Set();
+  const skipped_duplicates = [];
+  const normalized = [];
+  for (const c of contacts) {
+    const phone = (c.phone || '').replace(/[^\d+]/g, '');
+    if (!phone) continue;
+    if (seen.has(phone)) { skipped_duplicates.push(phone); continue; }
+    seen.add(phone);
+    normalized.push({
       client_id: clientId,
       name: (c.name || [c.first_name, c.last_name].filter(Boolean).join(' ')).trim() || 'Unknown',
-      phone: (c.phone || '').replace(/[^\d+]/g, ''),
+      phone,
       email: c.email || null,
       tags: c.tag ? [c.tag] : [],
       notes: c.notes || null,
       source: 'import'
-    })).filter(c => c.phone);
+    });
+  }
 
-    if (!batch.length) continue;
-
+  let created = 0, errors = [];
+  const BATCH = 200;
+  for (let i = 0; i < normalized.length; i += BATCH) {
+    const batch = normalized.slice(i, i + BATCH);
     const { data, error } = await sb.from('contacts')
       .upsert(batch, { onConflict: 'client_id,phone', ignoreDuplicates: false })
       .select('id');
-    if (error) {
-      errors.push({ batch: i, message: error.message });
-    } else {
-      created += (data || []).length;
-    }
+    if (error) errors.push({ batch: i, message: error.message });
+    else created += (data || []).length;
   }
 
-  return res.status(200).json({ created, updated, errors, total: contacts.length });
+  return res.status(200).json({
+    created, errors,
+    total: contacts.length,
+    skipped_duplicates: skipped_duplicates.length
+  });
 }
 
 export default async function handler(req, res) {

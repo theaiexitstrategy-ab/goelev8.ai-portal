@@ -2469,11 +2469,17 @@ function openContactImportModal(contactsBody) {
         }));
         const res = await api('/api/portal/crm?action=contacts-import', { method: 'POST', body: { contacts: payload } });
         const errCount = (res.errors || []).length;
-        resultMsg.style.color = errCount ? 'var(--warning,#f0ad4e)' : 'var(--success,#27ae60)';
-        resultMsg.textContent = `Done! ${res.created || 0} contacts imported.` + (errCount ? ` ${errCount} batch error(s).` : '');
-        toast(`${res.created || 0} contacts imported!`);
+        const dupCount = res.skipped_duplicates || 0;
+        const created = res.created || 0;
+        const failed = errCount > 0;
+        resultMsg.style.color = failed ? 'var(--danger,#e74c3c)' : (created === 0 ? 'var(--warning,#f0ad4e)' : 'var(--success,#27ae60)');
+        let msg = `Done! ${created} contacts imported.`;
+        if (dupCount) msg += ` ${dupCount} duplicate phone(s) skipped.`;
+        if (failed) msg += ` Errors: ${(res.errors || []).map(e => e.message).join('; ')}`;
+        resultMsg.textContent = msg;
+        toast(failed ? `Import error: ${(res.errors[0] || {}).message || 'unknown'}` : `${created} contacts imported!`, failed);
         if (contactsBody) loadBlastsContacts(contactsBody);
-        setTimeout(() => bg.remove(), 1500);
+        if (!failed) setTimeout(() => bg.remove(), 1500);
       } catch (e) {
         resultMsg.textContent = 'Import failed: ' + e.message;
         resultMsg.style.color = 'var(--danger,#e74c3c)';
