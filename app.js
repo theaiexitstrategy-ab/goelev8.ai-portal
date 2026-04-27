@@ -343,6 +343,7 @@ function shell(content) {
   // Insert Analytics before Settings so the two are side-by-side with
   // Settings last. If there's no Settings tab, append Analytics to the end.
   const withAnalytics = (baseTabs) => {
+    if (baseTabs.includes('analytics')) return baseTabs;
     const t = [...baseTabs];
     const settingsIdx = t.indexOf('settings');
     if (settingsIdx >= 0) t.splice(settingsIdx, 0, 'analytics');
