@@ -2288,14 +2288,19 @@ async function loadBlastsContacts(container) {
           el('td', {}, c.email || '—'),
           el('td', {}, (c.tags || []).join(', ') || '—'),
           el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual')),
-          el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
-            if (!confirm('Delete contact?')) return;
-            try {
-              await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
-              toast('Contact deleted');
-              loadBlastsContacts(container);
-            } catch (e) { toast('Delete failed: ' + e.message, true); }
-          } }, 'Delete'))
+          el('td', { style: 'white-space:nowrap' },
+            el('button', { class: 'btn sm', style: 'margin-right:4px', onclick: () => {
+              openContactEditModal(c, () => loadBlastsContacts(container));
+            } }, 'Edit'),
+            el('button', { class: 'btn sm danger', onclick: async () => {
+              if (!confirm('Delete contact?')) return;
+              try {
+                await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
+                toast('Contact deleted');
+                loadBlastsContacts(container);
+              } catch (e) { toast('Delete failed: ' + e.message, true); }
+            } }, 'Delete')
+          )
         );
       }))
     );
@@ -2304,6 +2309,68 @@ async function loadBlastsContacts(container) {
     container.innerHTML = '';
     container.appendChild(el('p', { class: 'err' }, 'Failed to load contacts: ' + e.message));
   }
+}
+
+function openContactEditModal(contact, onSaved) {
+  const existing = document.querySelector('.contact-edit-modal-bg');
+  if (existing) existing.remove();
+
+  const nameIn  = el('input', { type: 'text',  placeholder: 'Full name' });
+  nameIn.value  = contact.name || '';
+  const phoneIn = el('input', { type: 'tel',   placeholder: '+1 555 555 1234' });
+  phoneIn.value = contact.phone || '';
+  const emailIn = el('input', { type: 'email', placeholder: 'name@example.com' });
+  emailIn.value = contact.email || '';
+  const tagsIn  = el('input', { type: 'text',  placeholder: 'comma-separated, e.g. vip, lead, returning' });
+  tagsIn.value  = (contact.tags || []).join(', ');
+  const notesIn = el('textarea', { rows: '3', placeholder: 'Notes (optional)' });
+  notesIn.value = contact.notes || '';
+
+  const errBox = el('div', { class: 'err', style: 'min-height:1.2em;font-size:0.85rem' });
+
+  const field = (label, input) => el('div', { style: 'margin-bottom:10px' },
+    el('label', { style: 'display:block;font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted,#888);margin-bottom:4px' }, label),
+    input
+  );
+
+  const saveBtn = el('button', { class: 'btn primary', onclick: async () => {
+    const name = (nameIn.value || '').trim();
+    const phone = (phoneIn.value || '').trim();
+    if (!name || !phone) { errBox.textContent = 'Name and phone are required.'; return; }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving...';
+    try {
+      const tags = tagsIn.value.split(',').map(t => t.trim()).filter(Boolean);
+      const r = await api('/api/portal/crm?action=contacts', {
+        method: 'PATCH',
+        body: { id: contact.id, name, phone, email: emailIn.value.trim() || null, tags, notes: notesIn.value.trim() || null }
+      });
+      toast('Contact updated');
+      bg.remove();
+      if (onSaved) onSaved(r.contact);
+    } catch (e) {
+      errBox.textContent = 'Save failed: ' + e.message;
+      saveBtn.disabled = false; saveBtn.textContent = 'Save';
+    }
+  } }, 'Save');
+
+  const modal = el('div', { class: 'modal' },
+    el('h2', {}, 'Edit Contact'),
+    field('Name', nameIn),
+    field('Phone', phoneIn),
+    field('Email', emailIn),
+    field('Tags', tagsIn),
+    field('Notes', notesIn),
+    errBox,
+    el('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px' },
+      el('button', { class: 'btn', onclick: () => bg.remove() }, 'Cancel'),
+      saveBtn
+    )
+  );
+  modal.style.maxWidth = '480px';
+
+  const bg = el('div', { class: 'modal-bg contact-edit-modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); } }, modal);
+  document.body.appendChild(bg);
+  setTimeout(() => nameIn.focus(), 50);
 }
 
 function openContactImportModal(contactsBody) {
@@ -2355,7 +2422,9 @@ function openContactImportModal(contactsBody) {
   function autoSplitSingleColumn() {
     if (headers.length !== 1) return false;
     const col = headers[0];
-    const PHONE_RE = /\+?\d[\d\s().\-]{5,}\d/;
+    // Phone: allow optional wrapping parens around the whole match so we
+    // consume "(555) 123-4567" without leaving the parens in the name.
+    const PHONE_RE = /\(?\+?\d[\d\s().\-]{5,}\d\)?/;
     const EMAIL_RE = /[^\s,;<>]+@[^\s,;<>]+\.[^\s,;<>]+/;
     // Re-include the original header as a data row since it was eaten by Papa.
     const sourceRows = [col, ...parsedRows.map(r => r[col] || '')]
@@ -2368,8 +2437,17 @@ function openContactImportModal(contactsBody) {
       if (em) { email = em[0]; s = s.replace(em[0], ' '); }
       let phone = '';
       const ph = s.match(PHONE_RE);
-      if (ph) { phone = ph[0].trim(); s = s.replace(ph[0], ' '); }
-      const name = s.replace(/[,;|\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (ph) { phone = ph[0].replace(/[()]/g, '').trim(); s = s.replace(ph[0], ' '); }
+      // Strip stray punctuation left behind by phone/email extraction.
+      // Drops parens/brackets/commas/pipes/semicolons entirely, then nukes
+      // standalone hyphens/dots/colons sitting between or around words.
+      // Hyphens inside a word (Mary-Jane) are preserved because the
+      // pattern requires whitespace or string boundaries on both sides.
+      const name = s
+        .replace(/[(){}\[\]<>,;|]/g, ' ')
+        .replace(/(^|\s)[\-.:]+(?=\s|$)/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
       return { name, phone, email };
     }).filter(r => r.phone || r.email);
     if (!newRows.length) return false;
