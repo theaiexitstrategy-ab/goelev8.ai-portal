@@ -2744,12 +2744,26 @@ function openContactImportModal(contactsBody) {
   renderCurrentStep();
 }
 
+function previewMergeTags(template, vars) {
+  if (!template) return '';
+  const norm = {};
+  for (const k of Object.keys(vars || {})) norm[k.toLowerCase().trim().replace(/\s+/g, '_')] = vars[k];
+  const sub = (m, k) => {
+    const key = String(k).toLowerCase().trim().replace(/\s+/g, '_');
+    const v = norm[key];
+    return v !== undefined && v !== null && v !== '' ? String(v) : m;
+  };
+  return String(template)
+    .replace(/\[\s*([a-zA-Z][a-zA-Z0-9_ ]{0,30}?)\s*\]/g, sub)
+    .replace(/\{\{?\s*([a-zA-Z][a-zA-Z0-9_ ]{0,30}?)\s*\}\}?/g, sub);
+}
+
 function openBlastModal(wrap) {
   const existing = document.querySelector('.blast-modal-bg');
   if (existing) existing.remove();
 
   const nameIn = el('input', { type: 'text', placeholder: 'e.g. Spring Promo' });
-  const msgIn = el('textarea', { rows: '4', placeholder: 'Your message...' });
+  const msgIn = el('textarea', { rows: '4', placeholder: 'Hey [first name], it’s {business_name}...' });
   const promoIn = el('input', { type: 'text', placeholder: 'e.g. SPRING25 (optional)' });
   const segSel = el('select', {},
     el('option', { value: 'all' }, 'All Leads'),
@@ -2758,6 +2772,47 @@ function openBlastModal(wrap) {
     el('option', { value: 'no_shows' }, 'No Shows')
   );
   const result = el('div', {});
+
+  // Personalization helpers — shown right under the message textarea so
+  // non-technical clients can click to insert a placeholder and see the
+  // preview update with sample contact data.
+  const sampleBusinessName = state.client?.business_name || state.client?.name || 'Your Business';
+  const previewBox = el('div', { style: 'font-size:0.8rem;padding:10px 12px;background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.15);border-radius:6px;margin-top:6px;white-space:pre-wrap;line-height:1.4' });
+  const previewLabel = el('div', { style: 'font-size:0.65rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted,#888);margin-bottom:4px;font-weight:600' }, 'Preview (with sample contact "Sarah Johnson")');
+  const previewText = el('div', { style: 'color:var(--text,#e0e0e0)' });
+  previewBox.append(previewLabel, previewText);
+
+  const updatePreview = () => {
+    const sample = { first_name: 'Sarah', name: 'Sarah Johnson', last_name: 'Johnson', business_name: sampleBusinessName, phone: '+15555550123', email: 'sarah@example.com' };
+    const body = msgIn.value.trim();
+    if (!body) { previewText.textContent = '(start typing your message…)'; previewText.style.fontStyle = 'italic'; previewText.style.color = 'var(--muted,#888)'; return; }
+    let rendered = previewMergeTags(body, sample);
+    if (promoIn.value.trim()) rendered += `\n\nUse code: ${promoIn.value.trim()}`;
+    previewText.textContent = rendered;
+    previewText.style.fontStyle = '';
+    previewText.style.color = '';
+  };
+
+  const insertAtCursor = (token) => {
+    const start = msgIn.selectionStart != null ? msgIn.selectionStart : msgIn.value.length;
+    const end   = msgIn.selectionEnd   != null ? msgIn.selectionEnd   : msgIn.value.length;
+    msgIn.value = msgIn.value.slice(0, start) + token + msgIn.value.slice(end);
+    const pos = start + token.length;
+    msgIn.focus();
+    msgIn.setSelectionRange(pos, pos);
+    updatePreview();
+  };
+
+  const chip = (label, token) => el('button', { type: 'button', style: 'padding:4px 10px;background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.4);color:#9fcdf5;border-radius:14px;font-size:0.75rem;cursor:pointer;font-family:inherit', onclick: () => insertAtCursor(token) }, label);
+  const chipsRow = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px' },
+    el('span', { style: 'font-size:0.75rem;color:var(--muted,#888);align-self:center;margin-right:4px' }, 'Insert:'),
+    chip('First Name', '[first name]'),
+    chip('Full Name', '[name]'),
+    chip('Business Name', '[business name]')
+  );
+
+  msgIn.addEventListener('input', updatePreview);
+  promoIn.addEventListener('input', updatePreview);
   const sendBtn = el('button', { class: 'btn primary', onclick: async () => {
     if (!nameIn.value.trim() || !msgIn.value.trim()) { toast('Name and message are required', true); return; }
     sendBtn.disabled = true; sendBtn.textContent = 'Sending...';
@@ -2778,6 +2833,8 @@ function openBlastModal(wrap) {
     el('h2', {}, 'New SMS Blast'),
     el('label', {}, 'Blast Name'), nameIn,
     el('label', {}, 'Message Body'), msgIn,
+    chipsRow,
+    previewBox,
     el('label', {}, 'Promo Code'), promoIn,
     el('label', {}, 'Segment'), segSel,
     result,
@@ -2786,6 +2843,8 @@ function openBlastModal(wrap) {
       sendBtn
     )
   );
+  // Initial preview render now that nodes are mounted.
+  updatePreview();
 
   const bg = el('div', { class: 'blast-modal-bg', onclick: (e) => { if (e.target === bg) bg.remove(); } }, modal);
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';

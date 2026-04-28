@@ -5,6 +5,7 @@
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
+import { renderTemplate, firstName } from '../../lib/merge-tags.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -67,19 +68,29 @@ export default async function handler(req, res) {
   await supabaseAdmin.from('clients')
     .update({ credit_balance: newBalance }).eq('id', clientId);
 
-  let finalMessage = message;
-  if (promoCode) finalMessage += `\n\nUse code: ${promoCode}`;
+  let baseMessage = message;
+  if (promoCode) baseMessage += `\n\nUse code: ${promoCode}`;
 
   const tw = twilioForClient(clientRow);
   const fromNumber = clientRow?.twilio_phone_number;
-  const segments = estimateSegments(finalMessage);
+  const businessName = clientRow?.business_name || clientRow?.name || '';
   let sent = 0, failed = 0;
   for (const lead of recipients) {
+    // Personalize per recipient: [first name], [name], [business name],
+    // [phone], [email], [first_name], etc. all resolve.
+    const personalized = renderTemplate(baseMessage, {
+      first_name: firstName(lead.name),
+      name: lead.name || '',
+      business_name: businessName,
+      phone: lead.phone || '',
+      email: lead.email || ''
+    });
+    const segments = estimateSegments(personalized);
     try {
       const twilioMsg = await tw.messages.create({
         to: lead.phone,
         from: fromNumber,
-        body: finalMessage,
+        body: personalized,
         statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
       });
       sent++;
@@ -98,7 +109,7 @@ export default async function handler(req, res) {
         contact_id: contactId,
         lead_id: lead.id,
         direction: 'outbound',
-        body: finalMessage,
+        body: personalized,
         segments,
         twilio_sid: twilioMsg.sid,
         status: twilioMsg.status,
