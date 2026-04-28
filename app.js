@@ -2224,27 +2224,80 @@ async function loadBlastsContacts(container) {
       container.appendChild(el('p', { class: 'muted' }, 'No contacts yet. Click "Import Contacts" to add from a file or spreadsheet.'));
       return;
     }
-    container.appendChild(el('p', { class: 'muted', style: 'margin-bottom:8px' }, `${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`));
+
+    const selected = new Set();
+    const toolbar = el('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap' });
+    const countLabel = el('p', { class: 'muted', style: 'margin:0' });
+    const bulkBtn = el('button', { class: 'btn sm danger', style: 'display:none', onclick: async () => {
+      const ids = [...selected];
+      if (!ids.length) return;
+      if (!confirm(`Delete ${ids.length} contact${ids.length !== 1 ? 's' : ''}?`)) return;
+      bulkBtn.disabled = true; bulkBtn.textContent = 'Deleting...';
+      try {
+        const r2 = await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { ids } });
+        toast(`${r2.deleted || ids.length} contact${(r2.deleted || ids.length) !== 1 ? 's' : ''} deleted`);
+        loadBlastsContacts(container);
+      } catch (e) {
+        toast('Delete failed: ' + e.message, true);
+        bulkBtn.disabled = false; bulkBtn.textContent = `Delete Selected (${ids.length})`;
+      }
+    } }, 'Delete Selected (0)');
+    toolbar.append(countLabel, bulkBtn);
+    container.appendChild(toolbar);
+
+    const updateToolbar = () => {
+      const n = selected.size;
+      countLabel.textContent = n
+        ? `${n} of ${contacts.length} selected`
+        : `${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;
+      bulkBtn.style.display = n ? '' : 'none';
+      bulkBtn.textContent = `Delete Selected (${n})`;
+    };
+    updateToolbar();
+
+    const headerCb = el('input', { type: 'checkbox' });
+    headerCb.addEventListener('change', () => {
+      const checked = headerCb.checked;
+      tbl.querySelectorAll('tbody input.row-cb').forEach(cb => {
+        cb.checked = checked;
+        const id = cb.dataset.id;
+        if (checked) selected.add(id); else selected.delete(id);
+      });
+      updateToolbar();
+    });
+
     const tbl = el('table', {},
       el('thead', {}, el('tr', {},
+        el('th', { style: 'width:32px' }, headerCb),
         el('th', {}, 'Name'), el('th', {}, 'Phone'), el('th', {}, 'Email'),
         el('th', {}, 'Tags'), el('th', {}, 'Source'), el('th', {}, '')
       )),
-      el('tbody', {}, ...contacts.map(c => el('tr', {},
-        el('td', {}, c.name || '—'),
-        el('td', {}, c.phone || '—'),
-        el('td', {}, c.email || '—'),
-        el('td', {}, (c.tags || []).join(', ') || '—'),
-        el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual')),
-        el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
-          if (!confirm('Delete contact?')) return;
-          try {
-            await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
-            toast('Contact deleted');
-            loadBlastsContacts(container);
-          } catch (e) { toast('Delete failed: ' + e.message, true); }
-        } }, 'Delete'))
-      )))
+      el('tbody', {}, ...contacts.map(c => {
+        const cb = el('input', { type: 'checkbox', class: 'row-cb' });
+        cb.dataset.id = c.id;
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(c.id); else selected.delete(c.id);
+          headerCb.checked = selected.size === contacts.length;
+          headerCb.indeterminate = selected.size > 0 && selected.size < contacts.length;
+          updateToolbar();
+        });
+        return el('tr', {},
+          el('td', {}, cb),
+          el('td', {}, c.name || '—'),
+          el('td', {}, c.phone || '—'),
+          el('td', {}, c.email || '—'),
+          el('td', {}, (c.tags || []).join(', ') || '—'),
+          el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual')),
+          el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
+            if (!confirm('Delete contact?')) return;
+            try {
+              await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
+              toast('Contact deleted');
+              loadBlastsContacts(container);
+            } catch (e) { toast('Delete failed: ' + e.message, true); }
+          } }, 'Delete'))
+        );
+      }))
     );
     container.appendChild(tbl);
   } catch (e) {
@@ -2273,11 +2326,18 @@ function openContactImportModal(contactsBody) {
   ];
 
   const GUESS_MAP = {
-    phone: 'phone', mobile: 'phone', cell: 'phone', telephone: 'phone', 'phone number': 'phone', phone_number: 'phone', phonenumber: 'phone',
-    first: 'first_name', 'first name': 'first_name', first_name: 'first_name', firstname: 'first_name', 'given name': 'first_name',
-    last: 'last_name', 'last name': 'last_name', last_name: 'last_name', lastname: 'last_name', surname: 'last_name', 'family name': 'last_name',
-    name: 'name', 'full name': 'name', fullname: 'name', 'contact name': 'name', 'client name': 'name', customer: 'name',
-    email: 'email', 'e-mail': 'email', email_address: 'email', 'email address': 'email',
+    phone: 'phone', mobile: 'phone', 'mobile number': 'phone', 'mobile phone': 'phone',
+    cell: 'phone', 'cell phone': 'phone', cellphone: 'phone',
+    telephone: 'phone', tel: 'phone', 'phone number': 'phone', phone_number: 'phone', phonenumber: 'phone', number: 'phone',
+    first: 'first_name', 'first name': 'first_name', first_name: 'first_name', firstname: 'first_name', fname: 'first_name', 'f name': 'first_name', 'f. name': 'first_name', 'given name': 'first_name',
+    last: 'last_name', 'last name': 'last_name', last_name: 'last_name', lastname: 'last_name', lname: 'last_name', 'l name': 'last_name', 'l. name': 'last_name', surname: 'last_name', 'family name': 'last_name',
+    name: 'name', 'full name': 'name', fullname: 'name', full_name: 'name',
+    'contact': 'name', 'contact name': 'name', contact_name: 'name',
+    'client': 'name', 'client name': 'name', client_name: 'name',
+    'customer': 'name', 'customer name': 'name', customer_name: 'name',
+    'lead': 'name', 'lead name': 'name', lead_name: 'name',
+    'display name': 'name', 'display_name': 'name',
+    email: 'email', 'e-mail': 'email', email_address: 'email', 'email address': 'email', 'e mail': 'email',
     tag: 'tag', tags: 'tag', group: 'tag', category: 'tag', segment: 'tag',
     notes: 'notes', note: 'notes', comment: 'notes', comments: 'notes', description: 'notes'
   };
@@ -2411,6 +2471,14 @@ function openContactImportModal(contactsBody) {
         const vals = Object.values(mappings);
         if (!vals.includes('phone')) {
           mappingErr.textContent = 'You must map at least one column to Phone.';
+          mappingErr.style.color = 'var(--danger,#e74c3c)';
+          return;
+        }
+        const hasName = vals.includes('name') || vals.includes('first_name') || vals.includes('last_name');
+        if (!hasName && !mappingErr.dataset.nameWarned) {
+          mappingErr.textContent = 'No name column mapped — contacts will import as "Unknown". Click Next again to continue anyway.';
+          mappingErr.style.color = 'var(--warning,#f0ad4e)';
+          mappingErr.dataset.nameWarned = '1';
           return;
         }
         step = 3; renderCurrentStep();

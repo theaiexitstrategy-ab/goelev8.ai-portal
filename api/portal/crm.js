@@ -35,11 +35,15 @@ async function handleContacts(req, res, ctx) {
     return res.status(200).json({ contact: data });
   }
   if (req.method === 'DELETE') {
-    const { id } = await readJson(req);
-    if (!id) return res.status(400).json({ error: 'id_required' });
-    const { error } = await sb.from('contacts').delete().eq('id', id);
+    const body = await readJson(req);
+    const ids = Array.isArray(body.ids) ? body.ids : (body.id ? [body.id] : []);
+    if (!ids.length) return res.status(400).json({ error: 'id_or_ids_required' });
+    // Defense in depth: scope by client_id even with service-role sb so a
+    // crafted payload can't reach across tenants during admin impersonation.
+    const { error } = await sb.from('contacts').delete()
+      .in('id', ids).eq('client_id', clientId);
     if (error) return res.status(400).json({ error: error.message });
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, deleted: ids.length });
   }
   return res.status(405).json({ error: 'method_not_allowed' });
 }
