@@ -2349,6 +2349,36 @@ function openContactImportModal(contactsBody) {
     return GUESS_MAP[header.toLowerCase().trim()] || 'skip';
   }
 
+  // When all data ends up in one column (no recognizable delimiter, or
+  // free-form rows like "John Smith 555-1234 john@x.com"), pull phone +
+  // email out via regex and treat the leftover as the name.
+  function autoSplitSingleColumn() {
+    if (headers.length !== 1) return false;
+    const col = headers[0];
+    const PHONE_RE = /\+?\d[\d\s().\-]{5,}\d/;
+    const EMAIL_RE = /[^\s,;<>]+@[^\s,;<>]+\.[^\s,;<>]+/;
+    // Re-include the original header as a data row since it was eaten by Papa.
+    const sourceRows = [col, ...parsedRows.map(r => r[col] || '')]
+      .map(s => (s || '').toString())
+      .filter(s => s.trim());
+    const newRows = sourceRows.map(raw => {
+      let s = raw;
+      let email = '';
+      const em = s.match(EMAIL_RE);
+      if (em) { email = em[0]; s = s.replace(em[0], ' '); }
+      let phone = '';
+      const ph = s.match(PHONE_RE);
+      if (ph) { phone = ph[0].trim(); s = s.replace(ph[0], ' '); }
+      const name = s.replace(/[,;|\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+      return { name, phone, email };
+    }).filter(r => r.phone || r.email);
+    if (!newRows.length) return false;
+    headers = ['name', 'phone', 'email'];
+    parsedRows = newRows;
+    mappings = { name: 'name', phone: 'phone', email: 'email' };
+    return true;
+  }
+
   function parseInput(text) {
     lastInputText = text;
     const config = { skipEmptyLines: true, dynamicTyping: false };
@@ -2504,8 +2534,20 @@ function openContactImportModal(contactsBody) {
       el('tbody', {}, ...rows)
     );
 
+    const oneColumnHint = headers.length === 1
+      ? el('div', { style: 'background:rgba(240,173,78,0.08);border:1px solid rgba(240,173,78,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:0.82rem' },
+          el('div', { style: 'color:var(--warning,#f0ad4e);font-weight:600;margin-bottom:4px' }, 'Only 1 column detected'),
+          el('div', { class: 'muted', style: 'margin-bottom:8px' }, 'Your data has multiple fields packed into a single column. Auto-extract phone, email, and name from each row, or go Back and pick a different delimiter.'),
+          el('button', { class: 'btn sm', onclick: () => {
+            if (autoSplitSingleColumn()) renderCurrentStep();
+            else mappingErr.textContent = 'Could not auto-extract — no phone or email patterns found in the rows.';
+          } }, 'Auto-split phone + email + name')
+        )
+      : null;
+
     content.append(
       el('p', { style: 'font-size:0.85rem;margin-bottom:12px;color:var(--muted,#888)' }, 'Map each file column to a contact field. Phone is required.'),
+      ...(oneColumnHint ? [oneColumnHint] : []),
       tbl, mappingErr
     );
 
