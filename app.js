@@ -2314,6 +2314,9 @@ function openContactImportModal(contactsBody) {
   let parsedRows = [];
   let headers = [];
   let mappings = {};
+  let hasHeaderRow = true;
+  let delimiterOverride = ''; // '' = auto-detect; otherwise ',', '\t', ';', '|', ' '
+  let lastInputText = '';
   const FIELD_OPTIONS = [
     { value: 'skip', label: 'Skip' },
     { value: 'name', label: 'Full Name' },
@@ -2347,9 +2350,25 @@ function openContactImportModal(contactsBody) {
   }
 
   function parseInput(text) {
-    const result = Papa.parse(text.trim(), { header: true, skipEmptyLines: true, dynamicTyping: false });
-    headers = result.meta.fields || [];
-    parsedRows = result.data || [];
+    lastInputText = text;
+    const config = { skipEmptyLines: true, dynamicTyping: false };
+    if (delimiterOverride) config.delimiter = delimiterOverride;
+    if (hasHeaderRow) {
+      config.header = true;
+      const result = Papa.parse(text.trim(), config);
+      headers = result.meta.fields || [];
+      parsedRows = result.data || [];
+    } else {
+      const result = Papa.parse(text.trim(), config);
+      const rows = result.data || [];
+      const maxCols = rows.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
+      headers = Array.from({ length: maxCols }, (_, i) => `Column ${i + 1}`);
+      parsedRows = rows.map(row => {
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = (row[i] || '').toString(); });
+        return obj;
+      });
+    }
     mappings = {};
     headers.forEach(h => { mappings[h] = guessMapping(h); });
   }
@@ -2377,7 +2396,32 @@ function openContactImportModal(contactsBody) {
     const fileInput = el('input', { type: 'file', accept: '.csv,.xlsx,.tsv,.txt', style: 'display:none' });
     const pasteArea = el('textarea', { rows: '5', placeholder: 'Or paste rows here (tab or comma separated, first row = headers)...',
       style: 'width:100%;padding:10px;background:var(--bg-1,#0d1117);border:1px solid var(--border,#2a3a5c);border-radius:8px;color:var(--text,#e0e0e0);font-size:0.85rem;resize:vertical;margin-top:12px' });
+    if (lastInputText) pasteArea.value = lastInputText;
     const statusMsg = el('div', { style: 'margin-top:8px;font-size:0.8rem;color:var(--muted,#888)' });
+
+    const headerCb = el('input', { type: 'checkbox', id: 'imp-header-cb' });
+    headerCb.checked = hasHeaderRow;
+    headerCb.addEventListener('change', () => { hasHeaderRow = headerCb.checked; });
+
+    const delimSel = el('select', { id: 'imp-delim-sel', style: 'padding:4px 8px;background:var(--bg-1,#0d1117);border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.8rem' },
+      el('option', { value: '' }, 'Auto-detect'),
+      el('option', { value: ',' }, 'Comma (,)'),
+      el('option', { value: '\t' }, 'Tab'),
+      el('option', { value: ';' }, 'Semicolon (;)'),
+      el('option', { value: '|' }, 'Pipe (|)'),
+      el('option', { value: ' ' }, 'Space')
+    );
+    delimSel.value = delimiterOverride;
+    delimSel.addEventListener('change', () => { delimiterOverride = delimSel.value; });
+
+    const parseOptions = el('div', { style: 'display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:0.8rem;color:var(--muted,#888)' },
+      el('label', { style: 'display:flex;align-items:center;gap:6px;cursor:pointer' },
+        headerCb, 'First row is a header'
+      ),
+      el('label', { style: 'display:flex;align-items:center;gap:6px' },
+        'Delimiter:', delimSel
+      )
+    );
 
     const dropzone = el('div', { class: 'import-dropzone' },
       el('div', { style: 'font-size:2rem;margin-bottom:8px' }, '\uD83D\uDCC1'),
@@ -2428,7 +2472,7 @@ function openContactImportModal(contactsBody) {
       step = 2; renderCurrentStep();
     } }, 'Parse Pasted Data');
 
-    content.append(dropzone, pasteArea, pasteBtn, statusMsg);
+    content.append(dropzone, pasteArea, pasteBtn, parseOptions, statusMsg);
     footer.appendChild(el('button', { class: 'btn', onclick: () => bg.remove() }, 'Cancel'));
   }
 
