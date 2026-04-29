@@ -54,24 +54,18 @@
     if (lastV > 0) { window.location.reload(true); return; }
   }
 })();
-// Client routing: redirect /islaystudios to the iSlay portal
+// Legacy /islaystudios paths now redirect to the unified SPA. iSlay
+// users get the same shell the admin sees when impersonating them, so
+// every feature is shared automatically. The old static pages remain
+// on disk but are no longer linked from anywhere.
 (function() {
   var path = window.location.pathname;
   if (path.startsWith('/islaystudios')) {
-    var token = localStorage.getItem('ge8_token');
-    if (!token && path !== '/islaystudios/login') {
-      window.location.replace('/islaystudios/login');
-      return;
-    }
-    // If authenticated and on bare /islaystudios, go to leads
-    if (token && (path === '/islaystudios' || path === '/islaystudios/')) {
-      window.location.replace('/islaystudios/leads');
-      return;
-    }
+    window.location.replace('/');
   }
 })();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-<script type="module" src="/app.js?v=13"></script>
+<script type="module" src="/app.js?v=14"></script>
 </body>
 </html>

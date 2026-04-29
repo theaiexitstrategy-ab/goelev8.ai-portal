@@ -4619,6 +4619,17 @@ async function loadR2sAnalyticsSection(container) {
 // ============================================================
 async function render() {
   const root = $('#app');
+  // Apply per-client brand color to the document root so the SPA picks up
+  // each tenant's accent (e.g. iSlay Studios gold) without a separate app.
+  const brand = state.client?.brand_color;
+  if (brand && /^#?[0-9a-f]{3,8}$/i.test(brand.replace('#', ''))) {
+    const hex = brand.startsWith('#') ? brand : '#' + brand;
+    document.documentElement.style.setProperty('--brand-1', hex);
+    document.documentElement.style.setProperty('--brand-glow', hex + '33');
+  } else {
+    document.documentElement.style.removeProperty('--brand-1');
+    document.documentElement.style.removeProperty('--brand-glow');
+  }
   if (activityPoll && state.view !== 'activity') { clearInterval(activityPoll); activityPoll = null; }
   if (state._activityChannels && state.view !== 'activity') {
     for (const ch of state._activityChannels) { try { ch.unsubscribe(); } catch {} }
@@ -4638,8 +4649,12 @@ async function render() {
     if (state.refreshToken) startTokenRefreshTimer();
     try { await loadMe(); } catch { logout(); return; }
   }
-  // Client-specific portal redirect: send branded clients to their portal
-  const CLIENT_PORTALS = { 'islay-studios': '/islaystudios/leads' };
+  // Client-specific portal redirect: previously sent iSlay users to the
+  // separate /islaystudios static-HTML mini-app. Disabled — iSlay now
+  // renders inside the main SPA so they get every feature the admin sees
+  // when impersonating (Recent Activity, Refresh purchases, Contact
+  // Import, etc.) without us having to port each one twice.
+  const CLIENT_PORTALS = {};
   if (!state.isAdmin && state.client?.slug && CLIENT_PORTALS[state.client.slug]) {
     window.location.replace(CLIENT_PORTALS[state.client.slug]);
     return;
