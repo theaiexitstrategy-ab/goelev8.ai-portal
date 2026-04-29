@@ -3130,20 +3130,43 @@ async function viewSettings() {
       } catch (e) { toast(e.message, true); }
     }}, 'Save settings'));
 
-    // Recent activity ledger
+    // Recent activity ledger — covers Stripe purchases, free credit grants,
+    // auto-reloads, refunds, and admin adjustments. Reconcile button below
+    // re-checks Stripe for any paid sessions that didn't post via webhook.
+    const ledgerHeader = el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-top:24px;margin-bottom:8px' },
+      el('h3', { style: 'font-size:14px;font-weight:600' }, 'Recent activity'),
+      el('button', { class: 'btn sm', onclick: async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Refreshing…';
+        try {
+          const r = await api('/api/portal/credits?action=reconcile', { method: 'POST' });
+          if (r.recovered > 0) toast(`Recovered ${r.recovered} purchase(s) · +${r.credits_added} credits`);
+          else toast('All purchases are already up to date.');
+          render();
+        } catch (e) { toast('Refresh failed: ' + e.message, true); }
+        finally { btn.disabled = false; btn.textContent = orig; }
+      } }, 'Refresh purchases')
+    );
+    billingPanel.appendChild(ledgerHeader);
     if (b.ledger?.length) {
-      billingPanel.appendChild(el('h3', { style: 'margin-top:24px;font-size:14px;font-weight:600' }, 'Recent activity'));
       billingPanel.appendChild(el('table', {},
         el('thead', {}, el('tr', {},
-          el('th', {}, 'When'), el('th', {}, 'Type'), el('th', {}, 'Δ Credits'), el('th', {}, 'Amount')
+          el('th', {}, 'When'), el('th', {}, 'Type'), el('th', {}, 'Δ Credits'), el('th', {}, 'Amount'), el('th', {}, 'Reference')
         )),
-        el('tbody', {}, ...b.ledger.slice(0, 10).map(r => el('tr', {},
+        el('tbody', {}, ...b.ledger.slice(0, 25).map(r => el('tr', {},
           el('td', {}, new Date(r.created_at).toLocaleString()),
-          el('td', {}, r.reason),
-          el('td', {}, (r.delta > 0 ? '+' : '') + r.delta),
-          el('td', {}, r.amount_cents ? '$' + (r.amount_cents/100).toFixed(2) : '—')
+          el('td', {}, el('span', {
+            class: 'badge ' + (r.delta > 0 ? 'green' : r.delta < 0 ? 'red' : '')
+          }, r.reason)),
+          el('td', { style: 'font-weight:600' }, (r.delta > 0 ? '+' : '') + r.delta),
+          el('td', {}, r.amount_cents ? '$' + (r.amount_cents/100).toFixed(2) : '—'),
+          el('td', { class: 'muted', style: 'font-size:0.75rem;font-family:monospace' },
+            r.ref_id ? r.ref_id.slice(0, 24) + (r.ref_id.length > 24 ? '…' : '') : '—')
         )))
       ));
+    } else {
+      billingPanel.appendChild(el('p', { class: 'muted' },
+        'No activity yet. Stripe purchases and free credit grants will appear here. If a recent purchase is missing, click "Refresh purchases".'));
     }
     wrap.appendChild(billingPanel);
   }
@@ -4661,11 +4684,24 @@ async function render() {
   root.appendChild(shell(view));
 }
 
-// Handle credits=success redirect
+// Handle credits=success redirect — trigger reconcile so the credits land
+// even if the Stripe webhook didn't fire (network blip, signing-secret
+// mismatch, redeploy mid-checkout, etc).
 const params = new URLSearchParams(window.location.search);
 if (params.get('credits') === 'success') {
-  toast('Payment received! Credits will appear shortly.');
+  toast('Payment received! Granting credits…');
   history.replaceState({}, '', '/');
+  // Wait briefly for the JWT to be loaded by render(), then reconcile
+  (async () => {
+    for (let i = 0; i < 20 && !state.token; i++) await new Promise(r => setTimeout(r, 100));
+    try {
+      const r = await api('/api/portal/credits?action=reconcile', { method: 'POST' });
+      if (r.recovered > 0) {
+        toast(`Added ${r.credits_added} credits from your purchase.`);
+        if (state.view === 'settings' || state.view === 'billing' || state.view === 'overview') render();
+      }
+    } catch (e) { /* silent — webhook may have already done it */ }
+  })();
 }
 if (params.get('connect') === 'done') {
   toast('Stripe Connect onboarding complete!');

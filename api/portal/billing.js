@@ -8,10 +8,13 @@ export default async function handler(req, res) {
   const ctx = await requireUser(req, res); if (!ctx) return;
   const { sb, clientId } = ctx;
 
+  // Use supabaseAdmin for the ledger so an over-tight RLS policy never
+  // hides a row from the tenant who paid for it. The clientId guard
+  // already restricts the result to one tenant.
   const [{ data: client }, { data: ledger }, { data: connect }] = await Promise.all([
     supabaseAdmin.from('clients').select('credit_balance, auto_reload_enabled, auto_reload_threshold, auto_reload_pack').eq('id', clientId).single(),
-    sb.from('credit_ledger').select('*').eq('client_id', clientId).order('created_at', { ascending: false }).limit(50),
-    sb.from('connect_payments').select('*').eq('client_id', clientId).order('created_at', { ascending: false }).limit(50)
+    supabaseAdmin.from('credit_ledger').select('*').eq('client_id', clientId).order('created_at', { ascending: false }).limit(50),
+    supabaseAdmin.from('connect_payments').select('*').eq('client_id', clientId).order('created_at', { ascending: false }).limit(50)
   ]);
 
   // Usage this month

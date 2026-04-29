@@ -85,6 +85,81 @@ export default async function handler(req, res) {
     return res.status(200).json({ url: session.url });
   }
 
+  // ---------- POST /api/portal/credits?action=reconcile ----------
+  // Recovers any paid Stripe checkout session for this tenant that didn't
+  // get a corresponding credit_ledger entry (e.g. webhook didn't fire,
+  // signing-secret mismatch, transient outage). Idempotent — safe to call
+  // repeatedly. Auto-fires on the ?credits=success return URL.
+  if (action === 'reconcile') {
+    if (!methodGuard(req, res, ['POST'])) return;
+    const { data: client } = await supabaseAdmin
+      .from('clients').select('id, stripe_customer_id, credit_balance').eq('id', ctx.clientId).single();
+    if (!client?.stripe_customer_id) {
+      return res.status(200).json({ recovered: 0, reason: 'no_stripe_customer' });
+    }
+
+    // Pull recent paid sessions for this Stripe customer (last 90 days)
+    let sessions = [];
+    try {
+      const ninetyDaysAgo = Math.floor((Date.now() - 90 * 86400 * 1000) / 1000);
+      const list = await stripe.checkout.sessions.list({
+        customer: client.stripe_customer_id,
+        limit: 50,
+        created: { gte: ninetyDaysAgo }
+      });
+      sessions = list.data || [];
+    } catch (e) {
+      return res.status(200).json({ recovered: 0, error: e.message });
+    }
+
+    // Existing ledger ref_ids for this client (payment_intent ids on the row)
+    const { data: existingLedger } = await supabaseAdmin
+      .from('credit_ledger').select('ref_id').eq('client_id', client.id);
+    const seenRefs = new Set((existingLedger || []).map(r => r.ref_id).filter(Boolean));
+
+    let recovered = 0;
+    let creditsAdded = 0;
+    const recoveredItems = [];
+
+    for (const s of sessions) {
+      if (s.payment_status !== 'paid' || s.status !== 'complete') continue;
+      const pi = s.payment_intent;
+      if (!pi || seenRefs.has(pi)) continue;
+
+      // Resolve the pack from session metadata first, then payment_intent metadata
+      let packId = s.metadata?.pack;
+      if (!packId) {
+        try {
+          const piObj = await stripe.paymentIntents.retrieve(pi);
+          packId = piObj.metadata?.pack;
+        } catch {}
+      }
+      const pack = getPack(packId);
+      if (!pack) continue;
+
+      // Apply credits + insert ledger row
+      const { error: rpcErr } = await supabaseAdmin.rpc('add_credits', {
+        p_client_id: client.id, p_amount: pack.credits
+      });
+      if (rpcErr) continue;
+      const { error: ledErr } = await supabaseAdmin.from('credit_ledger').insert({
+        client_id: client.id,
+        delta: pack.credits,
+        reason: 'purchase',
+        ref_id: pi,
+        pack: pack.id,
+        amount_cents: pack.priceCents
+      });
+      if (ledErr) continue;
+
+      recovered++;
+      creditsAdded += pack.credits;
+      recoveredItems.push({ pack: pack.id, credits: pack.credits, payment_intent: pi });
+    }
+
+    return res.status(200).json({ recovered, credits_added: creditsAdded, items: recoveredItems });
+  }
+
   // ---------- POST /api/portal/credits?action=auto-reload ----------
   if (action === 'auto-reload') {
     if (!methodGuard(req, res, ['POST'])) return;
