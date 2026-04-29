@@ -6,7 +6,7 @@
 <title>iSlay Studios — Credits & Billing</title>
 <link rel="icon" href="/icon-192.png" />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./portal.css?v=11" />
+<link rel="stylesheet" href="./portal.css?v=12" />
 </head>
 <body>
 <button id="menu-toggle">&#9776;</button>
@@ -53,6 +53,20 @@
       </div>
     </div>
 
+    <!-- Recent Activity (ledger) -->
+    <div class="panel">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px">
+        <h2 style="margin:0">Recent Activity</h2>
+        <button class="btn btn-ghost btn-sm" id="refresh-purchases-btn" onclick="refreshPurchases()">Refresh purchases</button>
+      </div>
+      <p style="color:var(--muted);font-size:0.8rem;margin-bottom:14px">
+        Stripe purchases, free credit grants, auto-reloads, and SMS spends. If a recent purchase is missing, click "Refresh purchases".
+      </p>
+      <div id="ledger-host">
+        <div class="stat-card skeleton" style="height:120px"></div>
+      </div>
+    </div>
+
     <!-- Auto-Reload Settings -->
     <div class="panel">
       <h2>Auto-Reload Settings</h2>
@@ -81,22 +95,29 @@
   </div>
 </div>
 
-<script src="./shell.js?v=11"></script>
+<script src="./shell.js?v=12"></script>
 <script>
 initShell('credits');
 
-// Check for success redirect
-(function checkSuccess() {
+// Check for success redirect — auto-reconcile so credits land even if
+// the Stripe webhook didn't fire successfully.
+(async function checkSuccess() {
   var params = new URLSearchParams(window.location.search);
-  if (params.get('credits') === 'success') {
-    toast('Credits purchased successfully!');
-    // Clean URL
-    window.history.replaceState({}, '', window.location.pathname);
-  }
+  if (params.get('credits') !== 'success') return;
+  window.history.replaceState({}, '', window.location.pathname);
+  toast('Payment received! Granting credits…');
+  try {
+    var r = await api('/api/portal/credits?action=reconcile', { method: 'POST' });
+    if (r && r.recovered > 0) {
+      toast('Added ' + (r.credits_added || 0) + ' credits from your purchase.');
+    }
+  } catch (err) { /* webhook may have already done it */ }
+  // Refresh the balance + ledger after reconcile
+  loadBalance();
+  loadLedger();
 })();
 
-// Load credit balance
-(async function loadBalance() {
+async function loadBalance() {
   try {
     var data = await api('/api/portal/dashboard');
     var bal = data.creditBalance || 0;
@@ -111,7 +132,69 @@ initShell('credits');
     document.getElementById('balance-card').innerHTML =
       '<div class="empty">Failed to load balance.</div>';
   }
-})();
+}
+loadBalance();
+
+function fmtTime(ts) {
+  try { return new Date(ts).toLocaleString(); } catch (e) { return ts; }
+}
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+  });
+}
+
+async function loadLedger() {
+  var host = document.getElementById('ledger-host');
+  host.innerHTML = '<div class="stat-card skeleton" style="height:80px"></div>';
+  try {
+    var b = await api('/api/portal/billing');
+    var rows = (b && b.ledger) || [];
+    if (!rows.length) {
+      host.innerHTML = '<div class="empty">No activity yet. Stripe purchases and free credit grants will appear here.</div>';
+      return;
+    }
+    var html = '<table class="ledger-table"><thead><tr>' +
+      '<th>When</th><th>Type</th><th>Δ Credits</th><th>Amount</th><th>Reference</th>' +
+      '</tr></thead><tbody>';
+    rows.slice(0, 25).forEach(function (r) {
+      var deltaCls = r.delta > 0 ? 'pos' : (r.delta < 0 ? 'neg' : '');
+      var ref = r.ref_id || '';
+      var refShort = ref.length > 28 ? ref.slice(0, 28) + '…' : ref;
+      html += '<tr>' +
+        '<td>' + escapeHtml(fmtTime(r.created_at)) + '</td>' +
+        '<td><span class="badge ' + deltaCls + '">' + escapeHtml(r.reason || '—') + '</span></td>' +
+        '<td class="' + deltaCls + '" style="font-weight:600">' + (r.delta > 0 ? '+' : '') + r.delta + '</td>' +
+        '<td>' + (r.amount_cents ? '$' + (r.amount_cents/100).toFixed(2) : '—') + '</td>' +
+        '<td class="muted mono">' + escapeHtml(refShort || '—') + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    host.innerHTML = html;
+  } catch (err) {
+    host.innerHTML = '<div class="empty">Failed to load activity: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+loadLedger();
+
+async function refreshPurchases() {
+  var btn = document.getElementById('refresh-purchases-btn');
+  btn.disabled = true; var orig = btn.textContent; btn.textContent = 'Refreshing…';
+  try {
+    var r = await api('/api/portal/credits?action=reconcile', { method: 'POST' });
+    if (r && r.recovered > 0) {
+      toast('Recovered ' + r.recovered + ' purchase(s) · +' + r.credits_added + ' credits');
+    } else {
+      toast('All purchases are already up to date.');
+    }
+    loadBalance();
+    loadLedger();
+  } catch (err) {
+    toast('Refresh failed: ' + err.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
 
 async function buyPack(pack) {
   try {
