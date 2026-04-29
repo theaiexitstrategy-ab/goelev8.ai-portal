@@ -16,9 +16,10 @@ export default async function handler(req, res) {
   const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-  // Fetch all data in parallel
-  const [leadsR, bookingsR, salesR, callsR] = await Promise.all([
-    supabaseAdmin.from('leads').select('id, created_at, source, status')
+  // Fetch all data in parallel. `artist_selected` is an iSlay-portal
+  // column (migration 0010) used for the byArtist breakdown.
+  const [leadsR, bookingsR, salesR, callsR, messagesR, ledgerR] = await Promise.all([
+    supabaseAdmin.from('leads').select('id, created_at, source, status, artist_selected')
       .eq('client_id', clientId).gte('created_at', thirtyDaysAgo.toISOString())
       .order('created_at', { ascending: false }),
     supabaseAdmin.from('bookings').select('id, created_at, starts_at, status')
@@ -27,13 +28,21 @@ export default async function handler(req, res) {
       .eq('client_id', clientId).eq('payment_status', 'paid')
       .gte('created_at', thirtyDaysAgo.toISOString()),
     supabaseAdmin.from('vapi_calls').select('id, created_at')
+      .eq('client_id', clientId).gte('created_at', thirtyDaysAgo.toISOString()),
+    supabaseAdmin.from('messages').select('id, status, direction, created_at')
+      .eq('client_id', clientId).eq('direction', 'outbound')
+      .gte('created_at', thirtyDaysAgo.toISOString()),
+    supabaseAdmin.from('credit_ledger').select('delta, created_at')
       .eq('client_id', clientId).gte('created_at', thirtyDaysAgo.toISOString())
+      .lt('delta', 0)
   ]);
 
   const leads = leadsR.data || [];
   const bookings = bookingsR.data || [];
   const sales = salesR.data || [];
   const calls = callsR.data || [];
+  const messages = messagesR.data || [];
+  const ledger = ledgerR.data || [];
 
   // Total leads and month comparison
   const leadsThisMonth = leads.filter(l => new Date(l.created_at) >= monthStart);
@@ -141,7 +150,42 @@ export default async function handler(req, res) {
     ...(recentCalls || []).map(c => ({ type: 'call', name: c.caller_phone, action: `called (${c.outcome || 'received'})`, source: 'Vapi', ts: c.created_at }))
   ].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 20);
 
+  // SMS counts (last 30 days, outbound only — inbound doesn't burn credits).
+  // Treat anything not failed/undelivered as a successful send so partial
+  // status fields ('queued', 'sent', 'delivered') all roll up.
+  let smsSent = 0, smsFailed = 0;
+  for (const m of messages) {
+    const s = (m.status || '').toLowerCase();
+    if (s === 'failed' || s === 'undelivered') smsFailed++;
+    else smsSent++;
+  }
+
+  // Credits spent in the last 30 days. Ledger deltas are negative for
+  // spend, positive for grants/refunds — we already filtered to negative.
+  const creditsSpent = ledger.reduce((sum, r) => sum + Math.abs(Number(r.delta) || 0), 0);
+
+  // Leads grouped by artist_selected (iSlay-specific). Skip rows with no
+  // artist set so the bar chart isn't dominated by "Unknown".
+  const byArtistMap = {};
+  for (const l of leads) {
+    const a = (l.artist_selected || '').trim();
+    if (!a) continue;
+    byArtistMap[a] = (byArtistMap[a] || 0) + 1;
+  }
+  const byArtist = Object.entries(byArtistMap)
+    .sort((a, b) => b[1] - a[1])
+    .map(([artist, count]) => ({ artist, count }));
+
+  // Daily leads as an ordered array — branded page expects this shape.
+  const leadsOverTime = Object.entries(leadsByDay)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, count]) => ({ date, count }));
+
+  // Top sources reshaped to {source, count} for the branded bar chart.
+  const bySource = topSources.map(s => ({ source: s.source, count: s.count }));
+
   return res.json({
+    // Existing nested shape — kept for backward compatibility.
     overview: {
       total_leads: leadsThisMonthCount,
       leads_change: parseFloat(leadsChange),
@@ -153,6 +197,15 @@ export default async function handler(req, res) {
     leads_by_source: leadsBySource,
     funnel_leads: funnelLeads,
     top_sources: topSources,
-    recent_activity: activity
+    recent_activity: activity,
+    // Flat keys consumed by clients/islaystudios/analytics.html.
+    leadsThisMonth: leadsThisMonthCount,
+    leadsLastMonth: leadsLastMonthCount,
+    smsSent,
+    smsFailed,
+    creditsSpent,
+    bySource,
+    byArtist,
+    leadsOverTime
   });
 }
