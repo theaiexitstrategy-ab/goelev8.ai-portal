@@ -23,8 +23,6 @@
 .stat-delta { font-size:0.7rem; margin-top:2px; }
 .stat-delta.up { color:var(--success); }
 .stat-delta.down { color:var(--error); }
-.charts-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
-@media (max-width: 768px) { .charts-grid { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -47,16 +45,9 @@
       <div class="stat-card skeleton" style="height:110px"></div>
     </div>
 
-    <!-- Bar charts side by side -->
-    <div class="charts-grid">
-      <div class="chart-panel" id="chart-source">
-        <h2>Leads by Source</h2>
-        <div class="skeleton" style="height:160px"></div>
-      </div>
-      <div class="chart-panel" id="chart-artist">
-        <h2>Leads by Artist</h2>
-        <div class="skeleton" style="height:160px"></div>
-      </div>
+    <div class="chart-panel" id="chart-source">
+      <h2>Leads by Source</h2>
+      <div class="skeleton" style="height:160px"></div>
     </div>
 
     <!-- Leads over time -->
@@ -152,16 +143,11 @@ function buildTimeline(containerId, points) {
         '<div class="label">Credits Spent</div>' +
       '</div>';
 
-    // Bar charts
+    // Bar chart
     var bySource = (data.bySource || []).map(function(s) {
       return { name: s.source || s.name, count: s.count || 0 };
     });
     buildBarChart('chart-source', bySource, 'Leads by Source');
-
-    var byArtist = (data.byArtist || []).map(function(a) {
-      return { name: a.artist || a.name, count: a.count || 0 };
-    });
-    buildBarChart('chart-artist', byArtist, 'Leads by Artist');
 
     // Timeline
     buildTimeline('chart-timeline', data.leadsOverTime || []);
