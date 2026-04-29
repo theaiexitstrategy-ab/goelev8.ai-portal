@@ -34,6 +34,7 @@ import { requireUser, methodGuard, readJson } from '../lib/auth.js';
 import { sendWelcomeForEvent } from '../lib/welcome.js';
 import { scheduleNudgeSequence } from '../lib/nudge-sms.js';
 import { sendPushToClient, sendPushToAdmins } from '../lib/push.js';
+import { toE164 } from '../lib/phone.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -433,7 +434,11 @@ async function handleLead(req, res) {
   if (!client) return res.status(422).json({ error: 'unknown_client' });
 
   const name  = body.name  || null;
-  const phone = body.phone || null;
+  // Normalize phone to E.164 so downstream Twilio sends don't get rejected
+  // for bare 10-digit US numbers. If the value can't be coerced (too short
+  // / contains letters), keep the original so the lead still saves but no
+  // SMS is attempted (toE164 returns null → nudge skipped below).
+  const phone = toE164(body.phone) || (body.phone || null);
   const email = body.email || null;
   if (!name && !phone && !email) return res.status(400).json({ error: 'no_contact_info' });
 

@@ -6,6 +6,7 @@ import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
 import { renderTemplate, firstName } from '../../lib/merge-tags.js';
+import { toE164 } from '../../lib/phone.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -90,17 +91,19 @@ export default async function handler(req, res) {
   const businessName = clientRow?.business_name || clientRow?.name || '';
   let sent = 0, failed = 0;
   for (const r of recipients) {
+    const toE = toE164(r.phone);
+    if (!toE) { failed++; continue; }
     const personalized = renderTemplate(baseMessage, {
       first_name: firstName(r.name),
       name: r.name || '',
       business_name: businessName,
-      phone: r.phone || '',
+      phone: toE,
       email: r.email || ''
     });
     const segments = estimateSegments(personalized);
     try {
       const twilioMsg = await tw.messages.create({
-        to: r.phone,
+        to: toE,
         from: fromNumber,
         body: personalized,
         statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
@@ -130,7 +133,7 @@ export default async function handler(req, res) {
         segments,
         twilio_sid: twilioMsg.sid,
         status: twilioMsg.status,
-        to_number: r.phone,
+        to_number: toE,
         from_number: fromNumber,
         credits_charged: 1
       });

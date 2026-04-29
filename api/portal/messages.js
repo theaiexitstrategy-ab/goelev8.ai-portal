@@ -1,6 +1,7 @@
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
+import { toE164 } from '../../lib/phone.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -48,6 +49,10 @@ export default async function handler(req, res) {
     .from('clients').select('*').eq('id', clientId).single();
   if (cErr || !client) return res.status(500).json({ error: 'client_not_found' });
   if (!client.twilio_phone_number) return res.status(400).json({ error: 'no_twilio_number' });
+
+  const e164 = toE164(destNumber);
+  if (!e164) return res.status(400).json({ error: 'invalid_phone', detail: destNumber });
+  destNumber = e164;
 
   const segments = estimateSegments(text);
   if (client.credit_balance < segments) {

@@ -22,6 +22,7 @@
 
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
+import { toE164 } from '../../lib/phone.js';
 
 const BATCH_SIZE = 50;
 
@@ -110,11 +111,21 @@ export default async function handler(req, res) {
         continue;
       }
 
+      // Defensive E.164 normalization — queued rows may pre-date the
+      // intake-side normalization. Twilio rejects bare 10-digit numbers.
+      const toE = toE164(row.to_number);
+      if (!toE) {
+        await supabaseAdmin.rpc('add_credits', { p_client_id: clientId, p_amount: segments });
+        await supabaseAdmin.from('nudge_queue')
+          .update({ failed_reason: 'invalid_phone' }).eq('id', row.id);
+        failed++;
+        continue;
+      }
       let twilioMsg;
       try {
         twilioMsg = await tw.messages.create({
           from: client.twilio_phone_number,
-          to: row.to_number,
+          to: toE,
           body: text,
           statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
         });

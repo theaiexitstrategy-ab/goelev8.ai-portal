@@ -4,6 +4,7 @@
 // to stay under the Vercel 12-function cap while we add /api/admin.
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
+import { toE164 } from '../../lib/phone.js';
 
 async function handleContacts(req, res, ctx) {
   const { sb, clientId } = ctx;
@@ -157,7 +158,9 @@ async function handleContactsImport(req, res, ctx) {
   const skipped_duplicates = [];
   const normalized = [];
   for (const c of contacts) {
-    const phone = (c.phone || '').replace(/[^\d+]/g, '');
+    // Coerce to E.164 so bare 10-digit US numbers don't end up undeliverable
+    // when a blast eventually hits them.
+    const phone = toE164(c.phone);
     if (!phone) continue;
     if (seen.has(phone)) { skipped_duplicates.push(phone); continue; }
     seen.add(phone);
