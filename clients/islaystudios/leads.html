@@ -159,7 +159,7 @@ function renderLeads() {
     var badgeCls = statusBadgeClass(l.lead_status);
     return '<div class="lead-row" onclick="openDrawer(\'' + l.id + '\')">' +
       '<div class="lead-row-left">' +
-        '<div class="lead-name">' + (l.full_name || 'Unknown') + '</div>' +
+        '<div class="lead-name">' + (l.full_name || l.name || 'Unknown') + '</div>' +
         '<div class="lead-phone">' + (l.phone || 'No phone') + '</div>' +
       '</div>' +
       '<div class="lead-row-right">' +
@@ -191,7 +191,7 @@ function openDrawer(id) {
   }).join('');
 
   document.getElementById('drawer-content').innerHTML =
-    '<div class="drawer-name">' + (lead.full_name || 'Unknown') + '</div>' +
+    '<div class="drawer-name">' + (lead.full_name || lead.name || 'Unknown') + '</div>' +
     '<div class="drawer-details">' +
       '<div class="drawer-detail-row"><span class="drawer-label">Phone</span><span>' + (lead.phone || '—') + '</span></div>' +
       '<div class="drawer-detail-row"><span class="drawer-label">Email</span><span>' + (lead.email || '—') + '</span></div>' +

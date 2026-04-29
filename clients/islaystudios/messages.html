@@ -35,15 +35,36 @@ var allContacts = [];
 var activeContactId = null;
 var allMessages = [];
 
+function normPhone(p) {
+  return (p || '').toString().replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+}
+
 async function loadContacts() {
   try {
-    var data = await api('/api/portal/leads');
-    allContacts = (data.leads || []).filter(function(l) { return l.phone; });
+    // Load contacts (the table messages.contact_id references) so threads
+    // resolve. Load leads in parallel only to translate a ?lead_id= URL
+    // param into a phone -> contact match for back-compat with the
+    // "Send Message" button on the Leads page.
+    var pairs = await Promise.all([
+      api('/api/portal/crm?action=contacts'),
+      api('/api/portal/leads').catch(function() { return { leads: [] }; })
+    ]);
+    var contactsData = pairs[0];
+    var leadsData = pairs[1];
+    allContacts = (contactsData.contacts || []).filter(function(c) { return c.phone; });
     renderContactList();
-    // Check URL for pre-selected lead
+
+    // Check URL for pre-selected lead → resolve to contact by phone match.
     var params = new URLSearchParams(window.location.search);
-    var preselect = params.get('lead_id');
-    if (preselect) selectContact(preselect);
+    var leadIdParam = params.get('lead_id');
+    if (leadIdParam) {
+      var lead = (leadsData.leads || []).find(function(l) { return l.id === leadIdParam; });
+      if (lead && lead.phone) {
+        var key = normPhone(lead.phone);
+        var match = allContacts.find(function(c) { return normPhone(c.phone) === key; });
+        if (match) selectContact(match.id);
+      }
+    }
   } catch (err) {
     document.getElementById('messages-container').innerHTML =
       '<div class="empty">Failed to load contacts.</div>';
@@ -64,7 +85,7 @@ function renderContactList() {
   var contactListHtml = allContacts.map(function(c) {
     var activeCls = c.id === activeContactId ? ' msg-contact active' : 'msg-contact';
     return '<div class="' + activeCls + '" onclick="selectContact(\'' + c.id + '\')">' +
-      '<div class="msg-contact-name">' + (c.full_name || 'Unknown') + '</div>' +
+      '<div class="msg-contact-name">' + (c.name || c.full_name || 'Unknown') + '</div>' +
       '<div class="msg-contact-phone">' + (c.phone || '') + '</div>' +
     '</div>';
   }).join('');
