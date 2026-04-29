@@ -3163,21 +3163,44 @@ async function viewSettings() {
     );
     billingPanel.appendChild(ledgerHeader);
     if (b.ledger?.length) {
+      // Show only the most recent 5 transactions by default; "Show more"
+      // expands to the full ledger (capped at 50 by the billing endpoint).
+      const PAGE = 5;
+      const buildRow = (r) => el('tr', {},
+        el('td', {}, new Date(r.created_at).toLocaleString()),
+        el('td', {}, el('span', {
+          class: 'badge ' + (r.delta > 0 ? 'green' : r.delta < 0 ? 'red' : '')
+        }, r.reason)),
+        el('td', { style: 'font-weight:600' }, (r.delta > 0 ? '+' : '') + r.delta),
+        el('td', {}, r.amount_cents ? '$' + (r.amount_cents/100).toFixed(2) : '—'),
+        el('td', { class: 'muted', style: 'font-size:0.75rem;font-family:monospace' },
+          r.ref_id ? r.ref_id.slice(0, 24) + (r.ref_id.length > 24 ? '…' : '') : '—')
+      );
+      const tbody = el('tbody', {}, ...b.ledger.slice(0, PAGE).map(buildRow));
       billingPanel.appendChild(el('table', {},
         el('thead', {}, el('tr', {},
           el('th', {}, 'When'), el('th', {}, 'Type'), el('th', {}, 'Δ Credits'), el('th', {}, 'Amount'), el('th', {}, 'Reference')
         )),
-        el('tbody', {}, ...b.ledger.slice(0, 25).map(r => el('tr', {},
-          el('td', {}, new Date(r.created_at).toLocaleString()),
-          el('td', {}, el('span', {
-            class: 'badge ' + (r.delta > 0 ? 'green' : r.delta < 0 ? 'red' : '')
-          }, r.reason)),
-          el('td', { style: 'font-weight:600' }, (r.delta > 0 ? '+' : '') + r.delta),
-          el('td', {}, r.amount_cents ? '$' + (r.amount_cents/100).toFixed(2) : '—'),
-          el('td', { class: 'muted', style: 'font-size:0.75rem;font-family:monospace' },
-            r.ref_id ? r.ref_id.slice(0, 24) + (r.ref_id.length > 24 ? '…' : '') : '—')
-        )))
+        tbody
       ));
+
+      if (b.ledger.length > PAGE) {
+        let expanded = false;
+        const toggleBtn = el('button', {
+          class: 'btn sm',
+          style: 'margin-top:10px',
+          onclick: () => {
+            expanded = !expanded;
+            tbody.innerHTML = '';
+            const rows = expanded ? b.ledger : b.ledger.slice(0, PAGE);
+            for (const r of rows) tbody.appendChild(buildRow(r));
+            toggleBtn.textContent = expanded
+              ? 'Show less'
+              : `Show all ${b.ledger.length} transactions`;
+          }
+        }, `Show all ${b.ledger.length} transactions`);
+        billingPanel.appendChild(toggleBtn);
+      }
     } else {
       billingPanel.appendChild(el('p', { class: 'muted' },
         'No activity yet. Stripe purchases and free credit grants will appear here. If a recent purchase is missing, click "Refresh purchases".'));
