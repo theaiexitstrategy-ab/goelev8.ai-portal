@@ -2766,7 +2766,8 @@ function openBlastModal(wrap) {
   const msgIn = el('textarea', { rows: '4', placeholder: 'Hey [first name], it’s {business_name}...' });
   const promoIn = el('input', { type: 'text', placeholder: 'e.g. SPRING25 (optional)' });
   const segSel = el('select', {},
-    el('option', { value: 'all' }, 'All Leads'),
+    el('option', { value: 'contacts' }, 'All Contacts (imported + funnel)'),
+    el('option', { value: 'all' }, 'Funnel Leads'),
     el('option', { value: 'first_timers' }, 'First Timers'),
     el('option', { value: 'returning' }, 'Returning'),
     el('option', { value: 'no_shows' }, 'No Shows')

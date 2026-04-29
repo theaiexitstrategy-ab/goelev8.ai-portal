@@ -33,22 +33,36 @@ export default async function handler(req, res) {
   const { name, message, promoCode, segment, artistFilter } = await readJson(req);
   if (!name || !message) return res.status(400).json({ error: 'name_and_message_required' });
 
-  // Build lead query based on segment
-  let query = supabaseAdmin.from('leads').select('*').eq('client_id', clientId);
-  switch (segment) {
-    case 'new':          query = query.eq('lead_status', 'New'); break;
-    case 'booked':       query = query.eq('lead_status', 'Booked'); break;
-    case 'first_timers': query = query.eq('booking_confirmed', false); break;
-    case 'returning':    query = query.eq('booking_confirmed', true); break;
-    case 'no_shows':     query = query.eq('lead_status', 'No Show'); break;
-    case 'by_artist':    query = query.eq('artist_selected', artistFilter); break;
-    // 'all' — no filter
+  // Build the recipient list. The 'contacts' segment pulls from the
+  // contacts table (covers imported CSV uploads + funnel-sourced
+  // contacts created by the nudge sequence). Every other segment pulls
+  // from leads and applies a status/booking filter.
+  let recipients = [];
+  if (segment === 'contacts') {
+    const { data: contacts, error: cErr } = await supabaseAdmin
+      .from('contacts').select('id, name, phone, email, opted_out')
+      .eq('client_id', clientId);
+    if (cErr) return res.status(500).json({ error: cErr.message });
+    recipients = (contacts || [])
+      .filter(c => c.phone && !c.opted_out)
+      .map(c => ({ id: c.id, name: c.name, phone: c.phone, email: c.email, _source: 'contact' }));
+  } else {
+    let query = supabaseAdmin.from('leads').select('*').eq('client_id', clientId);
+    switch (segment) {
+      case 'new':          query = query.eq('lead_status', 'New'); break;
+      case 'booked':       query = query.eq('lead_status', 'Booked'); break;
+      case 'first_timers': query = query.eq('booking_confirmed', false); break;
+      case 'returning':    query = query.eq('booking_confirmed', true); break;
+      case 'no_shows':     query = query.eq('lead_status', 'No Show'); break;
+      case 'by_artist':    query = query.eq('artist_selected', artistFilter); break;
+      // 'all' — no filter
+    }
+    const { data: leads, error: leadsErr } = await query;
+    if (leadsErr) return res.status(500).json({ error: leadsErr.message });
+    recipients = (leads || [])
+      .filter(l => l.phone)
+      .map(l => ({ id: l.id, name: l.name, phone: l.phone, email: l.email, _source: 'lead' }));
   }
-
-  const { data: leads, error: leadsErr } = await query;
-  if (leadsErr) return res.status(500).json({ error: leadsErr.message });
-
-  const recipients = (leads || []).filter(l => l.phone);
   if (!recipients.length) return res.status(400).json({ error: 'no_recipients_with_phone' });
 
   // Credit gate: check balance BEFORE sending
@@ -75,45 +89,48 @@ export default async function handler(req, res) {
   const fromNumber = clientRow?.twilio_phone_number;
   const businessName = clientRow?.business_name || clientRow?.name || '';
   let sent = 0, failed = 0;
-  for (const lead of recipients) {
-    // Personalize per recipient: [first name], [name], [business name],
-    // [phone], [email], [first_name], etc. all resolve.
+  for (const r of recipients) {
     const personalized = renderTemplate(baseMessage, {
-      first_name: firstName(lead.name),
-      name: lead.name || '',
+      first_name: firstName(r.name),
+      name: r.name || '',
       business_name: businessName,
-      phone: lead.phone || '',
-      email: lead.email || ''
+      phone: r.phone || '',
+      email: r.email || ''
     });
     const segments = estimateSegments(personalized);
     try {
       const twilioMsg = await tw.messages.create({
-        to: lead.phone,
+        to: r.phone,
         from: fromNumber,
         body: personalized,
         statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
       });
       sent++;
 
-      // Resolve contact_id for thread linkage (best-effort).
+      // Link the message to whichever side we sourced from. For lead
+      // sends, look up a matching contact to keep thread continuity.
       let contactId = null;
-      const { data: existing } = await supabaseAdmin
-        .from('contacts').select('id')
-        .eq('client_id', clientId).eq('phone', lead.phone).maybeSingle();
-      contactId = existing?.id || null;
+      let leadId = null;
+      if (r._source === 'contact') {
+        contactId = r.id;
+      } else {
+        leadId = r.id;
+        const { data: existing } = await supabaseAdmin
+          .from('contacts').select('id')
+          .eq('client_id', clientId).eq('phone', r.phone).maybeSingle();
+        contactId = existing?.id || null;
+      }
 
-      // Log the send so it shows up in the Messages tab thread view.
-      // Blasts iterate over leads directly, so the lead_id is known.
       await supabaseAdmin.from('messages').insert({
         client_id: clientId,
         contact_id: contactId,
-        lead_id: lead.id,
+        lead_id: leadId,
         direction: 'outbound',
         body: personalized,
         segments,
         twilio_sid: twilioMsg.sid,
         status: twilioMsg.status,
-        to_number: lead.phone,
+        to_number: r.phone,
         from_number: fromNumber,
         credits_charged: 1
       });
