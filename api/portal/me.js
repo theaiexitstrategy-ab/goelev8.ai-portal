@@ -15,6 +15,22 @@ export default async function handler(req, res) {
   // Admins are allowed in without a client_id (they may not be impersonating yet).
   const ctx = await requireUser(req, res, { requireClient: false }); if (!ctx) return;
 
+  // Lightweight subroute: ?action=booking-url returns the canonical
+  // booking link for the current tenant. Used by the welcome-SMS preview
+  // and (optionally) by the Vapi assistant as a function tool.
+  const url = new URL(req.url, 'http://x');
+  const action = url.searchParams.get('action');
+  if (req.method === 'GET' && action === 'booking-url') {
+    if (!ctx.clientId) return res.status(200).json({ booking_url: '' });
+    const { data: cal } = await supabaseAdmin
+      .from('booking_calendars').select('custom_domain, slug')
+      .eq('business_id', ctx.clientId).maybeSingle();
+    let bookingUrl = '';
+    if (cal?.custom_domain) bookingUrl = 'https://' + cal.custom_domain.replace(/^https?:\/\//, '');
+    else if (cal?.slug)     bookingUrl = `https://book.goelev8.ai/${cal.slug}`;
+    return res.status(200).json({ booking_url: bookingUrl });
+  }
+
   if (req.method === 'GET') {
     let client = null;
     let clientError = null;

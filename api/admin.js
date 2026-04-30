@@ -53,11 +53,24 @@ async function listClients(req, res) {
       if (!prev || new Date(r.created_at) > new Date(prev)) lastActivity[r.client_id] = r.created_at;
     }
   }
+
+  // Booking calendar custom_domain per client (drives the booking URL the
+  // welcome SMS and Vapi assistant emit). Tolerant if the table is empty.
+  const bookingDomains = {};
+  if (ids.length) {
+    const { data: cals } = await supabaseAdmin
+      .from('booking_calendars').select('business_id, custom_domain, slug').in('business_id', ids);
+    for (const r of cals || []) {
+      bookingDomains[r.business_id] = r.custom_domain || (r.slug ? `book.goelev8.ai/${r.slug}` : '');
+    }
+  }
+
   return res.status(200).json({
     clients: clients.map((c) => ({
       ...c,
       sent_30d: usage[c.id] || 0,
-      last_activity_at: lastActivity[c.id] || null
+      last_activity_at: lastActivity[c.id] || null,
+      booking_custom_domain: bookingDomains[c.id] || ''
     }))
   });
 }
@@ -347,6 +360,37 @@ async function ensureDefaultClients(req, res) {
   return res.status(200).json({ ensured: required.length, inserted });
 }
 
+async function setBookingUrl(req, res) {
+  const body = await readJson(req);
+  const { client_id, booking_url } = body || {};
+  if (!client_id) return res.status(400).json({ error: 'client_id required' });
+  let domain = (booking_url || '').trim();
+  // Strip protocol + trailing slash so we always store a bare hostname
+  domain = domain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  if (domain && !/^[a-z0-9.-]+\.[a-z]{2,}/i.test(domain)) {
+    return res.status(400).json({ error: 'Booking URL must be a hostname like book.theflexfacility.com' });
+  }
+
+  // Find or create the booking_calendars row for this client
+  const { data: existing } = await supabaseAdmin
+    .from('booking_calendars').select('id').eq('business_id', client_id).maybeSingle();
+
+  if (existing) {
+    const { error } = await supabaseAdmin
+      .from('booking_calendars').update({ custom_domain: domain || null })
+      .eq('id', existing.id);
+    if (error) return res.status(400).json({ error: error.message });
+  } else if (domain) {
+    // Need a slug to satisfy any NOT NULL constraint — derive from domain
+    const slug = domain.split('.')[0].toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    const { error } = await supabaseAdmin
+      .from('booking_calendars')
+      .insert({ business_id: client_id, custom_domain: domain, slug, timezone: 'America/Chicago' });
+    if (error) return res.status(400).json({ error: error.message });
+  }
+  return res.status(200).json({ ok: true, custom_domain: domain || null });
+}
+
 async function setStripeKey(req, res) {
   const body = await readJson(req);
   const { client_id, stripe_secret_key } = body || {};
@@ -396,6 +440,7 @@ export default async function handler(req, res) {
       case 'set-tier':       return await setTier(req, res);
       case 'set-ga4':        return await setGa4(req, res);
       case 'set-stripe-key': return await setStripeKey(req, res);
+      case 'set-booking-url':return await setBookingUrl(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
       case 'activity-feed':  return await activityFeed(req, res);
       case 'analytics':      return await analytics(req, res);

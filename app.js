@@ -3250,7 +3250,11 @@ async function viewSettings() {
     el('code', {}, '{{name}}'), ' ',
     el('code', {}, '{{client_name}}'), ' ',
     el('code', {}, '{{source}}'), ' ',
-    el('code', {}, '{{source_path}}')
+    el('code', {}, '{{source_path}}'), ' ',
+    el('code', {}, '{{booking_url}}')
+  ));
+  wsms.appendChild(el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px;font-style:italic' },
+    'Tip: Use {{booking_url}} so your scheduling link always points to the current booking page (set by Booking URL in Master Admin or your custom domain).'
   ));
 
   const previewLabel = el('div', { class: 'field-label', style: 'margin-top:14px' }, 'Preview');
@@ -3258,13 +3262,22 @@ async function viewSettings() {
   wsms.appendChild(previewLabel);
   wsms.appendChild(preview);
 
+  // Pull the live booking_url from /api/portal/me-extras so the preview shows
+  // exactly what the actual welcome SMS will render. Falls back gracefully.
+  let livebookingUrl = '';
+  api('/api/portal/me?action=booking-url').then(r => {
+    livebookingUrl = r?.booking_url || '';
+    renderPreview();
+  }).catch(() => {});
+
   const renderPreview = () => {
     const sample = {
       first_name: 'Jane',
       name: 'Jane Doe',
       client_name: state.client?.name || 'Your Business',
       source: 'theflexfacility.com',
-      source_path: '/fit'
+      source_path: '/fit',
+      booking_url: livebookingUrl || 'https://book.goelev8.ai/your-slug'
     };
     const out = (tpl.value || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => sample[k] ?? '');
     const segs = Math.max(1, Math.ceil((out.length || 1) / 160));
@@ -3818,6 +3831,28 @@ async function viewAdmin() {
                 el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'Stripe:'),
                 skInput,
                 el('button', { class: 'btn sm', onclick: saveKey }, 'Save')
+              );
+            })(),
+            (() => {
+              const buInput = el('input', {
+                type: 'text',
+                placeholder: 'book.theflexfacility.com',
+                value: c.booking_custom_domain || '',
+                style: 'width:200px'
+              });
+              const saveBu = async () => {
+                try {
+                  await api('/api/admin?action=set-booking-url', {
+                    method: 'POST', body: { client_id: c.id, booking_url: buInput.value.trim() }
+                  });
+                  toast('Booking URL saved for ' + c.name + ' — Vapi assistant + welcome SMS will use it next time');
+                  await refresh();
+                } catch (e) { toast(e.message, true); }
+              };
+              return el('div', { style: 'display:flex;gap:4px;align-items:center;margin-top:4px' },
+                el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'Booking:'),
+                buInput,
+                el('button', { class: 'btn sm', onclick: saveBu }, 'Save')
               );
             })()
           )
