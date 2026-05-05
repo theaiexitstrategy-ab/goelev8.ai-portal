@@ -495,6 +495,41 @@ async function dedupeLeads(req, res) {
   });
 }
 
+// Make sure every tenant's portal_tabs includes the canonical set of
+// tabs that the unified SPA supports. Idempotent: only ADDS missing
+// tabs to each tenant's existing list (never removes tabs an operator
+// has explicitly hidden). Use this after shipping a new tab to push
+// it across every tenant in one click.
+async function ensurePortalTabs(req, res) {
+  const STANDARD_TABS = [
+    'overview', 'leads', 'messages', 'contacts', 'blasts',
+    'nudges', 'bookings', 'analytics', 'settings'
+  ];
+  const { data: clients } = await supabaseAdmin
+    .from('clients').select('id, slug, name, portal_tabs');
+  let updated = 0;
+  const perClient = [];
+  for (const c of clients || []) {
+    const current = Array.isArray(c.portal_tabs) ? c.portal_tabs : [];
+    const missing = STANDARD_TABS.filter(t => !current.includes(t));
+    if (!missing.length) continue;
+    // Preserve original order, append missing tabs at the end so any
+    // operator-defined ordering survives.
+    const next = current.length ? [...current, ...missing] : STANDARD_TABS.slice();
+    const { error } = await supabaseAdmin.from('clients')
+      .update({ portal_tabs: next }).eq('id', c.id);
+    if (!error) {
+      updated++;
+      perClient.push({ client: c.name || c.slug, added_tabs: missing });
+    }
+  }
+  return res.status(200).json({
+    standard_tabs: STANDARD_TABS,
+    tenants_updated: updated,
+    per_client: perClient
+  });
+}
+
 async function applyPendingMigrations(req, res) {
   const token = process.env.SUPABASE_ACCESS_TOKEN;
   if (!token) {
@@ -776,6 +811,7 @@ export default async function handler(req, res) {
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
+      case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
       case 'activity-feed':  return await activityFeed(req, res);
       case 'analytics':      return await analytics(req, res);

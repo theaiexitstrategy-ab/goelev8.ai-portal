@@ -2078,10 +2078,14 @@ async function viewLeads() {
 
 async function loadLeadMetrics(container) {
   try {
-    const [ga, lr] = await Promise.all([
-      api('/api/portal/ga4'),
+    // GA4 is per-tenant — for tenants without a configured property
+    // (DLP / GoElev8.ai before setup) the call returns configured:false
+    // or 500s. Soft-fail so the rest of the strip still renders.
+    const [gaRes, lr] = await Promise.all([
+      api('/api/portal/ga4').catch(() => ({ configured: false })),
       api('/api/portal/crm?action=leads')
     ]);
+    const ga = gaRes && gaRes.configured !== false ? gaRes : {};
     const views = ga.page_views || ga.sessions || 0;
     const leadList = lr.leads || [];
     const leads = leadList.length;
@@ -4376,6 +4380,28 @@ async function viewAdmin() {
   } }, 'Merge Duplicate Leads');
   migPanel.appendChild(dedupeBtn);
   migPanel.appendChild(dedupeOut);
+
+  // Ensure every tenant has the standard tab set. After shipping a new
+  // feature (Leads, Bookings, Analytics, etc.) click this to push the
+  // tab into every tenant's sidebar without per-tenant SQL.
+  const tabsOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:240px;margin-top:8px' });
+  const tabsBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Updating…';
+    try {
+      const r = await api('/api/admin?action=ensure-portal-tabs', { method: 'POST' });
+      toast(`Updated ${r.tenants_updated} tenants — every portal now exposes overview/leads/messages/contacts/blasts/nudges/bookings/analytics/settings`);
+      tabsOut.style.display = 'block';
+      tabsOut.textContent = JSON.stringify(r, null, 2);
+    } catch (err) {
+      toast('Failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Sync Tabs to All Tenants';
+    }
+  } }, 'Sync Tabs to All Tenants');
+  migPanel.appendChild(tabsBtn);
+  migPanel.appendChild(tabsOut);
   wrap.appendChild(migPanel);
 
   // ----- Twilio Reserve (platform-wide accounting) -----
