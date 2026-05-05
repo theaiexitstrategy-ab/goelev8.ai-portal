@@ -569,6 +569,23 @@ const SUGGESTED_TAGS = [
   'Do Not Contact'   // opted out / silent ban — exclude from blasts
 ];
 
+// Coerce a tags value into a safe string[]. Postgres text[] usually
+// arrives as a JS array via supabase-js, but legacy rows can come back
+// as null, a Postgres array literal string ("{a,b}"), or a comma-list.
+// Returning [] on anything weird means the chip UI never blows up.
+function normalizeTags(v) {
+  if (Array.isArray(v)) return v.filter(Boolean).map(t => String(t));
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return [];
+    if (s.startsWith('{') && s.endsWith('}')) {
+      return s.slice(1, -1).split(',').map(t => t.replace(/^"|"$/g, '').trim()).filter(Boolean);
+    }
+    return s.split(',').map(t => t.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 // Renders an inline tag chip row + add-tag UI for a single record.
 // `getTags`/`saveTags` keep the source of truth on the row. saveTags is
 // async and returns when persisted; on success the chip row is rebuilt.
@@ -576,7 +593,7 @@ function tagChips({ getTags, saveTags, readonly = false }) {
   const host = el('div', { class: 'tag-chips' });
   const draw = () => {
     host.innerHTML = '';
-    const tags = (getTags() || []).filter(Boolean);
+    const tags = normalizeTags(getTags());
     for (const t of tags) {
       const chip = el('span', { class: 'tag-chip' }, t);
       if (!readonly) {
@@ -597,9 +614,9 @@ function tagChips({ getTags, saveTags, readonly = false }) {
     const addBtn = el('button', { class: 'tag-chip-add', title: 'Add tag', onclick: (ev) => {
       ev.stopPropagation();
       openTagPicker({
-        current: getTags() || [],
+        current: normalizeTags(getTags()),
         onAdd: async (tag) => {
-          const next = [...new Set([...(getTags() || []), tag])];
+          const next = [...new Set([...normalizeTags(getTags()), tag])];
           try { await saveTags(next); draw(); }
           catch (e) { toast('Tag update failed: ' + e.message, true); }
         }
@@ -1290,7 +1307,7 @@ async function viewBookings() {
       }, 'No-show'));
     }
 
-    let currentTags = a.tags || [];
+    let currentTags = normalizeTags(a.tags);
     const tagsCell = tagChips({
       getTags: () => currentTags,
       saveTags: async (next) => {
@@ -1700,7 +1717,7 @@ async function viewLeads() {
         el('th', {}, 'Status'), el('th', {}, 'Tags'), el('th', {}, '')
       )),
       el('tbody', {}, ...r.leads.map(l => {
-        let currentTags = l.tags || [];
+        let currentTags = normalizeTags(l.tags);
         const tagsCell = tagChips({
           getTags: () => currentTags,
           saveTags: async (next) => {
@@ -1726,7 +1743,7 @@ async function viewLeads() {
               class: 'btn sm primary',
               onclick: async () => {
                 try {
-                  await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_paid: true, tags: [...new Set([...(l.tags || []).filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] } });
+                  await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_paid: true, tags: [...new Set([...normalizeTags(l.tags).filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] } });
                   toast('Marked as paid — added Paid + Current Client tags'); render();
                 } catch (e) { toast(e.message, true); }
               }
@@ -2490,7 +2507,7 @@ async function loadBlastsContacts(container) {
           headerCb.indeterminate = selected.size > 0 && selected.size < contacts.length;
           updateToolbar();
         });
-        let currentTags = c.tags || [];
+        let currentTags = normalizeTags(c.tags);
         const tagsCell = tagChips({
           getTags: () => currentTags,
           saveTags: async (next) => {
