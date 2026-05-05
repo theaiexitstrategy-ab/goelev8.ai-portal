@@ -1138,6 +1138,84 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Customer Profile slide-over
+   ============================================================ */
+.profile-bg {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 1500;
+  backdrop-filter: blur(4px);
+  display: flex; justify-content: flex-end;
+  animation: profile-fade 0.15s ease;
+}
+@keyframes profile-fade { from { opacity: 0; } to { opacity: 1; } }
+.profile-sheet {
+  width: min(680px, 100vw);
+  height: 100vh; overflow-y: auto;
+  background: var(--bg-elevated, #141c2e);
+  border-left: 1px solid var(--border, #2a3a5c);
+  padding: 24px 28px;
+  animation: profile-slide 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes profile-slide { from { transform: translateX(40px); } to { transform: translateX(0); } }
+.profile-header { padding-bottom: 14px; border-bottom: 1px solid var(--border, #2a3a5c); }
+.profile-header-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.profile-header h2 {
+  font-size: 1.4rem; font-weight: 700;
+  background: linear-gradient(90deg, var(--brand-1, #00CFFF), #7dd3fc);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.profile-close {
+  background: transparent; border: none;
+  color: var(--text-mute, #888); font-size: 1.6rem;
+  cursor: pointer; line-height: 1; padding: 4px 10px; border-radius: 6px;
+}
+.profile-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.profile-contact { font-size: 0.9rem; margin-top: 4px; }
+.profile-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.profile-tags-row {
+  display: flex; align-items: center;
+  margin: 14px 0 6px;
+}
+.profile-actions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 14px 0; margin-bottom: 4px;
+  border-bottom: 1px solid var(--border, #2a3a5c);
+}
+.profile-section { margin-top: 22px; }
+.profile-section h3 {
+  font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em;
+  font-weight: 700; color: var(--brand-1, #00CFFF);
+  margin-bottom: 10px;
+}
+.profile-msg-list { display: flex; flex-direction: column; gap: 8px; }
+.profile-msg {
+  padding: 10px 12px; border-radius: 8px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border, #2a3a5c);
+}
+.profile-msg.out { background: rgba(0, 207, 255, 0.06); border-color: rgba(0, 207, 255, 0.2); }
+.profile-msg-meta { font-size: 0.7rem; margin-bottom: 4px; }
+.profile-msg-body { font-size: 0.85rem; white-space: pre-wrap; line-height: 1.4; }
+.profile-loading { padding: 24px; }
+
+/* Inline link-styled button used to make table cells clickable */
+.link-btn {
+  background: transparent; border: none; padding: 0;
+  color: var(--text, #e0e0e0); font-family: inherit; font-size: inherit;
+  cursor: pointer; text-align: left;
+  border-bottom: 1px dotted rgba(0, 207, 255, 0.4);
+  transition: color 0.15s, border-color 0.15s;
+}
+.link-btn:hover { color: var(--brand-1, #00CFFF); border-bottom-color: var(--brand-1, #00CFFF); }
+
+@media (max-width: 600px) {
+  .profile-sheet { padding: 16px 18px; }
+}
+
+/* ============================================================
    Tag chips + tag picker
    ============================================================ */
 .tag-chips {

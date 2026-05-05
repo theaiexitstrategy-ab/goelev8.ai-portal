@@ -138,43 +138,62 @@ async function handleLeads(req, res, ctx) {
     }
     if (error) return res.status(500).json({ error: error.message });
 
-    // Read-time dedupe: even if write-side intake or the admin cleanup
-    // hasn't fully run, never show the same person twice. Group by phone
-    // (normalized) then by lower-cased email; the oldest row wins so any
-    // tags/paid_at applied to it are preserved. Newer rows' tags get
-    // unioned in so nothing's lost. Frontend gets one row per human →
-    // the leads count + conversion metric stay accurate.
-    const norm = (p) => String(p || '').replace(/[^\d+]/g, '');
+    // Read-time dedupe with family-share guard: a household can share
+    // one phone (siblings, parent + kid) so we keyed-by phone+firstName
+    // not just phone. Different first names at the same phone stay as
+    // separate leads. Same first name (or one side missing a name) merge.
+    const normPhone = (p) => String(p || '').replace(/[^\d+]/g, '');
+    const firstName = (n) => String(n || '').trim().toLowerCase().split(/\s+/)[0] || '';
     const ascending = (data || []).slice().sort((a, b) =>
       new Date(a.created_at) - new Date(b.created_at));
-    const seenPhones = new Map(); // phoneKey -> canonical row
-    const seenEmails = new Map(); // emailKey -> canonical row
+    const seen = new Map(); // groupKey -> canonical row
     const out = [];
-    for (const r of ascending) {
-      const phoneKey = norm(r.phone);
+    const lookupCanonical = (r) => {
+      const fn = firstName(r.name);
+      const phoneKey = normPhone(r.phone);
       const emailKey = (r.email || '').trim().toLowerCase();
-      let canonical = (phoneKey && seenPhones.get(phoneKey))
-        || (emailKey && seenEmails.get(emailKey))
-        || null;
+      // 1) Strict match: same phone+firstName or same email+firstName
+      if (phoneKey && fn) {
+        const k = 'p:' + phoneKey + '|n:' + fn;
+        if (seen.has(k)) return seen.get(k);
+      }
+      if (emailKey && fn) {
+        const k = 'e:' + emailKey + '|n:' + fn;
+        if (seen.has(k)) return seen.get(k);
+      }
+      // 2) Name-blank fallback: if the incoming row has no name, allow
+      //    it to roll into a phone/email match regardless of the
+      //    canonical's name (it's almost certainly the same human, the
+      //    second submission just dropped the name).
+      if (!fn) {
+        if (phoneKey) for (const [k, v] of seen) if (k.startsWith('p:' + phoneKey + '|')) return v;
+        if (emailKey) for (const [k, v] of seen) if (k.startsWith('e:' + emailKey + '|')) return v;
+      }
+      return null;
+    };
+    for (const r of ascending) {
+      const canonical = lookupCanonical(r);
       if (canonical) {
-        // Union tags onto the canonical row (in-place — out array shares ref).
         const existingTags = Array.isArray(canonical.tags) ? canonical.tags : [];
         const newTags = Array.isArray(r.tags) ? r.tags : [];
-        if (newTags.length) {
-          canonical.tags = [...new Set([...existingTags, ...newTags])];
-        }
-        // Earliest paid_at wins; first non-null name/email/phone wins.
+        if (newTags.length) canonical.tags = [...new Set([...existingTags, ...newTags])];
         if (!canonical.paid_at && r.paid_at) canonical.paid_at = r.paid_at;
         for (const f of ['name', 'phone', 'email']) {
           if (!canonical[f] && r[f]) canonical[f] = r[f];
         }
-        continue; // skip duplicate
+        continue;
       }
       out.push(r);
-      if (phoneKey) seenPhones.set(phoneKey, r);
-      if (emailKey) seenEmails.set(emailKey, r);
+      const fn = firstName(r.name);
+      const phoneKey = normPhone(r.phone);
+      const emailKey = (r.email || '').trim().toLowerCase();
+      if (phoneKey && fn) seen.set('p:' + phoneKey + '|n:' + fn, r);
+      if (emailKey && fn) seen.set('e:' + emailKey + '|n:' + fn, r);
+      // Also stash a name-less placeholder so subsequent unnamed rows
+      // can still find this canonical via phone/email.
+      if (phoneKey && !fn) seen.set('p:' + phoneKey + '|n:', r);
+      if (emailKey && !fn) seen.set('e:' + emailKey + '|n:', r);
     }
-    // Return newest-first to match the previous order.
     out.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     return res.status(200).json({ leads: out });
   }

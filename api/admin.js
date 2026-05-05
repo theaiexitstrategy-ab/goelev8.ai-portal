@@ -397,29 +397,44 @@ async function dedupeLeads(req, res) {
     if (!leads?.length) continue;
     scanned += leads.length;
 
-    // Group by normalized phone first (strongest signal). Anything left
-    // ungrouped gets a second pass on lower-cased email.
-    const phoneGroups = new Map();
-    const emailGroups = new Map();
-    const ungrouped = [];
+    // Group by (phone or email) + first-name so a household sharing
+    // one phone (e.g. Levi + Legend Harris) keeps separate lead rows.
+    // Anything missing a name rolls into the matching phone/email
+    // group regardless (almost certainly the same human, just dropped
+    // the name on a re-submit).
+    const firstName = (n) => String(n || '').trim().toLowerCase().split(/\s+/)[0] || '';
+    const groups = new Map(); // groupKey -> [leads]
+    const orphansByPhone = []; // unnamed leads waiting to attach
+    const orphansByEmail = [];
     for (const l of leads) {
+      const fn = firstName(l.name);
       const phoneKey = (l.phone || '').replace(/[^\d+]/g, '');
-      if (phoneKey) {
-        if (!phoneGroups.has(phoneKey)) phoneGroups.set(phoneKey, []);
-        phoneGroups.get(phoneKey).push(l);
-      } else {
-        ungrouped.push(l);
-      }
-    }
-    for (const l of ungrouped) {
       const emailKey = (l.email || '').trim().toLowerCase();
-      if (emailKey) {
-        if (!emailGroups.has(emailKey)) emailGroups.set(emailKey, []);
-        emailGroups.get(emailKey).push(l);
+      if (!phoneKey && !emailKey) continue; // nothing to group on
+      if (!fn) {
+        if (phoneKey) orphansByPhone.push({ key: phoneKey, lead: l });
+        else if (emailKey) orphansByEmail.push({ key: emailKey, lead: l });
+        continue;
       }
+      const key = phoneKey
+        ? 'p:' + phoneKey + '|n:' + fn
+        : 'e:' + emailKey + '|n:' + fn;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(l);
     }
-
-    const allGroups = [...phoneGroups.values(), ...emailGroups.values()].filter(g => g.length > 1);
+    // Attach orphans (no-name rows) to the first matching named group
+    // by phone/email. If none exists they become their own group.
+    for (const { key: phoneKey, lead } of orphansByPhone) {
+      const matchKey = [...groups.keys()].find(k => k.startsWith('p:' + phoneKey + '|'));
+      if (matchKey) groups.get(matchKey).push(lead);
+      else groups.set('p:' + phoneKey + '|n:', [lead]);
+    }
+    for (const { key: emailKey, lead } of orphansByEmail) {
+      const matchKey = [...groups.keys()].find(k => k.startsWith('e:' + emailKey + '|'));
+      if (matchKey) groups.get(matchKey).push(lead);
+      else groups.set('e:' + emailKey + '|n:', [lead]);
+    }
+    const allGroups = [...groups.values()].filter(g => g.length > 1);
     let clientMerged = 0, clientDeleted = 0;
 
     for (const group of allGroups) {

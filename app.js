@@ -688,6 +688,228 @@ function openTagPicker({ current = [], onAdd }) {
   setTimeout(() => input.focus(), 50);
 }
 
+// Slide-over Customer Profile panel. Opens from any clickable lead
+// name. Shows a header (name, contact, source/funnel, tags), a metrics
+// strip (bookings / paid / calls / messages), and three sectioned
+// timelines (bookings + programs, calls, messages). Closes on backdrop
+// click or Esc.
+async function openCustomerProfile(leadId) {
+  const existing = document.querySelector('.profile-bg');
+  if (existing) existing.remove();
+
+  const sheet = el('div', { class: 'profile-sheet' },
+    el('div', { class: 'profile-loading muted' }, 'Loading customer profile…'));
+  const bg = el('div', {
+    class: 'profile-bg',
+    onclick: (e) => { if (e.target === bg) bg.remove(); }
+  }, sheet);
+  const onKey = (e) => { if (e.key === 'Escape') { bg.remove(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(bg);
+
+  let r;
+  try {
+    r = await api('/api/portal/profile?lead_id=' + encodeURIComponent(leadId));
+  } catch (e) {
+    sheet.innerHTML = '';
+    sheet.appendChild(el('div', { class: 'err', style: 'padding:24px' }, 'Failed to load: ' + e.message));
+    return;
+  }
+
+  const lead = r.lead || {};
+  const summary = r.summary || {};
+  const fmt = (ts) => ts ? new Date(ts).toLocaleString() : '—';
+  const fmtAgo = (ts) => {
+    if (!ts) return '—';
+    const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    if (diff < 30 * 86400) return Math.floor(diff / 86400) + 'd ago';
+    return new Date(ts).toLocaleDateString();
+  };
+
+  // Header
+  const header = el('div', { class: 'profile-header' },
+    el('div', { class: 'profile-header-top' },
+      el('h2', {}, lead.name || 'Unnamed customer'),
+      el('button', { class: 'profile-close', onclick: () => bg.remove() }, '×')
+    ),
+    el('div', { class: 'profile-contact muted' },
+      lead.phone || '—',
+      lead.email ? ' · ' + lead.email : ''
+    ),
+    el('div', { class: 'profile-meta' },
+      lead.source ? el('span', { class: 'badge' }, 'Source: ' + lead.source) : null,
+      lead.funnel ? el('span', { class: 'badge info' }, 'Funnel: ' + lead.funnel) : null,
+      lead.intent ? el('span', { class: 'badge' }, 'Intent: ' + lead.intent) : null,
+      lead.paid_at ? el('span', { class: 'badge green' }, 'Paid · ' + fmtAgo(lead.paid_at)) : null
+    )
+  );
+
+  // Tag editor inline so the operator can add/remove tags from the profile.
+  let liveTags = normalizeTags(lead.tags);
+  const tagsRow = el('div', { class: 'profile-tags-row' },
+    el('span', { class: 'muted', style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;margin-right:8px' }, 'Tags'),
+    tagChips({
+      getTags: () => liveTags,
+      saveTags: async (next) => {
+        await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: leadId, tags: next } });
+        liveTags = next;
+      }
+    })
+  );
+
+  // Action bar — same Mark Paid / Stop Nudges / Delete from the leads list
+  const actionBar = el('div', { class: 'profile-actions' },
+    lead.paid_at
+      ? el('button', { class: 'btn sm ghost', onclick: async () => {
+          try {
+            await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: leadId, mark_unpaid: true } });
+            toast('Removed paid status'); bg.remove(); render();
+          } catch (e) { toast(e.message, true); }
+        } }, '✓ Paid (undo)')
+      : el('button', { class: 'btn sm primary', onclick: async () => {
+          try {
+            const res = await api('/api/portal/crm?action=leads', {
+              method: 'PATCH',
+              body: { id: leadId, mark_paid: true, tags: [...new Set([...liveTags.filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] }
+            });
+            const extra = res?.cancelled_nudges ? ` · cancelled ${res.cancelled_nudges} nudges` : '';
+            toast('Marked paid' + extra); bg.remove(); render();
+          } catch (e) { toast(e.message, true); }
+        } }, 'Mark Paid'),
+    !liveTags.includes('Do Not Contact') && el('button', { class: 'btn sm', onclick: async () => {
+      try {
+        const res = await api('/api/portal/crm?action=leads', {
+          method: 'PATCH', body: { id: leadId, tags: [...new Set([...liveTags, 'Do Not Contact'])] }
+        });
+        const extra = res?.cancelled_nudges ? ` · ${res.cancelled_nudges} nudges cancelled` : '';
+        toast('Stopped nudges' + extra); bg.remove(); render();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Stop Nudges'),
+    el('button', { class: 'btn sm', onclick: () => {
+      state.view = 'messages';
+      state.activeContactId = r.contact?.id || null;
+      bg.remove();
+      render();
+    } }, 'Open Messages'),
+    el('button', { class: 'btn sm danger', onclick: async () => {
+      if (!confirm('Delete this lead?\n\nThis removes the lead and any pending nudges. Bookings stay but lose their lead reference.')) return;
+      try {
+        await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: leadId } });
+        toast('Lead deleted'); bg.remove(); render();
+      } catch (e) { toast('Delete failed: ' + e.message, true); }
+    } }, 'Delete')
+  );
+
+  // Metric strip
+  const metrics = el('div', { class: 'leads-metrics-strip', style: 'margin:14px 0' },
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, String(summary.total_bookings || 0)),
+      el('span', { class: 'metric-stat-label' }, 'Bookings')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat accent' },
+      el('span', { class: 'metric-stat-value' }, String(summary.paid_bookings || 0)),
+      el('span', { class: 'metric-stat-label' }, 'Paid')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, String(summary.total_calls || 0)),
+      el('span', { class: 'metric-stat-label' }, 'Calls')
+    ),
+    el('div', { class: 'metric-divider' }),
+    el('div', { class: 'metric-stat' },
+      el('span', { class: 'metric-stat-value' }, String(summary.total_messages || 0)),
+      el('span', { class: 'metric-stat-label' }, 'Messages')
+    )
+  );
+
+  // Programs / bookings list
+  const bookingsSection = el('div', { class: 'profile-section' });
+  bookingsSection.appendChild(el('h3', {}, 'Programs & Bookings'));
+  if (r.bookings?.length) {
+    bookingsSection.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'When'), el('th', {}, 'Service'), el('th', {}, 'Status'), el('th', {}, '')
+      )),
+      el('tbody', {}, ...r.bookings.map(b => el('tr', {},
+        el('td', {}, fmt(b.starts_at)),
+        el('td', {}, b.service || b.service_type || '—'),
+        el('td', {}, el('span', { class: 'badge' }, (b.status || 'pending'))),
+        el('td', {}, b.paid_at ? el('span', { class: 'badge green' }, 'Paid') : el('span', { class: 'muted' }, 'Free'))
+      )))
+    ));
+  } else {
+    bookingsSection.appendChild(el('p', { class: 'muted' }, 'No bookings yet.'));
+  }
+
+  // Calls list
+  const callsSection = el('div', { class: 'profile-section' });
+  callsSection.appendChild(el('h3', {}, 'Voice Calls'));
+  if (r.calls?.length) {
+    callsSection.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'When'), el('th', {}, 'Direction'), el('th', {}, 'Duration'), el('th', {}, 'Summary')
+      )),
+      el('tbody', {}, ...r.calls.map(c => el('tr', {},
+        el('td', {}, fmt(c.started_at || c.created_at)),
+        el('td', {}, c.direction || '—'),
+        el('td', {}, c.duration_seconds ? Math.round(c.duration_seconds / 60) + 'm' : '—'),
+        el('td', { class: 'muted', style: 'font-size:0.8rem' }, (c.summary || '').slice(0, 80))
+      )))
+    ));
+  } else {
+    callsSection.appendChild(el('p', { class: 'muted' }, 'No calls yet.'));
+  }
+
+  // Messages list
+  const messagesSection = el('div', { class: 'profile-section' });
+  messagesSection.appendChild(el('h3', {}, 'Recent Messages'));
+  if (r.messages?.length) {
+    const list = el('div', { class: 'profile-msg-list' });
+    for (const m of r.messages.slice(0, 20)) {
+      list.appendChild(el('div', { class: 'profile-msg ' + (m.direction === 'outbound' ? 'out' : 'in') },
+        el('div', { class: 'profile-msg-meta muted' },
+          (m.direction === 'outbound' ? '→ ' : '← '),
+          fmtAgo(m.created_at)
+        ),
+        el('div', { class: 'profile-msg-body' }, m.body || '')
+      ));
+    }
+    messagesSection.appendChild(list);
+  } else {
+    messagesSection.appendChild(el('p', { class: 'muted' }, 'No messages yet.'));
+  }
+
+  // Nudge timeline (so the operator can see exactly which drips fired
+  // and which were cancelled by Mark Paid / Stop Nudges).
+  const nudgesSection = el('div', { class: 'profile-section' });
+  nudgesSection.appendChild(el('h3', {}, 'Nudge Drip'));
+  if (r.nudges?.length) {
+    nudgesSection.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, '#'), el('th', {}, 'Scheduled'), el('th', {}, 'State')
+      )),
+      el('tbody', {}, ...r.nudges.map(n => {
+        const state = n.sent_at ? 'sent' : n.failed_reason ? 'cancelled · ' + n.failed_reason : 'pending';
+        const cls = n.sent_at ? 'green' : n.failed_reason ? 'red' : 'warn';
+        return el('tr', {},
+          el('td', {}, '#' + n.message_number),
+          el('td', {}, fmt(n.scheduled_for)),
+          el('td', {}, el('span', { class: 'badge ' + cls }, state))
+        );
+      }))
+    ));
+  } else {
+    nudgesSection.appendChild(el('p', { class: 'muted' }, 'No nudge sequence enrolled.'));
+  }
+
+  sheet.innerHTML = '';
+  sheet.append(header, tagsRow, actionBar, metrics, bookingsSection, callsSection, messagesSection, nudgesSection);
+}
+
 function card(label, value, sub, cls = '') {
   return el('div', { class: 'card ' + cls },
     el('div', { class: 'label' }, label),
@@ -1281,6 +1503,14 @@ async function viewBookings() {
     try { whenStr = when.toLocaleString(undefined, fmtOpts); }
     catch { whenStr = when.toLocaleString(); }
     const contactStr = [a.lead_name, a.lead_phone].filter(Boolean).join(' · ') || '—';
+    // Booking name is clickable when we know which lead it came from.
+    const contactCell = a.lead_id
+      ? el('button', {
+          class: 'link-btn',
+          title: 'Open customer profile',
+          onclick: () => openCustomerProfile(a.lead_id)
+        }, contactStr)
+      : document.createTextNode(contactStr);
     const badgeCls = STATUS_BADGE_CLASS[a.status] || 'badge';
     const statusText = (a.status || 'pending').replace('_', ' ');
 
@@ -1355,7 +1585,7 @@ async function viewBookings() {
 
     return el('tr', {},
       el('td', {}, whenStr),
-      el('td', {}, contactStr),
+      el('td', {}, contactCell),
       el('td', {}, a.service_name || '—'),
       el('td', {}, el('span', { class: badgeCls }, statusText)),
       el('td', {}, tagsCell),
@@ -1817,7 +2047,11 @@ async function viewLeads() {
 
         return el('tr', {},
           el('td', {}, new Date(l.created_at).toLocaleString()),
-          el('td', {}, l.name || '—'),
+          el('td', {}, el('button', {
+            class: 'link-btn',
+            title: 'Open customer profile',
+            onclick: () => openCustomerProfile(l.id)
+          }, l.name || '—')),
           el('td', {}, l.phone || '—'),
           el('td', {}, l.email || '—'),
           el('td', {}, el('span', { class: 'badge' }, l.source || 'manual')),
