@@ -700,6 +700,22 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .bubble.in .ts { color: rgba(255, 255, 255, 0.55); }
 .bubble.out .ts { color: rgba(7, 8, 13, 0.65); }
+/* Synthesized thread events (booking confirmed, etc.) — centered
+   pill-shaped row so it reads as system metadata, not a real SMS. */
+.thread-event {
+  align-self: center;
+  max-width: 85%;
+  margin: 8px auto;
+  padding: 8px 14px;
+  background: rgba(0, 207, 255, 0.06);
+  border: 1px solid rgba(0, 207, 255, 0.2);
+  border-radius: 999px;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-dim, #a8acbb);
+}
+.thread-event-body { font-weight: 500; color: var(--text, #e0e0e0); }
+.thread-event-ts { font-size: 0.65rem; opacity: 0.7; margin-top: 2px; }
 .msg-status {
   display: inline-block;
   padding: 1px 7px;

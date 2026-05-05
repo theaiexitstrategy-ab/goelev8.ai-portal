@@ -40,10 +40,26 @@ export default async function handler(req, res) {
     return { data: data || [], error };
   };
 
+  // Bookings query — filter soft-deleted rows AND cancelled/no-show
+  // statuses so the count reflects real customer commitments. Tolerant
+  // of pre-0024 schemas missing deleted_at.
+  const fetchBookings30 = async () => {
+    let q = supabaseAdmin.from('bookings').select('id, created_at, starts_at, status')
+      .eq('client_id', clientId)
+      .is('deleted_at', null)
+      .gte('created_at', thirtyDaysAgo.toISOString());
+    let { data, error } = await q;
+    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
+      const retry = await supabaseAdmin.from('bookings').select('id, created_at, starts_at, status')
+        .eq('client_id', clientId).gte('created_at', thirtyDaysAgo.toISOString());
+      data = retry.data;
+    }
+    return { data: data || [] };
+  };
+
   const [leadsR, bookingsR, salesR, callsR, messagesR, ledgerR] = await Promise.all([
     fetchLeads30(),
-    supabaseAdmin.from('bookings').select('id, created_at, starts_at, status')
-      .eq('client_id', clientId).gte('created_at', thirtyDaysAgo.toISOString()),
+    fetchBookings30(),
     supabaseAdmin.from('sales').select('id, amount, created_at, payment_status')
       .eq('client_id', clientId).eq('payment_status', 'paid')
       .gte('created_at', thirtyDaysAgo.toISOString()),
@@ -222,13 +238,17 @@ export default async function handler(req, res) {
   // Top sources reshaped to {source, count} for the branded bar chart.
   const bySource = topSources.map(s => ({ source: s.source, count: s.count }));
 
-  // Tenant Activity uses ROLLING 30-day windows — the queries above
-  // already filter `created_at >= thirtyDaysAgo`, so .length on each
-  // collection is the right "last 30 days" count. The previous numbers
-  // were keyed off monthStart, so on the 5th of the month they reset
-  // to ~5 days of data and looked alarmingly low.
+  // Tenant Activity uses ROLLING 30-day windows. Each .length is right
+  // because every query filters `created_at >= thirtyDaysAgo`. Bookings
+  // additionally exclude cancelled / no-show statuses so the dashboard
+  // matches the operator's intuition of "actual customer commitments
+  // made in the last 30 days," not "every row that ever existed".
+  const cancelledOrNoShow = (b) => {
+    const s = String(b.status || '').toLowerCase().replace(/[\s-]+/g, '_');
+    return s === 'cancelled' || s === 'no_show';
+  };
   const leads30d    = leads.length;        // already deduped + soft-delete filtered
-  const bookings30d = bookings.length;
+  const bookings30d = bookings.filter(b => !cancelledOrNoShow(b)).length;
   const sms30d      = messages.length;     // outbound only (filtered above)
   const calls30d    = calls.length;
   // Keep the "this month" numbers too so legacy callers still work.

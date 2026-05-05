@@ -2584,14 +2584,48 @@ async function viewMessages() {
   // The .show-pane class flips to full-width chat view via CSS.
   if (state.activeThreadKey) layout.classList.add('show-pane');
 
-  const [contactsR, msgsR, leadsR] = await Promise.all([
+  const [contactsR, msgsR, leadsR, bookingsR] = await Promise.all([
     api('/api/portal/crm?action=contacts'),
     api('/api/portal/messages'),
-    api('/api/portal/leads?limit=500').catch(() => ({ leads: [] }))
+    api('/api/portal/leads?limit=500').catch(() => ({ leads: [] })),
+    // Pull bookings so we can synthesize "Booking confirmed" events
+    // into the thread for each customer. The booking widget at
+    // book.theflexfacility.com sends its own confirmation SMS without
+    // writing to public.messages, so without this synth the operator
+    // sees no record of the SMS that went out.
+    api('/api/portal/bookings/appointments?filter=all').catch(() => ({ appointments: [] }))
   ]);
   const contacts = contactsR.contacts || [];
   const allMsgs  = (msgsR.messages || []).slice();
   const leads    = leadsR.leads || [];
+  const bookings = bookingsR.appointments || [];
+
+  // Synthesize a booking event into the message stream so the thread
+  // shows "📅 Booking confirmed" for any booking that has a phone match.
+  // Tagged with synthetic=true so the renderer can style it differently
+  // from real SMS rows.
+  for (const b of bookings) {
+    const phone = b.lead_phone || b.phone || null;
+    if (!phone) continue;
+    const when = b.starts_at
+      ? new Date(b.starts_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      : 'Pending time';
+    const statusEmoji = b.status === 'confirmed' ? '✅'
+      : b.status === 'cancelled' ? '❌'
+      : b.status === 'no_show' ? '⚠️'
+      : '📅';
+    allMsgs.push({
+      id: 'synth_booking_' + b.id,
+      direction: 'event',
+      to_number: phone,
+      from_number: null,
+      created_at: b.created_at || b.starts_at,
+      body: `${statusEmoji} Booking ${b.status || 'made'}: ${b.service_name || 'session'} — ${when}`,
+      status: b.status,
+      synthetic: true,
+      lead_id: b.lead_id || null
+    });
+  }
 
   // ── Phone → contact / lead lookup tables ─────────────────────────
   const contactByPhone = {};
@@ -2615,7 +2649,11 @@ async function viewMessages() {
   function buildThreads() {
     const threads = {};
     for (const m of messages) {
-      const otherRaw = m.direction === 'inbound' ? m.from_number : m.to_number;
+      // For synthetic event rows (e.g. booking events) the "other" phone
+      // is just to_number — we don't have an inbound/outbound axis.
+      const otherRaw = m.direction === 'inbound' ? m.from_number
+                     : m.direction === 'event'   ? m.to_number
+                     : m.to_number;
       const phoneKey = normPhone(otherRaw);
       if (!phoneKey) continue;
       let t = threads[phoneKey];
@@ -2774,6 +2812,15 @@ async function viewMessages() {
     }
     for (const m of ordered) {
       const ts = new Date(m.created_at).toLocaleString();
+      // Synthesized booking events render as a centered system row so
+      // the operator can tell them apart from real SMS bubbles.
+      if (m.direction === 'event') {
+        body.appendChild(el('div', { class: 'thread-event' },
+          el('div', { class: 'thread-event-body' }, m.body),
+          el('div', { class: 'thread-event-ts' }, ts)
+        ));
+        continue;
+      }
       const bubble = el('div', { class: 'bubble ' + (m.direction === 'inbound' ? 'in' : 'out') },
         el('div', { class: 'bubble-body' }, m.body),
         el('div', { class: 'ts' },
@@ -3945,10 +3992,11 @@ async function viewNudges() {
     cb.dataset.num = i;
 
     const card = el('div', { class: 'panel', style: active ? '' : 'opacity:0.5' },
-      el('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:12px' },
-        el('div', { style: 'width:28px;height:28px;border-radius:50%;background:var(--accent,#C9A84C);color:#000;display:flex;align-items:center;justify-content:center;font-weight:bold' }, String(i)),
-        el('div', { style: 'flex:1;font-weight:600;font-size:0.9rem' }, 'Message ' + i + (i === 1 ? ' — Welcome' : '')),
-        el('label', { style: 'display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--muted,#888);cursor:pointer' },
+      el('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:12px;min-width:0' },
+        el('div', { style: 'width:28px;height:28px;border-radius:50%;background:var(--accent,#C9A84C);color:#000;display:flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0' }, String(i)),
+        el('div', { style: 'flex:1;min-width:0;font-weight:600;font-size:0.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
+          'Message ' + i + (i === 1 ? ' — Welcome' : '')),
+        el('label', { style: 'display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--muted,#888);cursor:pointer;flex-shrink:0;white-space:nowrap' },
           cb, el('span', {}, active ? 'Active' : 'Off'))
       ),
       textarea,
