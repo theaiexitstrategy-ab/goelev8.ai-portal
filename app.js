@@ -501,21 +501,17 @@ async function viewOverview() {
     cards.appendChild(card('Bookings', bk.bookings.length, 'Scheduled'));
   } catch (e) {}
 
-  // Road To The Stage /r2s analytics — only for Flex Facility client or ab@goelev8.ai
-  const isPlatformAdmin = state.user?.email === 'ab@goelev8.ai';
-  const isFlexClient = state.client?.slug === 'flex-facility';
-  if (isPlatformAdmin || isFlexClient) {
+  // Road To The Stage /r2s analytics + ebook sales — only when the
+  // active tenant context is Flex Facility. Admin sees them via
+  // impersonation; never in any other tenant's view.
+  if (state.client?.slug === 'flex-facility') {
     const r2sPanel = el('div', { class: 'panel' });
     r2sPanel.appendChild(el('h2', {}, 'Road To The Stage — /r2s Page Analytics'));
     r2sPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
       'GA4 data scoped to the /r2s page on theflexfacility.com · last 30 days'));
     wrap.appendChild(r2sPanel);
     loadFlexR2sAnalytics(r2sPanel);
-  }
 
-  // Road To The Stage ebook sales — Flex Facility only (platform admin included
-  // so ab@goelev8.ai can review when impersonating).
-  if (isFlexClient) {
     const ebookPanel = el('div', { class: 'panel r2s-ebook-panel' });
     wrap.appendChild(ebookPanel);
     loadR2sEbookSection(ebookPanel);
@@ -5340,10 +5336,10 @@ async function viewAnalytics() {
   }
   restOfPage.appendChild(funnelPanel);
 
-  // Road To The Stage Ebook Sales — only for Flex Facility
-  const isFlexClient = state.client?.slug === 'flex-facility';
-  const isPlatformAdmin = state.user?.email === 'ab@goelev8.ai';
-  if (isFlexClient || isPlatformAdmin) {
+  // Road To The Stage Ebook Sales — only when the active tenant context
+  // is Flex Facility. Admin still gets it via impersonation; never in
+  // any other tenant's view.
+  if (state.client?.slug === 'flex-facility') {
     const r2sPanel = el('div', { class: 'panel' });
     r2sPanel.appendChild(el('h2', {}, '📕 The Road To The Stage Ebook Sales'));
     r2sPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
@@ -5358,21 +5354,30 @@ async function viewAnalytics() {
   restOfPage.appendChild(salesPanel);
   loadSalesSection(salesPanel);
 
-  // Custom portal events
-  const eventPanel = el('div', { class: 'panel' });
-  eventPanel.appendChild(el('h2', {}, '⚡ Portal Events'));
-  const eventLabels = {
-    lead_viewed:    'Leads Viewed',
-    booking_viewed: 'Bookings Viewed',
-    call_log_viewed: 'Call Logs Viewed',
-    client_login:   'Client Logins'
-  };
-  const eventCards = el('div', { class: 'cards', style: 'margin-top:8px' });
-  Object.entries(eventLabels).forEach(([key, label]) => {
-    eventCards.appendChild(card('📊', label, ga.events?.[key] || 0, 'Last 30 days'));
+  // Tenant Activity panel — replaces the legacy GA4 "Portal Events"
+  // panel. The custom events (lead_viewed, booking_viewed, etc.) are
+  // fired into the platform's GA4 property (G-07Y6KTRES2), not into
+  // each tenant's own GA4. Querying a tenant's GA4 for those events
+  // always returns 0 — misleading. Sourcing the same intent from
+  // Supabase tables gives accurate, tenant-scoped counts.
+  const activityPanel = el('div', { class: 'panel' });
+  activityPanel.appendChild(el('h2', {}, '⚡ Tenant Activity (last 30 days)'));
+  const activityCards = el('div', { class: 'cards', style: 'margin-top:8px' });
+  activityCards.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading…')));
+  activityPanel.appendChild(activityCards);
+  restOfPage.appendChild(activityPanel);
+
+  api('/api/portal/analytics').then(an => {
+    activityCards.innerHTML = '';
+    activityCards.appendChild(card('🔥', 'Leads Captured',  an.overview?.total_leads ?? 0,        'this month'));
+    activityCards.appendChild(card('📅', 'Bookings Made',    an.overview?.bookings_this_month ?? 0, 'this month'));
+    activityCards.appendChild(card('💬', 'Outbound SMS',     an.overview?.sms_sent ?? 0,           'this month'));
+    activityCards.appendChild(card('📞', 'Voice Calls',      an.overview?.calls_this_month ?? 0,    'this month'));
+  }).catch(() => {
+    activityCards.innerHTML = '';
+    activityCards.appendChild(el('div', { class: 'card' },
+      el('div', { class: 'muted' }, 'Could not load tenant activity.')));
   });
-  eventPanel.appendChild(eventCards);
-  restOfPage.appendChild(eventPanel);
 
   return wrap;
 }

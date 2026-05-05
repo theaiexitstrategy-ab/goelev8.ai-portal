@@ -1008,11 +1008,15 @@ tbody tr:last-child td { border-bottom: none; }
 .r2s-chart {
   display: flex; align-items: flex-end; gap: 3px;
   height: 110px; padding-top: 8px;
+  position: relative; overflow: hidden;
 }
 .r2s-chart-bar {
   flex: 1; display: flex; flex-direction: column;
   justify-content: flex-end; align-items: center;
   min-width: 0; cursor: default;
+  /* Positioned so the absolute-positioned page-views fill stays inside
+     this bar instead of bleeding across the whole panel. */
+  position: relative;
 }
 .r2s-chart-fill {
   width: 100%;

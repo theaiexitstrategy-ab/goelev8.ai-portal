@@ -184,6 +184,14 @@ export default async function handler(req, res) {
   // Top sources reshaped to {source, count} for the branded bar chart.
   const bySource = topSources.map(s => ({ source: s.source, count: s.count }));
 
+  // Activity counts the SPA's "Tenant Activity" panel surfaces — these
+  // replace the old GA4 custom-event panel which always showed 0 for
+  // tenant-scoped GA4 properties.
+  const smsThisMonth = messages.filter(m =>
+    new Date(m.created_at) >= monthStart).length;
+  const callsThisMonth = calls.filter(c =>
+    new Date(c.created_at) >= monthStart).length;
+
   return res.json({
     // Existing nested shape — kept for backward compatibility.
     overview: {
@@ -191,6 +199,8 @@ export default async function handler(req, res) {
       leads_change: parseFloat(leadsChange),
       bookings_this_month: bookingsThisMonth,
       revenue_this_month: revenueThisMonth,
+      sms_sent: smsThisMonth,
+      calls_this_month: callsThisMonth
     },
     leads_by_day: leadsByDay,
     sales_by_day: salesByDay,
