@@ -4035,6 +4035,33 @@ async function viewAdmin() {
     cards.appendChild(card('Purchases this month', a.purchases_this_month, 'credit pack buys'));
   } catch (e) { cards.innerHTML = ''; cards.appendChild(el('div', { class: 'err' }, e.message)); }
 
+  // ----- Schema migrations (run pending migrations from the portal) -----
+  const migPanel = el('div', { class: 'panel' });
+  migPanel.appendChild(el('h2', {}, '🗄️ Database Migrations'));
+  migPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+    'Apply pending schema changes (Stripe key, RLS, Twilio reserve, tags + paid_at) to Supabase. Idempotent — safe to re-run.'));
+  const migOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:240px;margin-top:8px' });
+  const migBtn = el('button', { class: 'btn primary', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Applying…';
+    try {
+      const r = await api('/api/admin?action=apply-pending-migrations', { method: 'POST' });
+      const failed = (r.results || []).filter(x => !x.ok);
+      toast(`Applied ${r.success}/${r.total} statements${r.failed ? ` · ${r.failed} failed` : ''}`,
+            failed.length > 0);
+      migOut.style.display = 'block';
+      migOut.textContent = JSON.stringify({ project_ref: r.project_ref, total: r.total, success: r.success, failed: r.failed, errors: failed }, null, 2);
+    } catch (err) {
+      toast('Failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Run Pending Migrations';
+    }
+  } }, 'Run Pending Migrations');
+  migPanel.appendChild(migBtn);
+  migPanel.appendChild(migOut);
+  wrap.appendChild(migPanel);
+
   // ----- Twilio Reserve (platform-wide accounting) -----
   const reservePanel = el('div', { class: 'panel twilio-reserve-panel' });
   reservePanel.appendChild(el('h2', {}, '📡 Twilio Reserve'));

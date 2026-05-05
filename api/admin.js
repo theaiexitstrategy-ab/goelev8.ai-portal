@@ -360,6 +360,157 @@ async function ensureDefaultClients(req, res) {
   return res.status(200).json({ ensured: required.length, inserted });
 }
 
+// One-shot pending-migrations runner. Calls Supabase Management API
+// (https://api.supabase.com/v1/projects/{ref}/database/query) with the
+// SUPABASE_ACCESS_TOKEN so the operator can apply schema changes from
+// the portal without copy/pasting SQL into the Supabase dashboard.
+//
+// Each statement runs in its own request and is fully idempotent
+// (ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / DROP POLICY
+// IF EXISTS / CREATE POLICY) so re-running is safe.
+async function applyPendingMigrations(req, res) {
+  const token = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!token) {
+    return res.status(400).json({
+      error: 'SUPABASE_ACCESS_TOKEN env var not set in Vercel — add a personal access token from https://supabase.com/dashboard/account/tokens, then redeploy.'
+    });
+  }
+  // Project ref derived from SUPABASE_URL (https://<ref>.supabase.co).
+  let projectRef = null;
+  try {
+    const u = new URL(process.env.SUPABASE_URL || '');
+    projectRef = u.host.split('.')[0];
+  } catch {}
+  if (!projectRef) return res.status(400).json({ error: 'Could not derive project ref from SUPABASE_URL' });
+
+  const statements = [
+    // ----- 0020: clients.stripe_secret_key -----
+    `ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS stripe_secret_key text;`,
+    `COMMENT ON COLUMN public.clients.stripe_secret_key IS 'Client own Stripe secret key (sk_live_...) for syncing sales from their Stripe account into the portal.';`,
+
+    // ----- 0021: admin RLS on clients -----
+    `ALTER TABLE public.clients ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS clients_select_all     ON public.clients;`,
+    `DROP POLICY IF EXISTS "clients are public"   ON public.clients;`,
+    `DROP POLICY IF EXISTS clients_admin_select   ON public.clients;`,
+    `CREATE POLICY clients_admin_select ON public.clients
+       FOR SELECT TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS clients_member_select  ON public.clients;`,
+    `CREATE POLICY clients_member_select ON public.clients
+       FOR SELECT TO authenticated
+       USING (id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS clients_admin_write ON public.clients;`,
+    `CREATE POLICY clients_admin_write ON public.clients
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+
+    // ----- 0022: Twilio reserve -----
+    `ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS twilio_reserve_cents bigint NOT NULL DEFAULT 0;`,
+    `CREATE TABLE IF NOT EXISTS public.twilio_reserves (
+       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       delta_cents bigint NOT NULL,
+       reason text NOT NULL,
+       ref_id text,
+       pack text,
+       segments integer,
+       amount_cents integer,
+       created_at timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS twilio_reserves_client_idx ON public.twilio_reserves(client_id, created_at DESC);`,
+    `ALTER TABLE public.twilio_reserves ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS twilio_reserves_member_select ON public.twilio_reserves;`,
+    `CREATE POLICY twilio_reserves_member_select ON public.twilio_reserves
+       FOR SELECT TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid())
+              OR (auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `CREATE OR REPLACE FUNCTION public.debit_twilio_reserve_on_sms()
+     RETURNS trigger LANGUAGE plpgsql AS $func$
+     DECLARE
+       v_per_segment_cents int;
+       v_segments int;
+       v_cost int;
+     BEGIN
+       IF NEW.delta < 0
+          AND NEW.reason IN ('sms_send', 'sms_blast', 'welcome_sms', 'nudge_send', 'islay_sms')
+       THEN
+         v_segments := -NEW.delta;
+         BEGIN
+           v_per_segment_cents := COALESCE(current_setting('app.twilio_cost_cents', true)::int, 1);
+         EXCEPTION WHEN others THEN
+           v_per_segment_cents := 1;
+         END;
+         v_cost := v_segments * v_per_segment_cents;
+         UPDATE public.clients SET twilio_reserve_cents = COALESCE(twilio_reserve_cents, 0) - v_cost WHERE id = NEW.client_id;
+         INSERT INTO public.twilio_reserves (client_id, delta_cents, reason, ref_id, segments)
+         VALUES (NEW.client_id, -v_cost, NEW.reason, NEW.ref_id, v_segments);
+       END IF;
+       RETURN NEW;
+     END;
+     $func$;`,
+    `DROP TRIGGER IF EXISTS credit_ledger_debit_reserve ON public.credit_ledger;`,
+    `CREATE TRIGGER credit_ledger_debit_reserve
+       AFTER INSERT ON public.credit_ledger
+       FOR EACH ROW EXECUTE FUNCTION public.debit_twilio_reserve_on_sms();`,
+    `CREATE OR REPLACE FUNCTION public.adjust_twilio_reserve(
+       p_client_id uuid, p_delta_cents bigint, p_reason text,
+       p_ref_id text DEFAULT NULL, p_pack text DEFAULT NULL,
+       p_segments integer DEFAULT NULL, p_amount_cents integer DEFAULT NULL
+     ) RETURNS bigint LANGUAGE plpgsql AS $func$
+     DECLARE v_new_balance bigint;
+     BEGIN
+       UPDATE public.clients SET twilio_reserve_cents = COALESCE(twilio_reserve_cents, 0) + p_delta_cents
+         WHERE id = p_client_id RETURNING twilio_reserve_cents INTO v_new_balance;
+       INSERT INTO public.twilio_reserves (client_id, delta_cents, reason, ref_id, pack, segments, amount_cents)
+         VALUES (p_client_id, p_delta_cents, p_reason, p_ref_id, p_pack, p_segments, p_amount_cents);
+       RETURN v_new_balance;
+     END;
+     $func$;`,
+
+    // ----- 0023: tags + paid_at -----
+    `ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';`,
+    `ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS paid_at timestamptz;`,
+    `ALTER TABLE public.leads    ADD COLUMN IF NOT EXISTS paid_at timestamptz;`,
+    `CREATE INDEX IF NOT EXISTS bookings_tags_gin    ON public.bookings   USING gin(tags);`,
+    `CREATE INDEX IF NOT EXISTS contacts_tags_gin    ON public.contacts   USING gin(tags);`,
+    `CREATE INDEX IF NOT EXISTS leads_tags_gin_idx   ON public.leads      USING gin(tags);`,
+    `CREATE INDEX IF NOT EXISTS bookings_paid_at_idx ON public.bookings(client_id, paid_at) WHERE paid_at IS NOT NULL;`,
+    `CREATE INDEX IF NOT EXISTS leads_paid_at_idx    ON public.leads(client_id, paid_at)    WHERE paid_at IS NOT NULL;`
+  ];
+
+  const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
+  const results = [];
+  let success = 0, failed = 0;
+  for (let i = 0; i < statements.length; i++) {
+    const sql = statements[i];
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: sql })
+      });
+      const text = await r.text();
+      if (r.ok) {
+        results.push({ i, ok: true, sql_preview: sql.slice(0, 60) + '…' });
+        success++;
+      } else {
+        results.push({ i, ok: false, status: r.status, error: text.slice(0, 300), sql_preview: sql.slice(0, 60) + '…' });
+        failed++;
+      }
+    } catch (e) {
+      results.push({ i, ok: false, error: e.message, sql_preview: sql.slice(0, 60) + '…' });
+      failed++;
+    }
+  }
+  return res.status(200).json({ project_ref: projectRef, total: statements.length, success, failed, results });
+}
+
 async function backfillTwilioReserve(req, res) {
   // Recompute every client's twilio_reserve_cents from their existing
   // credit_ledger history. Idempotent — safe to run anytime. Useful right
@@ -496,6 +647,7 @@ export default async function handler(req, res) {
       case 'set-stripe-key': return await setStripeKey(req, res);
       case 'set-booking-url':return await setBookingUrl(req, res);
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
+      case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
       case 'activity-feed':  return await activityFeed(req, res);
       case 'analytics':      return await analytics(req, res);
