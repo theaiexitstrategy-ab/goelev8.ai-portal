@@ -3144,6 +3144,35 @@ async function viewSettings() {
       } catch (e) { toast(e.message, true); }
     }}, 'Save settings'));
 
+    // Twilio Reserve summary — admin-only inline so the operator can see
+    // the reserve from inside any tenant's Settings without leaving.
+    if (state.user?.email === 'ab@goelev8.ai') {
+      const reserveStrip = el('div', { class: 'leads-metrics-strip', style: 'margin-top:20px' },
+        el('div', { class: 'metric-stat' },
+          el('span', { class: 'metric-stat-value', id: 'tr-reserved' }, '—'),
+          el('span', { class: 'metric-stat-label' }, 'Reserved for Twilio')
+        ),
+        el('div', { class: 'metric-divider' }),
+        el('div', { class: 'metric-stat' },
+          el('span', { class: 'metric-stat-value', id: 'tr-used' }, '—'),
+          el('span', { class: 'metric-stat-label' }, 'Used on SMS')
+        ),
+        el('div', { class: 'metric-divider' }),
+        el('div', { class: 'metric-stat accent' },
+          el('span', { class: 'metric-stat-value', id: 'tr-balance' }, '—'),
+          el('span', { class: 'metric-stat-label' }, 'Reserve Balance')
+        )
+      );
+      billingPanel.appendChild(reserveStrip);
+      api('/api/portal/twilio-reserve').then(r => {
+        const f = (c) => '$' + ((c || 0) / 100).toFixed(2);
+        const $ = (id) => reserveStrip.querySelector('#' + id);
+        if ($('tr-reserved')) $('tr-reserved').textContent = f(r.reserved_total_cents);
+        if ($('tr-used'))     $('tr-used').textContent = f(r.used_total_cents);
+        if ($('tr-balance'))  $('tr-balance').textContent = f(r.balance_cents);
+      }).catch(() => {});
+    }
+
     // Recent activity ledger — covers Stripe purchases, free credit grants,
     // auto-reloads, refunds, and admin adjustments. Reconcile button below
     // re-checks Stripe for any paid sessions that didn't post via webhook.
@@ -3711,6 +3740,66 @@ async function viewAdmin() {
     cards.appendChild(card('SMS this month', a.sms_this_month, 'outbound across all clients'));
     cards.appendChild(card('Purchases this month', a.purchases_this_month, 'credit pack buys'));
   } catch (e) { cards.innerHTML = ''; cards.appendChild(el('div', { class: 'err' }, e.message)); }
+
+  // ----- Twilio Reserve (platform-wide accounting) -----
+  const reservePanel = el('div', { class: 'panel twilio-reserve-panel' });
+  reservePanel.appendChild(el('h2', {}, '📡 Twilio Reserve'));
+  reservePanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+    'How much of incoming Stripe revenue is auto-reserved to cover Twilio SMS costs. The Reserved bucket grows on each credit-pack purchase and shrinks on each SMS send. Anything above the reserve is true platform margin.'));
+  const reserveBody = el('div', {}, el('div', { class: 'muted' }, 'Loading…'));
+  reservePanel.appendChild(reserveBody);
+  const backfillBtn = el('button', { class: 'btn sm', style: 'margin-top:12px', onclick: async (e) => {
+    if (!confirm('Rebuild Twilio reserve from existing credit_ledger history?\n\nThis is idempotent and safe.')) return;
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Rebuilding…';
+    try {
+      const r = await api('/api/admin?action=backfill-twilio-reserve', { method: 'POST' });
+      toast(`Rebuilt ${r.processed} clients. Reserved $${(r.reserved_cents_total/100).toFixed(2)}, used $${(r.used_cents_total/100).toFixed(2)}.`);
+      render();
+    } catch (err) { toast('Backfill failed: ' + err.message, true); }
+  } }, 'Rebuild from history');
+  reservePanel.appendChild(backfillBtn);
+  wrap.appendChild(reservePanel);
+
+  // Load reserve data
+  (async () => {
+    try {
+      const r = await api('/api/portal/twilio-reserve');
+      reserveBody.innerHTML = '';
+      const fmt = (c) => '$' + ((c || 0) / 100).toFixed(2);
+      reserveBody.appendChild(el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:12px' },
+        el('div', { class: 'metric-stat' },
+          el('span', { class: 'metric-stat-value' }, fmt(r.reserved_total_cents)),
+          el('span', { class: 'metric-stat-label' }, 'Reserved (lifetime)')
+        ),
+        el('div', { class: 'metric-divider' }),
+        el('div', { class: 'metric-stat' },
+          el('span', { class: 'metric-stat-value' }, fmt(r.used_total_cents)),
+          el('span', { class: 'metric-stat-label' }, 'Used on SMS')
+        ),
+        el('div', { class: 'metric-divider' }),
+        el('div', { class: 'metric-stat accent' },
+          el('span', { class: 'metric-stat-value' }, fmt(r.balance_cents)),
+          el('span', { class: 'metric-stat-label' }, 'Currently Reserved')
+        )
+      ));
+      if (r.by_client?.length) {
+        reserveBody.appendChild(el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Client'), el('th', {}, 'Reserved Balance')
+          )),
+          el('tbody', {}, ...r.by_client.map(c => el('tr', {},
+            el('td', {}, c.name),
+            el('td', { style: 'font-weight:600' }, fmt(c.balance_cents))
+          )))
+        ));
+      }
+    } catch (e) {
+      reserveBody.innerHTML = '';
+      reserveBody.appendChild(el('p', { class: 'err' }, 'Failed to load: ' + e.message +
+        ' — run migration 0022_twilio_reserve.sql in Supabase, then click Rebuild from history.'));
+    }
+  })();
 
   // ----- Client Accounts (merged: full management table, no slug, no DLP,
   //       horizontal scroll so every control is reachable on any screen) -----

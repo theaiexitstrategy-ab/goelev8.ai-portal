@@ -152,6 +152,22 @@ export default async function handler(req, res) {
       });
       if (ledErr) continue;
 
+      // Mirror the Twilio reserve credit so reconciled purchases get the
+      // same accounting treatment as live webhook deliveries.
+      try {
+        const perSeg = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10);
+        const reserveCents = Math.max(0, pack.credits * perSeg);
+        await supabaseAdmin.rpc('adjust_twilio_reserve', {
+          p_client_id: client.id,
+          p_delta_cents: reserveCents,
+          p_reason: 'pack_purchase',
+          p_ref_id: pi,
+          p_pack: pack.id,
+          p_segments: null,
+          p_amount_cents: pack.priceCents
+        });
+      } catch (e) { /* migration not run — non-fatal */ }
+
       recovered++;
       creditsAdded += pack.credits;
       recoveredItems.push({ pack: pack.id, credits: pack.credits, payment_intent: pi });

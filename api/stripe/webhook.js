@@ -42,6 +42,23 @@ export default async function handler(req, res) {
             pack: pack.id,
             amount_cents: pack.priceCents
           });
+          // Auto-reserve Twilio COGS — pack.credits × per-segment cost. So a
+          // $25 / 250-credit Starter at 1¢/segment reserves $2.50 for Twilio
+          // and leaves $22.50 of margin in the GoElev8 Stripe balance.
+          // Tolerant if migration 0022 hasn't been applied yet.
+          try {
+            const perSeg = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10);
+            const reserveCents = Math.max(0, pack.credits * perSeg);
+            await supabaseAdmin.rpc('adjust_twilio_reserve', {
+              p_client_id: clientId,
+              p_delta_cents: reserveCents,
+              p_reason: 'pack_purchase',
+              p_ref_id: session.payment_intent,
+              p_pack: pack.id,
+              p_segments: null,
+              p_amount_cents: pack.priceCents
+            });
+          } catch (e) { /* migration not run — non-fatal */ }
         }
 
         // Product sale — look up by metadata.client or stripe_connected_account_id
@@ -139,6 +156,19 @@ export default async function handler(req, res) {
               pack: pack.id,
               amount_cents: pack.priceCents
             });
+            try {
+              const perSeg = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10);
+              const reserveCents = Math.max(0, pack.credits * perSeg);
+              await supabaseAdmin.rpc('adjust_twilio_reserve', {
+                p_client_id: clientId,
+                p_delta_cents: reserveCents,
+                p_reason: 'pack_purchase',
+                p_ref_id: pi.id,
+                p_pack: pack.id,
+                p_segments: null,
+                p_amount_cents: pack.priceCents
+              });
+            } catch (e) { /* migration not run — non-fatal */ }
           }
         }
         break;

@@ -1138,6 +1138,15 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Twilio Reserve panel
+   ============================================================ */
+.twilio-reserve-panel {
+  border: 1px solid rgba(0, 207, 255, 0.25);
+  background: linear-gradient(180deg, rgba(0, 207, 255, 0.04), transparent);
+}
+.twilio-reserve-panel h2 { color: var(--brand-1, #00CFFF); }
+
+/* ============================================================
    Master Admin — Client management cards
    ============================================================ */
 .client-mgmt-panel {

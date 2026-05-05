@@ -360,6 +360,60 @@ async function ensureDefaultClients(req, res) {
   return res.status(200).json({ ensured: required.length, inserted });
 }
 
+async function backfillTwilioReserve(req, res) {
+  // Recompute every client's twilio_reserve_cents from their existing
+  // credit_ledger history. Idempotent — safe to run anytime. Useful right
+  // after migration 0022 to seed the reserve from past purchases/sends.
+  const perSeg = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10);
+
+  const { data: clients, error: clientsErr } = await supabaseAdmin
+    .from('clients').select('id');
+  if (clientsErr) return res.status(500).json({ error: clientsErr.message });
+
+  let processed = 0, totalReserved = 0, totalUsed = 0;
+  for (const c of clients || []) {
+    const { data: rows } = await supabaseAdmin
+      .from('credit_ledger').select('delta, reason, ref_id, pack, amount_cents, created_at')
+      .eq('client_id', c.id).order('created_at', { ascending: true });
+
+    let balance = 0;
+    let reserved = 0, used = 0;
+
+    // Wipe prior reserve rows for this client so re-running is a clean rebuild
+    await supabaseAdmin.from('twilio_reserves').delete().eq('client_id', c.id);
+
+    for (const r of rows || []) {
+      if (r.delta > 0 && (r.reason === 'purchase' || r.reason === 'auto_reload')) {
+        const cogs = Math.max(0, r.delta * perSeg);
+        balance += cogs; reserved += cogs;
+        await supabaseAdmin.from('twilio_reserves').insert({
+          client_id: c.id, delta_cents: cogs, reason: 'pack_purchase',
+          ref_id: r.ref_id, pack: r.pack, amount_cents: r.amount_cents,
+          created_at: r.created_at
+        });
+      } else if (r.delta < 0 && ['sms_send','sms_blast','welcome_sms','nudge_send','islay_sms'].includes(r.reason)) {
+        const segments = -r.delta;
+        const cost = segments * perSeg;
+        balance -= cost; used += cost;
+        await supabaseAdmin.from('twilio_reserves').insert({
+          client_id: c.id, delta_cents: -cost, reason: r.reason,
+          ref_id: r.ref_id, segments, created_at: r.created_at
+        });
+      }
+    }
+    await supabaseAdmin.from('clients')
+      .update({ twilio_reserve_cents: balance }).eq('id', c.id);
+    processed++; totalReserved += reserved; totalUsed += used;
+  }
+  return res.status(200).json({
+    processed,
+    per_segment_cents: perSeg,
+    reserved_cents_total: totalReserved,
+    used_cents_total: totalUsed,
+    balance_cents_total: totalReserved - totalUsed
+  });
+}
+
 async function setBookingUrl(req, res) {
   const body = await readJson(req);
   const { client_id, booking_url } = body || {};
@@ -441,6 +495,7 @@ export default async function handler(req, res) {
       case 'set-ga4':        return await setGa4(req, res);
       case 'set-stripe-key': return await setStripeKey(req, res);
       case 'set-booking-url':return await setBookingUrl(req, res);
+      case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
       case 'activity-feed':  return await activityFeed(req, res);
       case 'analytics':      return await analytics(req, res);
