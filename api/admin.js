@@ -724,7 +724,10 @@ async function applyPendingMigrations(req, res) {
     `ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS deleted_at timestamptz;`,
     `CREATE INDEX IF NOT EXISTS leads_deleted_at_idx    ON public.leads(client_id, deleted_at)    WHERE deleted_at IS NOT NULL;`,
     `CREATE INDEX IF NOT EXISTS contacts_deleted_at_idx ON public.contacts(client_id, deleted_at) WHERE deleted_at IS NOT NULL;`,
-    `CREATE INDEX IF NOT EXISTS bookings_deleted_at_idx ON public.bookings(client_id, deleted_at) WHERE deleted_at IS NOT NULL;`
+    `CREATE INDEX IF NOT EXISTS bookings_deleted_at_idx ON public.bookings(client_id, deleted_at) WHERE deleted_at IS NOT NULL;`,
+
+    // ----- 0025: customer avatar URL on leads -----
+    `ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS avatar_url text;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;

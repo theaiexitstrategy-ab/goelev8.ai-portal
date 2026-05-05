@@ -148,15 +148,18 @@ async function handleLeads(req, res, ctx) {
     // with progressively leaner column sets if either migration hasn't
     // been applied yet.
     let q = sb.from('leads')
-      .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at')
+      .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at, avatar_url')
       .eq('client_id', clientId)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(limit);
     let { data, error } = await q;
-    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
-      const retry = await sb.from('leads')
-        .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at')
+    if (error && /column .*\b(deleted_at|avatar_url)\b.* does not exist/i.test(error.message)) {
+      // Strip avatar_url and/or the deleted_at filter, retry.
+      const retryCols = error.message.match(/avatar_url/i)
+        ? 'id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at'
+        : 'id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at, avatar_url';
+      const retry = await sb.from('leads').select(retryCols)
         .eq('client_id', clientId)
         .order('created_at', { ascending: false })
         .limit(limit);

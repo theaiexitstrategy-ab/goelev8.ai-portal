@@ -552,6 +552,37 @@ async function viewOverview() {
 // Shared tag suggestions used across Leads, Bookings, Contacts and the
 // SMS Blast filter. Pick from these or type a custom one — they're a
 // hint, not an enum. Keep the list short; long lists hurt scanability.
+// Customer avatar helpers — initials fall back when no photo's been
+// uploaded yet. Color is deterministic from the name so the same
+// customer keeps the same circle color across sessions.
+function customerInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+function avatarColorFromName(name) {
+  const s = String(name || '').toLowerCase();
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  const hue = h % 360;
+  return `hsl(${hue}, 60%, 22%)`; // dark, saturated bg; initials read in light text
+}
+
+// Returns a circle <div> element. size = 'sm' (28) | 'md' (40) | 'lg' (88)
+function renderAvatar({ name, avatarUrl, size = 'md', onClick = null }) {
+  const cls = 'cust-avatar cust-avatar-' + size + (onClick ? ' clickable' : '');
+  const node = el('div', { class: cls, title: onClick ? 'Click to upload a photo' : '' });
+  if (avatarUrl) {
+    node.appendChild(el('img', { src: avatarUrl, alt: '', class: 'cust-avatar-img' }));
+  } else {
+    node.style.background = avatarColorFromName(name);
+    node.appendChild(el('span', { class: 'cust-avatar-initials' }, customerInitials(name)));
+  }
+  if (onClick) node.addEventListener('click', onClick);
+  return node;
+}
+
 // Bucket noisy GA4 sessionSource values into a small number of clean
 // channels so the Top Traffic Sources panel reads at a glance instead
 // of being a wall of "facebook.com / m.facebook.com / l.facebook.com /
@@ -848,11 +879,59 @@ async function openCustomerProfile(leadId) {
     onclick: closeProfileOuter,
     ontouchend: closeProfileOuter
   }, '×');
+
+  // Avatar — falls back to initials in a name-derived colored circle.
+  // Click opens a hidden file picker; on file selected we read as
+  // base64 + POST to the upload endpoint, then refresh the profile.
+  let liveAvatar = lead.avatar_url || null;
+  const fileIn = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', style: 'display:none' });
+  const avatarHost = el('div', { class: 'profile-avatar-host' });
+  const renderAvatarHere = () => {
+    avatarHost.innerHTML = '';
+    avatarHost.appendChild(renderAvatar({
+      name: lead.name, avatarUrl: liveAvatar, size: 'lg',
+      onClick: () => fileIn.click()
+    }));
+    if (liveAvatar) {
+      avatarHost.appendChild(el('button', {
+        class: 'profile-avatar-remove', type: 'button', title: 'Remove photo',
+        onclick: async (ev) => {
+          ev.stopPropagation();
+          if (!confirm('Remove this customer photo?')) return;
+          try {
+            await api('/api/portal/profile?action=avatar', { method: 'DELETE', body: { lead_id: leadId } });
+            liveAvatar = null; renderAvatarHere(); toast('Photo removed');
+          } catch (e) { toast('Remove failed: ' + e.message, true); }
+        }
+      }, '×'));
+    }
+  };
+  fileIn.addEventListener('change', () => {
+    const file = fileIn.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { toast('Image too large (max 2 MB)', true); return; }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const r = await api('/api/portal/profile?action=upload-avatar', {
+          method: 'POST',
+          body: { lead_id: leadId, image_data_url: reader.result }
+        });
+        liveAvatar = r.avatar_url; renderAvatarHere();
+        toast('Photo uploaded' + (r.storage === 'inline_fallback' ? ' (inline — set up a lead-avatars Storage bucket for better perf)' : ''));
+      } catch (e) { toast('Upload failed: ' + e.message, true); }
+    };
+    reader.readAsDataURL(file);
+  });
+  renderAvatarHere();
+
   const header = el('div', { class: 'profile-header' },
     el('div', { class: 'profile-header-top' },
-      el('h2', {}, lead.name || 'Unnamed customer'),
+      avatarHost,
+      el('h2', { style: 'flex:1;min-width:0;margin:0' }, lead.name || 'Unnamed customer'),
       closeBtn
     ),
+    fileIn,
     el('div', { class: 'profile-contact muted' },
       lead.phone || '—',
       lead.email ? ' · ' + lead.email : ''
@@ -2287,11 +2366,14 @@ async function viewLeads() {
 
         return el('tr', {},
           el('td', {}, new Date(l.created_at).toLocaleString()),
-          el('td', {}, el('button', {
-            class: 'link-btn',
-            title: 'Open customer profile',
-            onclick: () => openCustomerProfile(l.id)
-          }, l.name || '—')),
+          el('td', {}, el('div', { class: 'lead-name-cell' },
+            renderAvatar({ name: l.name, avatarUrl: l.avatar_url, size: 'sm' }),
+            el('button', {
+              class: 'link-btn',
+              title: 'Open customer profile',
+              onclick: () => openCustomerProfile(l.id)
+            }, l.name || '—')
+          )),
           el('td', {}, l.phone || '—'),
           el('td', {}, l.email || '—'),
           el('td', {}, el('span', { class: 'badge' }, l.source || 'manual')),
@@ -3026,6 +3108,44 @@ async function loadBlastsContacts(container) {
   searchIn.addEventListener('input', () => { searchQuery = searchIn.value.trim().toLowerCase(); render(); });
 
   const countLabel = el('span', { class: 'muted', style: 'font-size:0.8rem' });
+
+  // Bulk tag — adds the picked tag to every selected contact in one
+  // round-trip. Tag picker reuses the same popover the row chips use.
+  const bulkTagBtn = el('button', { class: 'btn sm', style: 'display:none', onclick: () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    openTagPicker({
+      current: [],
+      onAdd: async (tag) => {
+        bulkTagBtn.disabled = true; bulkTagBtn.textContent = 'Tagging…';
+        let ok = 0, failed = 0;
+        // Fetch current contacts from the in-memory list, union the new
+        // tag, PATCH each. PATCHes run in parallel (batched 8 at a time
+        // so we don't blow up the function with 200 simultaneous calls).
+        const batches = [];
+        for (let i = 0; i < ids.length; i += 8) batches.push(ids.slice(i, i + 8));
+        for (const batch of batches) {
+          await Promise.all(batch.map(async (id) => {
+            const c = contacts.find(x => x.id === id);
+            const next = [...new Set([...normalizeTags(c?.tags), tag])];
+            try {
+              await api('/api/portal/crm?action=contacts', { method: 'PATCH', body: { id, tags: next } });
+              if (c) c.tags = next;
+              ok++;
+            } catch { failed++; }
+          }));
+        }
+        bulkTagBtn.disabled = false;
+        toast(`Tagged ${ok} contact${ok === 1 ? '' : 's'} with "${tag}"` + (failed ? ` · ${failed} failed` : ''));
+        // Re-render so the new tag chips show on every selected card,
+        // and rebuild the tab row in case this tag wasn't visible before.
+        for (const c of contacts) for (const t of normalizeTags(c.tags))
+          tagCounts.set(t, (tagCounts.get(t) || 0) + 0); // ensure key
+        loadBlastsContacts(container);
+      }
+    });
+  } }, 'Tag Selected (0)');
+
   const bulkBtn = el('button', { class: 'btn sm danger', style: 'display:none', onclick: async () => {
     const ids = [...selected];
     if (!ids.length) return;
@@ -3042,7 +3162,7 @@ async function loadBlastsContacts(container) {
   } }, 'Delete Selected (0)');
 
   const toolbar = el('div', { style: 'display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px' },
-    searchIn, countLabel, bulkBtn);
+    searchIn, countLabel, bulkTagBtn, bulkBtn);
   container.appendChild(toolbar);
 
   // Tab/filter chip row — All · Manual · Imported · top tags as chips
@@ -3098,8 +3218,10 @@ async function loadBlastsContacts(container) {
     countLabel.textContent = n
       ? `${n} selected · ${visible.length} of ${contacts.length} shown`
       : `${visible.length} of ${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;
-    bulkBtn.style.display = n ? '' : 'none';
-    bulkBtn.textContent = `Delete Selected (${n})`;
+    bulkBtn.style.display    = n ? '' : 'none';
+    bulkTagBtn.style.display = n ? '' : 'none';
+    bulkBtn.textContent      = `Delete Selected (${n})`;
+    bulkTagBtn.textContent   = `Tag Selected (${n})`;
 
     grid.innerHTML = '';
     if (!visible.length) {
@@ -3118,8 +3240,10 @@ async function loadBlastsContacts(container) {
     cb.addEventListener('change', () => {
       if (cb.checked) selected.add(c.id); else selected.delete(c.id);
       const n = selected.size;
-      bulkBtn.style.display = n ? '' : 'none';
-      bulkBtn.textContent = `Delete Selected (${n})`;
+      bulkBtn.style.display    = n ? '' : 'none';
+      bulkTagBtn.style.display = n ? '' : 'none';
+      bulkBtn.textContent      = `Delete Selected (${n})`;
+      bulkTagBtn.textContent   = `Tag Selected (${n})`;
       countLabel.textContent = n
         ? `${n} selected · ${contacts.filter(matches).length} of ${contacts.length} shown`
         : `${contacts.filter(matches).length} of ${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;

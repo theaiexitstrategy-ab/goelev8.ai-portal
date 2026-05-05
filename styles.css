@@ -1162,6 +1162,58 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Customer avatars (circle with image OR initials fallback)
+   ============================================================ */
+.cust-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; overflow: hidden; flex-shrink: 0;
+  color: #fff;
+  font-weight: 700;
+  text-transform: uppercase;
+  user-select: none;
+  vertical-align: middle;
+}
+.cust-avatar.cust-avatar-sm { width: 28px; height: 28px; font-size: 0.7rem; }
+.cust-avatar.cust-avatar-md { width: 40px; height: 40px; font-size: 0.85rem; }
+.cust-avatar.cust-avatar-lg {
+  width: 88px; height: 88px; font-size: 1.6rem;
+  border: 2px solid var(--border-strong, rgba(255,255,255,0.1));
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.cust-avatar.clickable { cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }
+.cust-avatar.clickable:hover {
+  transform: scale(1.04);
+  box-shadow: 0 0 0 3px rgba(0, 207, 255, 0.4);
+}
+.cust-avatar-img {
+  width: 100%; height: 100%; object-fit: cover;
+  display: block;
+}
+.cust-avatar-initials { line-height: 1; letter-spacing: 0.02em; }
+
+/* In-table lead name cell — small avatar + clickable name */
+.lead-name-cell {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+}
+
+/* Profile-header avatar host = avatar + remove button overlay */
+.profile-avatar-host {
+  position: relative;
+  flex-shrink: 0;
+}
+.profile-avatar-remove {
+  position: absolute; top: -4px; right: -4px;
+  width: 24px; height: 24px; padding: 0;
+  background: rgba(239, 68, 68, 0.9);
+  border: 2px solid var(--bg-elevated, #141c2e);
+  color: #fff; font-size: 14px; line-height: 1;
+  border-radius: 50%; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.profile-avatar-remove:hover { background: rgba(239, 68, 68, 1); }
+
+/* ============================================================
    Customer Profile slide-over
    ============================================================ */
 .profile-bg {
@@ -1192,7 +1244,11 @@ tbody tr:last-child td { border-bottom: none; }
 @keyframes profile-slide { from { transform: translateX(40px); } to { transform: translateX(0); } }
 .profile-header { padding-bottom: 14px; border-bottom: 1px solid var(--border, #2a3a5c); }
 .profile-header-top {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; align-items: center; gap: 14px;
+}
+.profile-header-top h2 {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
 }
 .profile-header h2 {
   font-size: 1.4rem; font-weight: 700;
