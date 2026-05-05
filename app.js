@@ -570,14 +570,34 @@ const SUGGESTED_TAGS = [
 ];
 
 // Coerce a tags value into a safe string[]. Postgres text[] usually
-// arrives as a JS array via supabase-js, but legacy rows can come back
-// as null, a Postgres array literal string ("{a,b}"), or a comma-list.
+// arrives as a JS array via supabase-js, but rows can come back as
+// null, a Postgres array literal string ("{a,b}"), a JSON-encoded
+// array string ('["booking"]') if upstream double-stringified before
+// insert, or a plain comma-list. Recurses on individual elements to
+// strip nested JSON noise (e.g. ['["booking"]'] → ['booking']).
 // Returning [] on anything weird means the chip UI never blows up.
 function normalizeTags(v) {
-  if (Array.isArray(v)) return v.filter(Boolean).map(t => String(t));
+  // Element-level cleanup: unwrap JSON-encoded arrays/strings stored as
+  // a single tag entry, then trim quotes/brackets.
+  const cleanOne = (raw) => {
+    let s = String(raw == null ? '' : raw).trim();
+    if (!s) return [];
+    if (s.startsWith('[') && s.endsWith(']')) {
+      try { const parsed = JSON.parse(s); if (Array.isArray(parsed)) return parsed.flatMap(cleanOne); } catch {}
+    }
+    if (s.startsWith('"') && s.endsWith('"')) {
+      try { return [JSON.parse(s)].filter(Boolean); } catch {}
+    }
+    return [s.replace(/^["{[\\]+|["}\]\\]+$/g, '').trim()].filter(Boolean);
+  };
+  if (Array.isArray(v)) return v.flatMap(cleanOne).filter(Boolean).map(t => String(t));
   if (typeof v === 'string') {
     const s = v.trim();
     if (!s) return [];
+    // JSON-encoded array stored as a single string field
+    if (s.startsWith('[') && s.endsWith(']')) {
+      try { const parsed = JSON.parse(s); if (Array.isArray(parsed)) return parsed.flatMap(cleanOne).filter(Boolean); } catch {}
+    }
     if (s.startsWith('{') && s.endsWith('}')) {
       return s.slice(1, -1).split(',').map(t => t.replace(/^"|"$/g, '').trim()).filter(Boolean);
     }

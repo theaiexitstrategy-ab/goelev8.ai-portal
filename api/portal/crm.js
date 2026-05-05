@@ -137,7 +137,46 @@ async function handleLeads(req, res, ctx) {
       error = retry.error;
     }
     if (error) return res.status(500).json({ error: error.message });
-    return res.status(200).json({ leads: data || [] });
+
+    // Read-time dedupe: even if write-side intake or the admin cleanup
+    // hasn't fully run, never show the same person twice. Group by phone
+    // (normalized) then by lower-cased email; the oldest row wins so any
+    // tags/paid_at applied to it are preserved. Newer rows' tags get
+    // unioned in so nothing's lost. Frontend gets one row per human →
+    // the leads count + conversion metric stay accurate.
+    const norm = (p) => String(p || '').replace(/[^\d+]/g, '');
+    const ascending = (data || []).slice().sort((a, b) =>
+      new Date(a.created_at) - new Date(b.created_at));
+    const seenPhones = new Map(); // phoneKey -> canonical row
+    const seenEmails = new Map(); // emailKey -> canonical row
+    const out = [];
+    for (const r of ascending) {
+      const phoneKey = norm(r.phone);
+      const emailKey = (r.email || '').trim().toLowerCase();
+      let canonical = (phoneKey && seenPhones.get(phoneKey))
+        || (emailKey && seenEmails.get(emailKey))
+        || null;
+      if (canonical) {
+        // Union tags onto the canonical row (in-place — out array shares ref).
+        const existingTags = Array.isArray(canonical.tags) ? canonical.tags : [];
+        const newTags = Array.isArray(r.tags) ? r.tags : [];
+        if (newTags.length) {
+          canonical.tags = [...new Set([...existingTags, ...newTags])];
+        }
+        // Earliest paid_at wins; first non-null name/email/phone wins.
+        if (!canonical.paid_at && r.paid_at) canonical.paid_at = r.paid_at;
+        for (const f of ['name', 'phone', 'email']) {
+          if (!canonical[f] && r[f]) canonical[f] = r[f];
+        }
+        continue; // skip duplicate
+      }
+      out.push(r);
+      if (phoneKey) seenPhones.set(phoneKey, r);
+      if (emailKey) seenEmails.set(emailKey, r);
+    }
+    // Return newest-first to match the previous order.
+    out.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    return res.status(200).json({ leads: out });
   }
   if (req.method === 'PATCH') {
     const body = await readJson(req);

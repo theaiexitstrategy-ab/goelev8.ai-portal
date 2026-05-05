@@ -381,10 +381,19 @@ async function dedupeLeads(req, res) {
   const perClient = [];
 
   for (const c of clients || []) {
-    const { data: leads } = await supabaseAdmin
+    // Tolerate schemas missing paid_at (migration 0023 not yet applied) —
+    // retry with the leaner column set if Postgres complains.
+    let leads, leadsErr;
+    ({ data: leads, error: leadsErr } = await supabaseAdmin
       .from('leads').select('id, name, phone, email, tags, created_at, paid_at')
       .eq('client_id', c.id)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true }));
+    if (leadsErr && /column .*paid_at.* does not exist/i.test(leadsErr.message)) {
+      ({ data: leads } = await supabaseAdmin
+        .from('leads').select('id, name, phone, email, tags, created_at')
+        .eq('client_id', c.id)
+        .order('created_at', { ascending: true }));
+    }
     if (!leads?.length) continue;
     scanned += leads.length;
 
