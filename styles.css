@@ -1154,7 +1154,15 @@ tbody tr:last-child td { border-bottom: none; }
   height: 100vh; overflow-y: auto;
   background: var(--bg-elevated, #141c2e);
   border-left: 1px solid var(--border, #2a3a5c);
-  padding: 24px 28px;
+  /* iOS safe-area: keep the header below the status bar / notch /
+     Dynamic Island and the bottom bar above the home indicator. The
+     calc() floor ensures non-notched browsers still get sensible
+     padding (env() resolves to 0 there). */
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 18px)
+    calc(env(safe-area-inset-right, 0px) + 28px)
+    calc(env(safe-area-inset-bottom, 0px) + 24px)
+    28px;
   animation: profile-slide 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 @keyframes profile-slide { from { transform: translateX(40px); } to { transform: translateX(0); } }
@@ -1187,9 +1195,11 @@ tbody tr:last-child td { border-bottom: none; }
 
 .profile-done-bar {
   position: sticky;
-  bottom: -24px;        /* extends to the bottom padding of .profile-sheet */
-  margin: 24px -28px -24px;
-  padding: 14px 28px env(safe-area-inset-bottom, 14px);
+  /* Stick to the bottom of the visible area — calc accounts for the
+     sheet's bottom padding so the bar sits flush with the viewport. */
+  bottom: calc(0px - env(safe-area-inset-bottom, 0px) - 24px);
+  margin: 24px -28px calc(0px - env(safe-area-inset-bottom, 0px) - 24px);
+  padding: 14px 28px calc(env(safe-area-inset-bottom, 0px) + 14px);
   background: var(--bg-elevated, #141c2e);
   border-top: 1px solid var(--border, #2a3a5c);
   display: flex; justify-content: stretch;
@@ -1203,7 +1213,10 @@ tbody tr:last-child td { border-bottom: none; }
   -webkit-tap-highlight-color: transparent;
 }
 @media (max-width: 600px) {
-  .profile-done-bar { margin: 24px -18px -16px; padding-left: 18px; padding-right: 18px; }
+  .profile-done-bar {
+    margin: 24px -18px calc(0px - env(safe-area-inset-bottom, 0px) - 16px);
+    padding-left: 18px; padding-right: 18px;
+  }
 }
 .profile-contact { font-size: 0.9rem; margin-top: 4px; }
 .profile-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -1244,7 +1257,15 @@ tbody tr:last-child td { border-bottom: none; }
 .link-btn:hover { color: var(--brand-1, #00CFFF); border-bottom-color: var(--brand-1, #00CFFF); }
 
 @media (max-width: 600px) {
-  .profile-sheet { padding: 16px 18px; }
+  .profile-sheet {
+    padding:
+      calc(env(safe-area-inset-top, 0px) + 14px)
+      calc(env(safe-area-inset-right, 0px) + 18px)
+      calc(env(safe-area-inset-bottom, 0px) + 16px)
+      18px;
+  }
+  .profile-header h2 { font-size: 1.15rem; }
+  .profile-header-top { gap: 8px; align-items: flex-start; }
 }
 
 /* ============================================================
