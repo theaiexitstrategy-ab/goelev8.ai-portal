@@ -2947,109 +2947,185 @@ async function viewBlasts() {
 async function loadBlastsContacts(container) {
   container.innerHTML = '';
   container.appendChild(el('p', { class: 'muted' }, 'Loading contacts...'));
+  let contacts;
   try {
     const r = await api('/api/portal/crm?action=contacts');
-    container.innerHTML = '';
-    const contacts = r.contacts || [];
-    if (!contacts.length) {
-      container.appendChild(el('p', { class: 'muted' }, 'No contacts yet. Click "Import Contacts" to add from a file or spreadsheet.'));
-      return;
-    }
-
-    const selected = new Set();
-    const toolbar = el('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap' });
-    const countLabel = el('p', { class: 'muted', style: 'margin:0' });
-    const bulkBtn = el('button', { class: 'btn sm danger', style: 'display:none', onclick: async () => {
-      const ids = [...selected];
-      if (!ids.length) return;
-      if (!confirm(`Delete ${ids.length} contact${ids.length !== 1 ? 's' : ''}?`)) return;
-      bulkBtn.disabled = true; bulkBtn.textContent = 'Deleting...';
-      try {
-        const r2 = await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { ids } });
-        toast(`${r2.deleted || ids.length} contact${(r2.deleted || ids.length) !== 1 ? 's' : ''} deleted`);
-        loadBlastsContacts(container);
-      } catch (e) {
-        toast('Delete failed: ' + e.message, true);
-        bulkBtn.disabled = false; bulkBtn.textContent = `Delete Selected (${ids.length})`;
-      }
-    } }, 'Delete Selected (0)');
-    toolbar.append(countLabel, bulkBtn);
-    container.appendChild(toolbar);
-
-    const updateToolbar = () => {
-      const n = selected.size;
-      countLabel.textContent = n
-        ? `${n} of ${contacts.length} selected`
-        : `${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;
-      bulkBtn.style.display = n ? '' : 'none';
-      bulkBtn.textContent = `Delete Selected (${n})`;
-    };
-    updateToolbar();
-
-    const headerCb = el('input', { type: 'checkbox' });
-    headerCb.addEventListener('change', () => {
-      const checked = headerCb.checked;
-      tbl.querySelectorAll('tbody input.row-cb').forEach(cb => {
-        cb.checked = checked;
-        const id = cb.dataset.id;
-        if (checked) selected.add(id); else selected.delete(id);
-      });
-      updateToolbar();
-    });
-
-    const tbl = el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', { style: 'width:32px' }, headerCb),
-        el('th', {}, 'Name'), el('th', {}, 'Phone'), el('th', {}, 'Email'),
-        el('th', {}, 'Tags'), el('th', {}, 'Source'), el('th', {}, '')
-      )),
-      el('tbody', {}, ...contacts.map(c => {
-        const cb = el('input', { type: 'checkbox', class: 'row-cb' });
-        cb.dataset.id = c.id;
-        cb.addEventListener('change', () => {
-          if (cb.checked) selected.add(c.id); else selected.delete(c.id);
-          headerCb.checked = selected.size === contacts.length;
-          headerCb.indeterminate = selected.size > 0 && selected.size < contacts.length;
-          updateToolbar();
-        });
-        let currentTags = normalizeTags(c.tags);
-        const tagsCell = tagChips({
-          getTags: () => currentTags,
-          saveTags: async (next) => {
-            await api('/api/portal/crm?action=contacts', {
-              method: 'PATCH', body: { id: c.id, tags: next }
-            });
-            currentTags = next;
-          }
-        });
-        return el('tr', {},
-          el('td', {}, cb),
-          el('td', {}, c.name || '—'),
-          el('td', {}, c.phone || '—'),
-          el('td', {}, c.email || '—'),
-          el('td', {}, tagsCell),
-          el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual')),
-          el('td', { style: 'white-space:nowrap' },
-            el('button', { class: 'btn sm', style: 'margin-right:4px', onclick: () => {
-              openContactEditModal(c, () => loadBlastsContacts(container));
-            } }, 'Edit'),
-            el('button', { class: 'btn sm danger', onclick: async () => {
-              if (!confirm('Delete contact?')) return;
-              try {
-                await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
-                toast('Contact deleted');
-                loadBlastsContacts(container);
-              } catch (e) { toast('Delete failed: ' + e.message, true); }
-            } }, 'Delete')
-          )
-        );
-      }))
-    );
-    container.appendChild(tbl);
+    contacts = r.contacts || [];
   } catch (e) {
     container.innerHTML = '';
     container.appendChild(el('p', { class: 'err' }, 'Failed to load contacts: ' + e.message));
+    return;
   }
+  container.innerHTML = '';
+  if (!contacts.length) {
+    container.appendChild(el('p', { class: 'muted' }, 'No contacts yet. Click "Import Contacts" to add from a file or spreadsheet.'));
+    return;
+  }
+
+  // Filter state
+  let searchQuery = '';
+  let activeTab = 'all';        // 'all' | 'manual' | 'import' | 'tag:<name>'
+  const selected = new Set();
+
+  // Collect tag set for the filter chips (only tags actually in use).
+  const tagCounts = new Map();
+  for (const c of contacts) {
+    for (const t of normalizeTags(c.tags)) {
+      tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+    }
+  }
+  const popularTags = [...tagCounts.entries()]
+    .sort((a, b) => b[1] - a[1]).slice(0, 8).map(([t]) => t);
+
+  // Toolbar: search + bulk delete count
+  const searchIn = el('input', {
+    type: 'search',
+    placeholder: 'Search name, phone, email…',
+    style: 'flex:1;min-width:180px;padding:8px 12px;background:var(--bg-1,#0d1117);border:1px solid var(--border,#2a3a5c);border-radius:8px;color:var(--text,#e0e0e0);font-size:0.9rem'
+  });
+  searchIn.addEventListener('input', () => { searchQuery = searchIn.value.trim().toLowerCase(); render(); });
+
+  const countLabel = el('span', { class: 'muted', style: 'font-size:0.8rem' });
+  const bulkBtn = el('button', { class: 'btn sm danger', style: 'display:none', onclick: async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} contact${ids.length !== 1 ? 's' : ''}?`)) return;
+    bulkBtn.disabled = true; bulkBtn.textContent = 'Deleting...';
+    try {
+      const r2 = await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { ids } });
+      toast(`${r2.deleted || ids.length} contact${(r2.deleted || ids.length) !== 1 ? 's' : ''} deleted`);
+      loadBlastsContacts(container);
+    } catch (e) {
+      toast('Delete failed: ' + e.message, true);
+      bulkBtn.disabled = false; bulkBtn.textContent = `Delete Selected (${ids.length})`;
+    }
+  } }, 'Delete Selected (0)');
+
+  const toolbar = el('div', { style: 'display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px' },
+    searchIn, countLabel, bulkBtn);
+  container.appendChild(toolbar);
+
+  // Tab/filter chip row — All · Manual · Imported · top tags as chips
+  const tabRow = el('div', { class: 'contact-tabs' });
+  container.appendChild(tabRow);
+
+  const buildTabs = () => {
+    tabRow.innerHTML = '';
+    const mkTab = (id, label, count) => {
+      const cls = 'contact-tab' + (activeTab === id ? ' active' : '');
+      const btn = el('button', { class: cls, onclick: () => { activeTab = id; selected.clear(); render(); } },
+        label,
+        el('span', { class: 'contact-tab-count' }, '(' + count + ')')
+      );
+      return btn;
+    };
+    const allCount    = contacts.length;
+    const manualCount = contacts.filter(c => (c.source || 'manual') !== 'import').length;
+    const importCount = contacts.filter(c => c.source === 'import').length;
+    tabRow.appendChild(mkTab('all', 'All', allCount));
+    if (manualCount) tabRow.appendChild(mkTab('manual',  'Manual',   manualCount));
+    if (importCount) tabRow.appendChild(mkTab('import',  'Imported', importCount));
+    for (const t of popularTags) {
+      tabRow.appendChild(mkTab('tag:' + t, t, tagCounts.get(t) || 0));
+    }
+  };
+
+  // Card grid host
+  const grid = el('div', { class: 'contact-card-grid' });
+  container.appendChild(grid);
+
+  // Predicate that applies the current tab + search
+  const matches = (c) => {
+    // Tab filter
+    if (activeTab === 'manual' && c.source === 'import') return false;
+    if (activeTab === 'import' && c.source !== 'import') return false;
+    if (activeTab.startsWith('tag:')) {
+      const tag = activeTab.slice(4);
+      if (!normalizeTags(c.tags).includes(tag)) return false;
+    }
+    // Search filter
+    if (searchQuery) {
+      const hay = [c.name, c.phone, c.email].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(searchQuery)) return false;
+    }
+    return true;
+  };
+
+  function render() {
+    buildTabs();
+    const visible = contacts.filter(matches);
+    const n = selected.size;
+    countLabel.textContent = n
+      ? `${n} selected · ${visible.length} of ${contacts.length} shown`
+      : `${visible.length} of ${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;
+    bulkBtn.style.display = n ? '' : 'none';
+    bulkBtn.textContent = `Delete Selected (${n})`;
+
+    grid.innerHTML = '';
+    if (!visible.length) {
+      grid.appendChild(el('p', { class: 'muted', style: 'padding:16px;text-align:center' },
+        'No contacts match the current filter.'));
+      return;
+    }
+    for (const c of visible) {
+      grid.appendChild(renderContactCard(c));
+    }
+  }
+
+  function renderContactCard(c) {
+    const cb = el('input', { type: 'checkbox', class: 'contact-card-cb' });
+    cb.checked = selected.has(c.id);
+    cb.addEventListener('change', () => {
+      if (cb.checked) selected.add(c.id); else selected.delete(c.id);
+      const n = selected.size;
+      bulkBtn.style.display = n ? '' : 'none';
+      bulkBtn.textContent = `Delete Selected (${n})`;
+      countLabel.textContent = n
+        ? `${n} selected · ${contacts.filter(matches).length} of ${contacts.length} shown`
+        : `${contacts.filter(matches).length} of ${contacts.length} contact${contacts.length !== 1 ? 's' : ''}`;
+      card.classList.toggle('selected', cb.checked);
+    });
+
+    let liveTags = normalizeTags(c.tags);
+    const tagsHost = tagChips({
+      getTags: () => liveTags,
+      saveTags: async (next) => {
+        await api('/api/portal/crm?action=contacts', {
+          method: 'PATCH', body: { id: c.id, tags: next }
+        });
+        liveTags = next;
+      }
+    });
+
+    const card = el('div', { class: 'contact-card' + (cb.checked ? ' selected' : '') },
+      el('div', { class: 'contact-card-head' },
+        cb,
+        el('div', { class: 'contact-card-name' }, c.name || '—'),
+        el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual')
+      ),
+      el('div', { class: 'contact-card-meta' },
+        c.phone ? el('span', {}, '📱 ' + c.phone) : null,
+        c.email ? el('span', {}, '✉️ ' + c.email) : null
+      ),
+      el('div', { class: 'contact-card-tags' }, tagsHost),
+      el('div', { class: 'contact-card-actions' },
+        el('button', { class: 'btn sm', onclick: () => {
+          openContactEditModal(c, () => loadBlastsContacts(container));
+        } }, 'Edit'),
+        el('button', { class: 'btn sm danger', onclick: async () => {
+          if (!confirm('Delete contact?')) return;
+          try {
+            await api('/api/portal/crm?action=contacts', { method: 'DELETE', body: { id: c.id } });
+            toast('Contact deleted');
+            loadBlastsContacts(container);
+          } catch (e) { toast('Delete failed: ' + e.message, true); }
+        } }, 'Delete')
+      )
+    );
+    return card;
+  }
+
+  render();
 }
 
 function openContactEditModal(contact, onSaved) {

@@ -1293,6 +1293,80 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   SMS Blasts contacts — filterable card grid
+   ============================================================ */
+.contact-tabs {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border, #2a3a5c);
+}
+.contact-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: 999px;
+  color: var(--text, #e0e0e0);
+  font-size: 0.78rem; font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.contact-tab:hover {
+  background: rgba(0, 207, 255, 0.06);
+  border-color: rgba(0, 207, 255, 0.4);
+}
+.contact-tab.active {
+  background: var(--brand-1, #00CFFF); color: #000;
+  border-color: var(--brand-1, #00CFFF);
+  font-weight: 700;
+}
+.contact-tab-count {
+  font-size: 0.7rem; opacity: 0.7;
+}
+.contact-tab.active .contact-tab-count { opacity: 1; }
+
+.contact-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.contact-card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-elevated, #141c2e);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-md, 12px);
+  transition: border-color 0.15s, transform 0.15s;
+}
+.contact-card:hover { border-color: var(--brand-1, #00CFFF); }
+.contact-card.selected {
+  border-color: var(--brand-1, #00CFFF);
+  background: rgba(0, 207, 255, 0.06);
+}
+.contact-card-head {
+  display: flex; align-items: center; gap: 8px;
+}
+.contact-card-cb {
+  width: 18px; height: 18px; flex-shrink: 0;
+  accent-color: var(--brand-1, #00CFFF);
+  cursor: pointer;
+}
+.contact-card-name {
+  flex: 1; font-weight: 700; font-size: 0.95rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.contact-card-meta {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 0.78rem; color: var(--text-dim, #a8acbb);
+  word-break: break-word;
+}
+.contact-card-tags { font-size: 0.7rem; }
+.contact-card-actions {
+  display: flex; gap: 6px; margin-top: 4px;
+}
+
+/* ============================================================
    Traffic channel bar list (replaces the noisy raw GA4 source table)
    ============================================================ */
 .traffic-channel-list {
