@@ -699,11 +699,19 @@ async function openCustomerProfile(leadId) {
 
   const sheet = el('div', { class: 'profile-sheet' },
     el('div', { class: 'profile-loading muted' }, 'Loading customer profile…'));
+  const dismissOnBg = (e) => { if (e.target === bg) closeProfileOuter(e); };
   const bg = el('div', {
     class: 'profile-bg',
-    onclick: (e) => { if (e.target === bg) bg.remove(); }
+    onclick: dismissOnBg,
+    ontouchend: dismissOnBg
   }, sheet);
-  const onKey = (e) => { if (e.key === 'Escape') { bg.remove(); document.removeEventListener('keydown', onKey); } };
+  const onKey = (e) => { if (e.key === 'Escape') closeProfileOuter(e); };
+  // Hoisted close so backdrop / Esc / button all share the same path.
+  function closeProfileOuter(ev) {
+    if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
+    document.removeEventListener('keydown', onKey);
+    bg.remove();
+  }
   document.addEventListener('keydown', onKey);
   document.body.appendChild(bg);
 
@@ -729,11 +737,19 @@ async function openCustomerProfile(leadId) {
     return new Date(ts).toLocaleDateString();
   };
 
-  // Header
+  // Header — close button is sized for iOS (44×44pt), and we listen on
+  // both pointer and touch events so a single tap always dismisses.
+  const closeBtn = el('button', {
+    class: 'profile-close',
+    type: 'button',
+    'aria-label': 'Close',
+    onclick: closeProfileOuter,
+    ontouchend: closeProfileOuter
+  }, '×');
   const header = el('div', { class: 'profile-header' },
     el('div', { class: 'profile-header-top' },
       el('h2', {}, lead.name || 'Unnamed customer'),
-      el('button', { class: 'profile-close', onclick: () => bg.remove() }, '×')
+      closeBtn
     ),
     el('div', { class: 'profile-contact muted' },
       lead.phone || '—',
@@ -907,7 +923,19 @@ async function openCustomerProfile(leadId) {
   }
 
   sheet.innerHTML = '';
-  sheet.append(header, tagsRow, actionBar, metrics, bookingsSection, callsSection, messagesSection, nudgesSection);
+  // Sticky "Done" button at the very bottom of the sheet — second
+  // unmissable exit for iOS users who can't easily reach the X in the
+  // header after scrolling.
+  const doneBar = el('div', { class: 'profile-done-bar' },
+    el('button', {
+      class: 'btn primary profile-done-btn',
+      type: 'button',
+      onclick: closeProfileOuter,
+      ontouchend: closeProfileOuter
+    }, 'Done')
+  );
+
+  sheet.append(header, tagsRow, actionBar, metrics, bookingsSection, callsSection, messagesSection, nudgesSection, doneBar);
 }
 
 function card(label, value, sub, cls = '') {

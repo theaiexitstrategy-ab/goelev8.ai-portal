@@ -1168,11 +1168,43 @@ tbody tr:last-child td { border-bottom: none; }
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .profile-close {
-  background: transparent; border: none;
-  color: var(--text-mute, #888); font-size: 1.6rem;
-  cursor: pointer; line-height: 1; padding: 4px 10px; border-radius: 6px;
+  /* iOS HIG = 44pt minimum touch target. Without this the X is
+     genuinely hard to tap with a thumb. */
+  min-width: 44px; min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border, #2a3a5c);
+  color: var(--text-mute, #aaa); font-size: 1.5rem;
+  cursor: pointer; line-height: 1; border-radius: 8px;
+  /* Kill iOS 300ms tap latency + grey tap highlight. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none; user-select: none;
+  flex-shrink: 0;
 }
-.profile-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.profile-close:hover  { color: var(--text); background: rgba(255,255,255,0.1); }
+.profile-close:active { transform: scale(0.94); background: rgba(0, 207, 255, 0.18); color: var(--brand-1, #00CFFF); }
+
+.profile-done-bar {
+  position: sticky;
+  bottom: -24px;        /* extends to the bottom padding of .profile-sheet */
+  margin: 24px -28px -24px;
+  padding: 14px 28px env(safe-area-inset-bottom, 14px);
+  background: var(--bg-elevated, #141c2e);
+  border-top: 1px solid var(--border, #2a3a5c);
+  display: flex; justify-content: stretch;
+  z-index: 2;
+}
+.profile-done-btn {
+  width: 100%;
+  min-height: 48px;
+  font-size: 1rem;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+@media (max-width: 600px) {
+  .profile-done-bar { margin: 24px -18px -16px; padding-left: 18px; padding-right: 18px; }
+}
 .profile-contact { font-size: 0.9rem; margin-top: 4px; }
 .profile-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .profile-tags-row {
