@@ -5065,6 +5065,57 @@ async function viewAdmin() {
   migPanel.appendChild(trashBtn);
   wrap.appendChild(migPanel);
 
+  // ----- Onboarding payment link (one-click Stripe setup) -----
+  const onbPanel = el('div', { class: 'panel' });
+  onbPanel.appendChild(el('h2', {}, '💳 Onboarding Payment Link'));
+  onbPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+    'Creates the Stripe products, FOUNDING coupon, and Payment Link for the GoElev8.ai onboarding flow ($400 setup → $200 with Founding discount + $99/month subscription). Idempotent — re-clicking returns the existing link.'));
+  const onbOut = el('div', {});
+  const onbBtn = el('button', { class: 'btn primary', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Setting up Stripe…';
+    try {
+      const r = await api('/api/admin?action=create-onboarding-link', { method: 'POST' });
+      onbOut.innerHTML = '';
+      onbOut.appendChild(el('div', { class: 'reserve-setup-banner', style: 'margin-top:12px;background:rgba(0,207,255,0.06);border-color:rgba(0,207,255,0.4)' },
+        el('strong', { style: 'color:var(--brand-1,#00CFFF)' }, '✅ Payment link ready' + (r.reused ? ' (reusing existing)' : '')),
+        el('div', { style: 'margin:8px 0;font-size:0.85rem' },
+          el('strong', {}, 'Mode: '), r.mode === 'test' ? '🧪 TEST mode' : '🟢 LIVE mode'
+        ),
+        el('div', { style: 'margin:6px 0;font-size:0.85rem;word-break:break-all' },
+          el('a', { href: r.payment_link_url, target: '_blank', rel: 'noopener',
+                    style: 'color:var(--brand-1,#00CFFF);font-weight:600' },
+            r.payment_link_url)
+        ),
+        el('div', { style: 'display:flex;gap:6px;margin-top:8px' },
+          el('button', { class: 'btn sm', onclick: () => {
+            navigator.clipboard.writeText(r.payment_link_url).then(() => toast('Copied to clipboard'));
+          } }, 'Copy URL'),
+          el('a', { class: 'btn sm primary', target: '_blank', rel: 'noopener',
+                    href: r.mode === 'test'
+                      ? 'https://dashboard.stripe.com/test/payment-links'
+                      : 'https://dashboard.stripe.com/payment-links' },
+            'Open Stripe Dashboard')
+        ),
+        el('div', { style: 'margin-top:10px;font-size:0.75rem;color:var(--text-mute,#888)' },
+          'Onboarding price: ' + (r.onboarding?.price || '—') + ' · ' +
+          'Growth price: ' + (r.growth?.price || '—') + ' · ' +
+          'Coupon: ' + (r.coupon || '—'))
+      ));
+      toast(r.reused ? 'Reusing existing payment link' : 'Created payment link');
+    } catch (err) {
+      onbOut.innerHTML = '';
+      onbOut.appendChild(el('div', { class: 'err', style: 'margin-top:12px' },
+        '❌ Failed: ' + err.message + '. Confirm STRIPE_SECRET_KEY is set in Vercel and the function has been redeployed since adding it.'));
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Create / Refresh Payment Link';
+    }
+  } }, 'Create / Refresh Payment Link');
+  onbPanel.appendChild(onbBtn);
+  onbPanel.appendChild(onbOut);
+  wrap.appendChild(onbPanel);
+
   // ----- Twilio Reserve (platform-wide accounting) -----
   const reservePanel = el('div', { class: 'panel twilio-reserve-panel' });
   reservePanel.appendChild(el('h2', {}, '📡 Twilio Reserve'));

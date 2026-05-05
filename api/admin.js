@@ -617,6 +617,137 @@ async function ensurePortalTabs(req, res) {
 // GET  → diagnose only
 // POST → diagnose + repair (re-create function/trigger, set cost if
 //        unset, backfill from ledger)
+// One-click setup for the GoElev8.ai onboarding payment link. Mirrors
+// scripts/setup-onboarding-payment-link.mjs but runs server-side via
+// the platform's STRIPE_SECRET_KEY env var so the operator doesn't need
+// a local terminal. Idempotent — re-running returns the existing link
+// instead of creating a duplicate.
+async function createOnboardingPaymentLink(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return res.status(400).json({ error: 'STRIPE_SECRET_KEY env var not set in Vercel' });
+  }
+  const Stripe = (await import('stripe')).default;
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
+
+  const ONBOARDING_NAME = 'GoElev8.ai Onboarding & Setup';
+  const GROWTH_NAME     = 'GoElev8.ai Growth Plan';
+  const COUPON_ID       = 'FOUNDING';
+  const REDIRECT_URL    = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai')
+    .replace(/\/$/, '') + '/?onboarding=done';
+  const FLOW_TAG = 'goelev8_onboarding_v1';
+
+  try {
+    // Onboarding product — search by exact name first; create if missing.
+    let onboardingProduct;
+    {
+      const list = await stripe.products.search({
+        query: `name:'${ONBOARDING_NAME.replace(/'/g, "\\'")}' AND active:'true'`,
+        limit: 5
+      });
+      onboardingProduct = list.data[0] || await stripe.products.create({
+        name: ONBOARDING_NAME,
+        description: 'One-time onboarding and setup. Founding Client Rate: 50% off via the FOUNDING coupon brings $400 → $200.'
+      });
+    }
+
+    // Onboarding price — match by amount + currency + non-recurring.
+    let onboardingPrice;
+    {
+      const list = await stripe.prices.list({ product: onboardingProduct.id, active: true, limit: 100 });
+      onboardingPrice = list.data.find(p =>
+        p.unit_amount === 40000 && p.currency === 'usd' && !p.recurring
+      ) || await stripe.prices.create({
+        product: onboardingProduct.id,
+        unit_amount: 40000, currency: 'usd',
+        nickname: 'Onboarding Setup — $400 (regular)'
+      });
+    }
+
+    // Growth plan product + recurring price.
+    let growthProduct;
+    {
+      const list = await stripe.products.search({
+        query: `name:'${GROWTH_NAME.replace(/'/g, "\\'")}' AND active:'true'`,
+        limit: 5
+      });
+      growthProduct = list.data[0] || await stripe.products.create({
+        name: GROWTH_NAME,
+        description: 'Monthly subscription — full GoElev8.ai automation suite.'
+      });
+    }
+    let growthPrice;
+    {
+      const list = await stripe.prices.list({ product: growthProduct.id, active: true, limit: 100 });
+      growthPrice = list.data.find(p =>
+        p.unit_amount === 9900 && p.currency === 'usd' &&
+        p.recurring && p.recurring.interval === 'month'
+      ) || await stripe.prices.create({
+        product: growthProduct.id,
+        unit_amount: 9900, currency: 'usd',
+        recurring: { interval: 'month' },
+        nickname: 'Growth Plan — $99/month'
+      });
+    }
+
+    // FOUNDING coupon — must be scoped to the onboarding product only
+    // so it doesn't accidentally discount the recurring subscription.
+    // Stripe coupons can't be patched, so if the existing one is wrong-
+    // shaped we delete + recreate.
+    let coupon = null;
+    try { coupon = await stripe.coupons.retrieve(COUPON_ID); }
+    catch (e) { if (e.code !== 'resource_missing') throw e; }
+    const correctlyShaped = coupon
+      && coupon.percent_off === 50
+      && coupon.duration === 'once'
+      && coupon.applies_to?.products?.length === 1
+      && coupon.applies_to.products[0] === onboardingProduct.id;
+    if (!correctlyShaped) {
+      if (coupon) await stripe.coupons.del(COUPON_ID);
+      coupon = await stripe.coupons.create({
+        id: COUPON_ID,
+        name: 'Founding Client Rate',
+        percent_off: 50,
+        duration: 'once',
+        applies_to: { products: [onboardingProduct.id] }
+      });
+    }
+
+    // Reuse an existing payment link if we've already created one for
+    // this flow (matched by metadata.flow). Stripe doesn't dedupe links
+    // automatically — without this, every button click would mint a new
+    // one and clutter the dashboard.
+    let paymentLink = null;
+    {
+      const list = await stripe.paymentLinks.list({ active: true, limit: 100 });
+      paymentLink = list.data.find(p => p.metadata?.flow === FLOW_TAG) || null;
+    }
+    if (!paymentLink) {
+      paymentLink = await stripe.paymentLinks.create({
+        line_items: [
+          { price: onboardingPrice.id, quantity: 1 },
+          { price: growthPrice.id,     quantity: 1 }
+        ],
+        discounts: [{ coupon: coupon.id }],
+        after_completion: { type: 'redirect', redirect: { url: REDIRECT_URL } },
+        metadata: { flow: FLOW_TAG }
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      reused: !!paymentLink && paymentLink.created < Math.floor(Date.now() / 1000) - 5,
+      payment_link_url: paymentLink.url,
+      onboarding: { product: onboardingProduct.id, price: onboardingPrice.id },
+      growth:     { product: growthProduct.id,     price: growthPrice.id },
+      coupon:     coupon.id,
+      mode:       process.env.STRIPE_SECRET_KEY.startsWith('sk_test') ? 'test' : 'live'
+    });
+  } catch (e) {
+    return res.status(400).json({ error: e.message, raw: e.raw?.message });
+  }
+}
+
 async function twilioReserveDiagnose(req, res) {
   const token = process.env.SUPABASE_ACCESS_TOKEN;
   if (!token) return res.status(400).json({ error: 'SUPABASE_ACCESS_TOKEN not set in Vercel env' });
@@ -1197,6 +1328,7 @@ export default async function handler(req, res) {
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'twilio-cost':              return await twilioCostSetting(req, res);
       case 'twilio-reserve-diagnose':  return await twilioReserveDiagnose(req, res);
+      case 'create-onboarding-link':   return await createOnboardingPaymentLink(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
