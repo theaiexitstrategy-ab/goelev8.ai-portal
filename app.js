@@ -552,6 +552,72 @@ async function viewOverview() {
 // Shared tag suggestions used across Leads, Bookings, Contacts and the
 // SMS Blast filter. Pick from these or type a custom one — they're a
 // hint, not an enum. Keep the list short; long lists hurt scanability.
+// Bucket noisy GA4 sessionSource values into a small number of clean
+// channels so the Top Traffic Sources panel reads at a glance instead
+// of being a wall of "facebook.com / m.facebook.com / l.facebook.com /
+// lm.facebook.com" rows. Anything we don't recognize falls into Other.
+const TRAFFIC_CHANNELS = [
+  { label: 'Direct',     icon: '🔗', match: (s) => /^\(?direct\)?$/i.test(s) || s === '(none)' || s === '' },
+  { label: 'Google',     icon: '🔍', match: (s) => /\bgoogle\b/i.test(s) },
+  { label: 'Facebook',   icon: '📘', match: (s) => /facebook|^fb$|^fb\.|m\.facebook|l\.facebook|lm\.facebook/i.test(s) },
+  { label: 'Instagram',  icon: '📷', match: (s) => /instagram|\bigshid\b/i.test(s) },
+  { label: 'TikTok',     icon: '🎵', match: (s) => /tiktok/i.test(s) },
+  { label: 'YouTube',    icon: '▶️', match: (s) => /youtube|\byoutu\.be\b/i.test(s) },
+  { label: 'X / Twitter',icon: '𝕏',  match: (s) => /^t\.co$|twitter|^x\.com$/i.test(s) },
+  { label: 'LinkedIn',   icon: '💼', match: (s) => /linkedin|lnkd/i.test(s) },
+  { label: 'Bing',       icon: '🔎', match: (s) => /^bing$|\bbing\b/i.test(s) },
+  { label: 'Email',      icon: '✉️', match: (s) => /\bemail\b|\bnewsletter\b|mailchimp|sendgrid|klaviyo/i.test(s) },
+  { label: 'AI / LLMs',  icon: '🤖', match: (s) => /chatgpt|openai|perplexity|claude\.ai|copilot/i.test(s) }
+];
+
+function categorizeSource(rawSource) {
+  const s = String(rawSource || '').trim();
+  for (const ch of TRAFFIC_CHANNELS) if (ch.match(s)) return ch;
+  return { label: 'Other', icon: '🌐', match: () => false };
+}
+
+// Roll an array of { source, sessions, users } into channel buckets,
+// summing sessions/users per channel and sorting descending by sessions.
+function bucketSources(rows) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+  const buckets = new Map();
+  for (const r of rows) {
+    const ch = categorizeSource(r.source);
+    const key = ch.label;
+    if (!buckets.has(key)) buckets.set(key, { label: ch.label, icon: ch.icon, sessions: 0, users: 0 });
+    const b = buckets.get(key);
+    b.sessions += Number(r.sessions) || 0;
+    b.users    += Number(r.users)    || 0;
+  }
+  return [...buckets.values()].sort((a, b) => b.sessions - a.sessions);
+}
+
+// Render the bucketed sources as a clean horizontal-bar list. Each row
+// is icon + channel label + bar fill + session count + percentage.
+function renderTrafficChannels(rows) {
+  const buckets = bucketSources(rows);
+  const total = buckets.reduce((s, b) => s + b.sessions, 0);
+  if (!total) {
+    return el('p', { class: 'muted' }, 'No traffic recorded yet.');
+  }
+  const list = el('div', { class: 'traffic-channel-list' });
+  for (const b of buckets) {
+    const pct = (b.sessions / total) * 100;
+    list.appendChild(el('div', { class: 'traffic-channel' },
+      el('div', { class: 'traffic-channel-head' },
+        el('span', { class: 'traffic-channel-icon' }, b.icon),
+        el('span', { class: 'traffic-channel-label' }, b.label),
+        el('span', { class: 'traffic-channel-count muted' },
+          String(b.sessions) + ' · ' + pct.toFixed(1) + '%')
+      ),
+      el('div', { class: 'traffic-channel-bar' },
+        el('div', { class: 'traffic-channel-bar-fill', style: 'width:' + Math.max(2, pct) + '%' })
+      )
+    ));
+  }
+  return list;
+}
+
 const SUGGESTED_TAGS = [
   'Current Client',  // already paying
   'Free Trial',      // booked free session, hasn't paid
@@ -1126,24 +1192,8 @@ async function loadFlexR2sAnalytics(container) {
     ));
 
     // Top traffic sources to /r2s
-    const srcHeader = el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Top Traffic Sources to /r2s');
-    container.appendChild(srcHeader);
-    if ((r.top_sources || []).length) {
-      const total = r.top_sources.reduce((s, x) => s + x.sessions, 0);
-      container.appendChild(el('table', {},
-        el('thead', {}, el('tr', {},
-          el('th', {}, 'Source'), el('th', {}, 'Sessions'), el('th', {}, 'Users'), el('th', {}, '%')
-        )),
-        el('tbody', {}, ...r.top_sources.map(s => el('tr', {},
-          el('td', {}, s.source),
-          el('td', {}, String(s.sessions)),
-          el('td', {}, String(s.users)),
-          el('td', {}, total > 0 ? ((s.sessions / total) * 100).toFixed(1) + '%' : '—')
-        )))
-      ));
-    } else {
-      container.appendChild(el('p', { class: 'muted' }, 'No traffic sources recorded to /r2s in the last 30 days.'));
-    }
+    container.appendChild(el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Top Traffic Sources to /r2s'));
+    container.appendChild(renderTrafficChannels(r.top_sources || []));
 
     // Conversion events
     container.appendChild(el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Conversion Events on /r2s'));
@@ -5275,22 +5325,9 @@ async function viewAnalytics() {
   // Top traffic sources
   const srcPanel = el('div', { class: 'panel' });
   srcPanel.appendChild(el('h2', {}, '🌐 Top Traffic Sources'));
-  if ((ga.top_sources || []).length) {
-    const totalSrc = ga.top_sources.reduce((s, x) => s + x.sessions, 0);
-    srcPanel.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'Source'), el('th', {}, 'Sessions'), el('th', {}, 'Users'), el('th', {}, '%')
-      )),
-      el('tbody', {}, ...ga.top_sources.map(s => el('tr', {},
-        el('td', {}, s.source),
-        el('td', {}, String(s.sessions)),
-        el('td', {}, String(s.users)),
-        el('td', {}, ((s.sessions / totalSrc) * 100).toFixed(1) + '%')
-      )))
-    ));
-  } else {
-    srcPanel.appendChild(el('p', { class: 'muted' }, 'No traffic sources yet.'));
-  }
+  srcPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
+    'Where your visitors come from, grouped by channel. Hover a bar for raw GA4 sources.'));
+  srcPanel.appendChild(renderTrafficChannels(ga.top_sources || []));
   restOfPage.appendChild(srcPanel);
 
   // Top pages (show first 15 in main table)
@@ -5578,18 +5615,7 @@ async function loadR2sAnalyticsSection(container) {
   // Traffic sources
   if (ga4Data?.top_sources?.length) {
     container.appendChild(el('h3', { style: 'margin:16px 0 8px;font-size:0.9rem' }, 'Traffic Sources to /r2s'));
-    const total = ga4Data.top_sources.reduce((s, x) => s + x.sessions, 0);
-    container.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'Source'), el('th', {}, 'Sessions'), el('th', {}, 'Users'), el('th', {}, '%')
-      )),
-      el('tbody', {}, ...ga4Data.top_sources.map(s => el('tr', {},
-        el('td', {}, s.source),
-        el('td', {}, String(s.sessions)),
-        el('td', {}, String(s.users)),
-        el('td', {}, total > 0 ? ((s.sessions / total) * 100).toFixed(1) + '%' : '—')
-      )))
-    ));
+    container.appendChild(renderTrafficChannels(ga4Data.top_sources || []));
   }
 
   // Recent sales

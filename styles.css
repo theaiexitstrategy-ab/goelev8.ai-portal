@@ -1293,6 +1293,32 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Traffic channel bar list (replaces the noisy raw GA4 source table)
+   ============================================================ */
+.traffic-channel-list {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.traffic-channel { display: flex; flex-direction: column; gap: 4px; }
+.traffic-channel-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.85rem;
+}
+.traffic-channel-icon { font-size: 1rem; line-height: 1; }
+.traffic-channel-label { font-weight: 600; }
+.traffic-channel-count { margin-left: auto; font-size: 0.78rem; }
+.traffic-channel-bar {
+  height: 8px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+.traffic-channel-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--brand-1, #00CFFF), rgba(0, 207, 255, 0.5));
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+/* ============================================================
    Tag chips + tag picker
    ============================================================ */
 .tag-chips {
