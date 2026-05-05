@@ -49,9 +49,15 @@ export default async function handler(req, res) {
     const filter = url.searchParams.get('filter') || 'upcoming';
     const nowIso = new Date().toISOString();
 
+    // Try the query with the new tags + paid_at columns first; fall back
+    // to the legacy column set if migration 0023 hasn't been applied yet.
+    // Without this, the entire Bookings page errors out for any portal
+    // whose Supabase project hasn't had the migration run.
+    const fullCols  = 'id, client_id, lead_id, lead_name, phone, email, service, service_type, starts_at, status, notes, source, created_at, tags, paid_at';
+    const legacyCols = 'id, client_id, lead_id, lead_name, phone, email, service, service_type, starts_at, status, notes, source, created_at';
     let q = supabaseAdmin
       .from('bookings')
-      .select('id, client_id, lead_id, lead_name, phone, email, service, service_type, starts_at, status, notes, source, created_at, tags, paid_at')
+      .select(fullCols)
       .eq('client_id', clientId);
 
     // Status filtering is case-insensitive against the canonical Title-cased
@@ -67,7 +73,25 @@ export default async function handler(req, res) {
       q = q.order('starts_at', { ascending: false });
     }
 
-    const { data, error } = await q;
+    let { data, error } = await q;
+    // If migration 0023 hasn't been applied yet the new columns don't
+    // exist — retry with the legacy SELECT so the page still loads.
+    if (error && /column .*\b(tags|paid_at)\b.* does not exist/i.test(error.message)) {
+      let q2 = supabaseAdmin
+        .from('bookings')
+        .select(legacyCols)
+        .eq('client_id', clientId);
+      if (filter === 'upcoming') {
+        q2 = q2.gte('starts_at', nowIso).order('starts_at', { ascending: true });
+      } else if (filter === 'past') {
+        q2 = q2.lt('starts_at', nowIso).order('starts_at', { ascending: false });
+      } else {
+        q2 = q2.order('starts_at', { ascending: false });
+      }
+      const retry = await q2;
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) return res.status(500).json({ error: error.message });
 
     // Map legacy columns to the shape the portal UI expects, then apply

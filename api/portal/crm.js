@@ -119,12 +119,23 @@ async function handleLeads(req, res, ctx) {
   if (req.method === 'GET') {
     const url = new URL(req.url, 'http://x');
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
-    const { data, error } = await sb
+    let { data, error } = await sb
       .from('leads')
-      .select('id, name, phone, email, source, status, notes, tags, funnel, created_at')
+      .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at')
       .eq('client_id', clientId)
       .order('created_at', { ascending: false })
       .limit(limit);
+    // Fall back if migration 0023 hasn't been applied (paid_at column missing).
+    if (error && /column .*paid_at.* does not exist/i.test(error.message)) {
+      const retry = await sb
+        .from('leads')
+        .select('id, name, phone, email, source, status, notes, tags, funnel, created_at')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) return res.status(500).json({ error: error.message });
     return res.status(200).json({ leads: data || [] });
   }
