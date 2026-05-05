@@ -1310,6 +1310,19 @@ async function viewBookings() {
         onclick: () => updateStatus(a.id, 'no_show', reload)
       }, 'No-show'));
     }
+    // Hard delete — for cleaning up test appointments. Bypasses the
+    // customer-facing cancellation SMS on purpose.
+    actions.push(el('button', {
+      class: 'btn sm danger',
+      onclick: async () => {
+        if (!confirm(`Delete this booking permanently?\n\n${a.lead_name || a.lead_phone || a.id}\n\nThis is a hard delete — no SMS will be sent. Use Cancel instead if you want to notify the customer.`)) return;
+        try {
+          await api('/api/portal/bookings/appointments', { method: 'DELETE', body: { id: a.id } });
+          toast('Booking deleted');
+          await reload();
+        } catch (e) { toast('Delete failed: ' + e.message, true); }
+      }
+    }, 'Delete'));
 
     let currentTags = normalizeTags(a.tags);
     const tagsCell = tagChips({
@@ -1757,6 +1770,31 @@ async function viewLeads() {
               }
             }, 'Mark Paid');
 
+        // Single-click "Stop Nudges": tags Do Not Contact + cancels queued
+        // drips on the same request. Useful when a customer signs up via
+        // a different channel (in-person, partner referral) so Mark Paid
+        // doesn't apply, but you still need to stop bothering them.
+        const tagsHasDNC = normalizeTags(l.tags).includes('Do Not Contact');
+        const stopBtn = tagsHasDNC
+          ? null
+          : el('button', {
+              class: 'btn sm',
+              title: 'Tag as Do Not Contact + cancel any pending nudges',
+              onclick: async () => {
+                try {
+                  const r = await api('/api/portal/crm?action=leads', {
+                    method: 'PATCH',
+                    body: { id: l.id, tags: [...new Set([...normalizeTags(l.tags), 'Do Not Contact'])] }
+                  });
+                  const extra = r?.cancelled_nudges
+                    ? ` · cancelled ${r.cancelled_nudges} pending nudge${r.cancelled_nudges === 1 ? '' : 's'}`
+                    : '';
+                  toast('Stopped nudges for this lead' + extra);
+                  render();
+                } catch (e) { toast(e.message, true); }
+              }
+            }, 'Stop Nudges');
+
         return el('tr', {},
           el('td', {}, new Date(l.created_at).toLocaleString()),
           el('td', {}, l.name || '—'),
@@ -1767,6 +1805,7 @@ async function viewLeads() {
           el('td', {}, tagsCell),
           el('td', {}, el('div', { class: 'row', style: 'gap:4px;flex-wrap:wrap;justify-content:flex-end' },
             paidBtn,
+            stopBtn,
             el('button', { class: 'btn sm danger', onclick: async () => {
               if (!confirm('Delete lead?')) return;
               try {

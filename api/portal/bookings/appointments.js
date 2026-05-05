@@ -39,10 +39,25 @@ function dbStatusToPortal(s) {
 }
 
 export default async function handler(req, res) {
-  if (!methodGuard(req, res, ['GET', 'PATCH'])) return;
+  if (!methodGuard(req, res, ['GET', 'PATCH', 'DELETE'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
   const { clientId } = ctx;
   if (!clientId) return res.status(403).json({ error: 'no_client_assigned' });
+
+  // ---------- DELETE: hard-delete a booking row (for test cleanup) ----------
+  // Tenant-scoped on client_id so cross-tenant deletes are impossible even
+  // if a stale id is passed. We don't fire the widget cancel SMS here —
+  // delete is for cleanup, not customer-facing cancellation.
+  if (req.method === 'DELETE') {
+    const body = await readJson(req);
+    const { id } = body || {};
+    if (!id) return res.status(400).json({ error: 'id_required' });
+    const { error } = await supabaseAdmin
+      .from('bookings').delete()
+      .eq('id', id).eq('client_id', clientId);
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(200).json({ ok: true });
+  }
 
   if (req.method === 'GET') {
     const url = new URL(req.url, `http://${req.headers.host}`);
