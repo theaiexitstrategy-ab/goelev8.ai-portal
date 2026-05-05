@@ -31,6 +31,11 @@ async function handleContacts(req, res, ctx) {
     const { id, ...patch } = body;
     if (!id) return res.status(400).json({ error: 'id_required' });
     delete patch.client_id; delete patch.created_at;
+    if (Array.isArray(patch.tags)) {
+      patch.tags = [...new Set(
+        patch.tags.map(t => String(t).trim()).filter(t => t && t.length <= 30)
+      )].slice(0, 20);
+    }
     const { data, error } = await sb.from('contacts').update(patch).eq('id', id).select().single();
     if (error) return res.status(400).json({ error: error.message });
     return res.status(200).json({ contact: data });
@@ -104,9 +109,17 @@ async function handleLeads(req, res, ctx) {
   }
   if (req.method === 'PATCH') {
     const body = await readJson(req);
-    const { id, ...patch } = body;
+    const { id, mark_paid, mark_unpaid, ...patch } = body;
     if (!id) return res.status(400).json({ error: 'id_required' });
     delete patch.client_id; delete patch.created_at;
+    if (mark_paid === true)   patch.paid_at = new Date().toISOString();
+    if (mark_unpaid === true) patch.paid_at = null;
+    // Sanitize tags if present (≤30 chars, ≤20 tags, deduped).
+    if (Array.isArray(patch.tags)) {
+      patch.tags = [...new Set(
+        patch.tags.map(t => String(t).trim()).filter(t => t && t.length <= 30)
+      )].slice(0, 20);
+    }
     const { data, error } = await sb.from('leads').update(patch).eq('id', id).select().single();
     if (error) return res.status(400).json({ error: error.message });
     return res.status(200).json({ lead: data });

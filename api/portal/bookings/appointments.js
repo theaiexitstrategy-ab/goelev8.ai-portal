@@ -51,7 +51,7 @@ export default async function handler(req, res) {
 
     let q = supabaseAdmin
       .from('bookings')
-      .select('id, client_id, lead_id, lead_name, phone, email, service, service_type, starts_at, status, notes, source, created_at')
+      .select('id, client_id, lead_id, lead_name, phone, email, service, service_type, starts_at, status, notes, source, created_at, tags, paid_at')
       .eq('client_id', clientId);
 
     // Status filtering is case-insensitive against the canonical Title-cased
@@ -82,22 +82,60 @@ export default async function handler(req, res) {
       status:            dbStatusToPortal(b.status),
       notes:             b.notes || null,
       source:            b.source || null,
-      created_at:        b.created_at
+      created_at:        b.created_at,
+      tags:              b.tags || [],
+      paid_at:           b.paid_at || null
     }));
 
     if (filter === 'upcoming')  rows = rows.filter(r => r.status !== 'cancelled');
     if (filter === 'cancelled') rows = rows.filter(r => r.status === 'cancelled');
 
-    return res.status(200).json({ appointments: rows });
+    // Include the calendar timezone so the UI can format starts_at correctly
+    // regardless of the operator's browser timezone.
+    const { data: cal } = await supabaseAdmin
+      .from('booking_calendars').select('timezone').eq('business_id', clientId).maybeSingle();
+
+    return res.status(200).json({
+      appointments: rows,
+      timezone: cal?.timezone || 'America/Chicago'
+    });
   }
 
   if (req.method === 'PATCH') {
     const body = await readJson(req);
-    const { id, status } = body;
-    if (!id)     return res.status(400).json({ error: 'id_required' });
-    if (!status) return res.status(400).json({ error: 'status_required' });
-    if (!ALLOWED_PORTAL_STATUSES.has(status)) {
+    const { id, status, tags, mark_paid, mark_unpaid } = body;
+    if (!id) return res.status(400).json({ error: 'id_required' });
+
+    // Tag-only / paid-only patches don't need a status. Validate the right
+    // path here so the rest of the handler can assume the inputs that apply.
+    const isStatusUpdate = !!status;
+    const isTagUpdate    = Array.isArray(tags);
+    const isPaidUpdate   = mark_paid === true || mark_unpaid === true;
+    if (!isStatusUpdate && !isTagUpdate && !isPaidUpdate) {
+      return res.status(400).json({ error: 'nothing_to_update' });
+    }
+    if (isStatusUpdate && !ALLOWED_PORTAL_STATUSES.has(status)) {
       return res.status(400).json({ error: 'invalid_status' });
+    }
+
+    // Tag / paid updates write directly and return; they don't go through
+    // the widget cancel flow.
+    if (isTagUpdate || isPaidUpdate) {
+      const patch = {};
+      if (isTagUpdate) {
+        // Sanitize: trim, dedupe, keep ≤ 30 chars per tag, max 20 tags.
+        patch.tags = [...new Set(
+          tags.map(t => String(t).trim()).filter(t => t && t.length <= 30)
+        )].slice(0, 20);
+      }
+      if (mark_paid === true)   patch.paid_at = new Date().toISOString();
+      if (mark_unpaid === true) patch.paid_at = null;
+      const { data, error } = await supabaseAdmin
+        .from('bookings').update(patch)
+        .eq('id', id).eq('client_id', clientId)
+        .select('id, tags, paid_at').single();
+      if (error) return res.status(400).json({ error: error.message });
+      return res.status(200).json({ appointment: data });
     }
 
     // Tenant ownership check before any state change. The widget's

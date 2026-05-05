@@ -553,6 +553,104 @@ async function viewOverview() {
   return wrap;
 }
 
+// Shared tag suggestions used across Leads, Bookings, Contacts and the
+// SMS Blast filter. Pick from these or type a custom one — they're a
+// hint, not an enum. Keep the list short; long lists hurt scanability.
+const SUGGESTED_TAGS = [
+  'Current Client',  // already paying
+  'Free Trial',      // booked free session, hasn't paid
+  'Paid',            // converted (added automatically by Mark as Paid)
+  'New Lead',        // just came in
+  'Hot Lead',        // engaged, likely to convert
+  'Cold Lead',       // unresponsive
+  'No Show',         // missed appointment
+  'Returning',       // came back after a lapse
+  'VIP',             // special handling
+  'Do Not Contact'   // opted out / silent ban — exclude from blasts
+];
+
+// Renders an inline tag chip row + add-tag UI for a single record.
+// `getTags`/`saveTags` keep the source of truth on the row. saveTags is
+// async and returns when persisted; on success the chip row is rebuilt.
+function tagChips({ getTags, saveTags, readonly = false }) {
+  const host = el('div', { class: 'tag-chips' });
+  const draw = () => {
+    host.innerHTML = '';
+    const tags = (getTags() || []).filter(Boolean);
+    for (const t of tags) {
+      const chip = el('span', { class: 'tag-chip' }, t);
+      if (!readonly) {
+        chip.appendChild(el('button', {
+          class: 'tag-chip-x',
+          title: 'Remove tag',
+          onclick: async (ev) => {
+            ev.stopPropagation();
+            const next = (getTags() || []).filter(x => x !== t);
+            try { await saveTags(next); draw(); }
+            catch (e) { toast('Tag update failed: ' + e.message, true); }
+          }
+        }, '×'));
+      }
+      host.appendChild(chip);
+    }
+    if (readonly) return;
+    const addBtn = el('button', { class: 'tag-chip-add', title: 'Add tag', onclick: (ev) => {
+      ev.stopPropagation();
+      openTagPicker({
+        current: getTags() || [],
+        onAdd: async (tag) => {
+          const next = [...new Set([...(getTags() || []), tag])];
+          try { await saveTags(next); draw(); }
+          catch (e) { toast('Tag update failed: ' + e.message, true); }
+        }
+      });
+    } }, '+');
+    host.appendChild(addBtn);
+  };
+  draw();
+  return host;
+}
+
+// Lightweight popover for picking a suggested tag or typing a custom one.
+function openTagPicker({ current = [], onAdd }) {
+  const existing = document.querySelector('.tag-picker-bg');
+  if (existing) existing.remove();
+
+  const input = el('input', { type: 'text', placeholder: 'Type a tag…', maxlength: '30' });
+  const submit = async (val) => {
+    const tag = String(val || input.value).trim();
+    if (!tag) return;
+    bg.remove();
+    await onAdd(tag);
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submit();
+    if (e.key === 'Escape') bg.remove();
+  });
+  const suggestionList = el('div', { class: 'tag-suggestions' });
+  for (const s of SUGGESTED_TAGS) {
+    if (current.includes(s)) continue;
+    suggestionList.appendChild(el('button', {
+      class: 'tag-suggestion',
+      onclick: () => submit(s)
+    }, s));
+  }
+
+  const modal = el('div', { class: 'tag-picker' },
+    el('div', { class: 'tag-picker-label' }, 'Add tag'),
+    input,
+    el('div', { class: 'tag-picker-hint muted' }, 'Pick one below or type your own:'),
+    suggestionList,
+    el('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px' },
+      el('button', { class: 'btn sm', onclick: () => bg.remove() }, 'Cancel'),
+      el('button', { class: 'btn sm primary', onclick: () => submit() }, 'Add')
+    )
+  );
+  const bg = el('div', { class: 'tag-picker-bg', onclick: (e) => { if (e.target === bg) bg.remove(); } }, modal);
+  document.body.appendChild(bg);
+  setTimeout(() => input.focus(), 50);
+}
+
 function card(label, value, sub, cls = '') {
   return el('div', { class: 'card ' + cls },
     el('div', { class: 'label' }, label),
@@ -1077,10 +1175,11 @@ async function viewBookings() {
         mkFilter('cancelled', 'Cancelled')
       );
       listPanel.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
-      let rows;
+      let rows, calendarTz;
       try {
         const r = await api('/api/portal/bookings/appointments?filter=' + encodeURIComponent(apptFilter));
         rows = r.appointments || [];
+        calendarTz = r.timezone || cal.timezone || undefined;
       } catch (e) {
         listPanel.replaceChildren(el('p', { class: 'err' }, 'Failed to load appointments: ' + e.message));
         return;
@@ -1089,16 +1188,43 @@ async function viewBookings() {
         listPanel.replaceChildren(el('p', { class: 'muted' }, 'No appointments yet. Share your booking link to get started.'));
         return;
       }
+      // Conversion summary (free → paid) for the operator. Counts only the
+      // currently filtered set so it reflects what the user is looking at.
+      const total = rows.length;
+      const paid = rows.filter(r => r.paid_at).length;
+      const rate = total ? Math.round((paid / total) * 100) : 0;
+      const summary = el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:12px' },
+        el('div', { class: 'metric-stat' },
+          el('span', { class: 'metric-stat-value' }, String(total)),
+          el('span', { class: 'metric-stat-label' }, 'Bookings shown')
+        ),
+        el('div', { class: 'metric-divider' }),
+        el('div', { class: 'metric-stat' },
+          el('span', { class: 'metric-stat-value' }, String(paid)),
+          el('span', { class: 'metric-stat-label' }, 'Marked Paid')
+        ),
+        el('div', { class: 'metric-divider' }),
+        el('div', { class: 'metric-stat accent' },
+          el('span', { class: 'metric-stat-value' }, rate + '%'),
+          el('span', { class: 'metric-stat-label' }, 'Conversion (paid/total)')
+        ),
+        calendarTz ? el('div', { class: 'metric-stat' },
+          el('span', { class: 'metric-stat-label muted' }, 'Times shown in ' + calendarTz)
+        ) : null
+      );
+
       listPanel.replaceChildren(
+        summary,
         el('table', {},
           el('thead', {}, el('tr', {},
             el('th', {}, 'When'),
             el('th', {}, 'Name'),
             el('th', {}, 'Service'),
             el('th', {}, 'Status'),
+            el('th', {}, 'Tags'),
             el('th', {}, '')
           )),
-          el('tbody', {}, ...rows.map(a => renderAppointmentRow(a, renderAppointments_reload)))
+          el('tbody', {}, ...rows.map(a => renderAppointmentRow(a, renderAppointments_reload, calendarTz)))
         )
       );
     }
@@ -1106,11 +1232,17 @@ async function viewBookings() {
     await renderAppointments_reload();
   }
 
-  function renderAppointmentRow(a, reload) {
+  function renderAppointmentRow(a, reload, calendarTz) {
     const when = new Date(a.appointment_start);
-    const whenStr = when.toLocaleString(undefined, {
-      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
-    });
+    // Format in the calendar's timezone — not the operator's browser tz —
+    // so 9 AM Central reads 9 AM regardless of where the admin is sitting.
+    const fmtOpts = {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+      ...(calendarTz ? { timeZone: calendarTz, timeZoneName: 'short' } : {})
+    };
+    let whenStr;
+    try { whenStr = when.toLocaleString(undefined, fmtOpts); }
+    catch { whenStr = when.toLocaleString(); }
     const contactStr = [a.lead_name, a.lead_phone].filter(Boolean).join(' · ') || '—';
     const badgeCls = STATUS_BADGE_CLASS[a.status] || 'badge';
     const statusText = (a.status || 'pending').replace('_', ' ');
@@ -1121,6 +1253,29 @@ async function viewBookings() {
         class: 'btn sm green',
         onclick: () => updateStatus(a.id, 'confirmed', reload)
       }, 'Confirm'));
+    }
+    // Mark as Paid: surfaces the free → paid conversion. Idempotent toggle.
+    if (a.paid_at) {
+      actions.push(el('button', {
+        class: 'btn sm ghost',
+        title: 'Paid on ' + new Date(a.paid_at).toLocaleDateString(),
+        onclick: async () => {
+          try {
+            await api('/api/portal/bookings/appointments', { method: 'PATCH', body: { id: a.id, mark_unpaid: true } });
+            toast('Removed paid status'); await reload();
+          } catch (e) { toast(e.message, true); }
+        }
+      }, '✓ Paid (undo)'));
+    } else if (a.status !== 'cancelled') {
+      actions.push(el('button', {
+        class: 'btn sm primary',
+        onclick: async () => {
+          try {
+            await api('/api/portal/bookings/appointments', { method: 'PATCH', body: { id: a.id, mark_paid: true } });
+            toast('Marked as paid — counts toward conversion'); await reload();
+          } catch (e) { toast(e.message, true); }
+        }
+      }, 'Mark Paid'));
     }
     if (a.status !== 'cancelled') {
       actions.push(el('button', {
@@ -1135,11 +1290,21 @@ async function viewBookings() {
       }, 'No-show'));
     }
 
+    let currentTags = a.tags || [];
+    const tagsCell = tagChips({
+      getTags: () => currentTags,
+      saveTags: async (next) => {
+        await api('/api/portal/bookings/appointments', { method: 'PATCH', body: { id: a.id, tags: next } });
+        currentTags = next;
+      }
+    });
+
     return el('tr', {},
       el('td', {}, whenStr),
       el('td', {}, contactStr),
       el('td', {}, a.service_name || '—'),
       el('td', {}, el('span', { class: badgeCls }, statusText)),
+      el('td', {}, tagsCell),
       el('td', {}, el('div', { class: 'row', style: 'gap: 4px; flex-wrap: wrap; justify-content: flex-end' }, ...actions))
     );
   }
@@ -1531,28 +1696,63 @@ async function viewLeads() {
     panel.appendChild(el('table', {},
       el('thead', {}, el('tr', {},
         el('th', {}, 'When'), el('th', {}, 'Name'), el('th', {}, 'Phone'),
-        el('th', {}, 'Email'), el('th', {}, 'Source'), el('th', {}, 'Intent'),
-        el('th', {}, 'Status'), el('th', {}, '')
+        el('th', {}, 'Email'), el('th', {}, 'Source'),
+        el('th', {}, 'Status'), el('th', {}, 'Tags'), el('th', {}, '')
       )),
-      el('tbody', {}, ...r.leads.map(l =>
-        el('tr', {},
+      el('tbody', {}, ...r.leads.map(l => {
+        let currentTags = l.tags || [];
+        const tagsCell = tagChips({
+          getTags: () => currentTags,
+          saveTags: async (next) => {
+            await api('/api/portal/crm?action=leads', {
+              method: 'PATCH', body: { id: l.id, tags: next }
+            });
+            currentTags = next;
+          }
+        });
+
+        const paidBtn = l.paid_at
+          ? el('button', {
+              class: 'btn sm ghost',
+              title: 'Marked paid on ' + new Date(l.paid_at).toLocaleDateString(),
+              onclick: async () => {
+                try {
+                  await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_unpaid: true } });
+                  toast('Removed paid status'); render();
+                } catch (e) { toast(e.message, true); }
+              }
+            }, '✓ Paid (undo)')
+          : el('button', {
+              class: 'btn sm primary',
+              onclick: async () => {
+                try {
+                  await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_paid: true, tags: [...new Set([...(l.tags || []).filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] } });
+                  toast('Marked as paid — added Paid + Current Client tags'); render();
+                } catch (e) { toast(e.message, true); }
+              }
+            }, 'Mark Paid');
+
+        return el('tr', {},
           el('td', {}, new Date(l.created_at).toLocaleString()),
           el('td', {}, l.name || '—'),
           el('td', {}, l.phone || '—'),
           el('td', {}, l.email || '—'),
           el('td', {}, el('span', { class: 'badge' }, l.source || 'manual')),
-          el('td', {}, l.intent || '—'),
-          el('td', {}, el('span', { class: 'badge' }, l.status || 'new')),
-          el('td', {}, el('button', { class: 'btn sm danger', onclick: async () => {
-            if (!confirm('Delete lead?')) return;
-            try {
-              await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: l.id } });
-              toast('Lead deleted');
-              render();
-            } catch (e) { toast('Delete failed: ' + e.message, true); }
-          }}, 'Delete'))
-        )
-      ))
+          el('td', {}, el('span', { class: 'badge' + (l.paid_at ? ' green' : '') }, l.paid_at ? 'paid' : (l.status || 'new'))),
+          el('td', {}, tagsCell),
+          el('td', {}, el('div', { class: 'row', style: 'gap:4px;flex-wrap:wrap;justify-content:flex-end' },
+            paidBtn,
+            el('button', { class: 'btn sm danger', onclick: async () => {
+              if (!confirm('Delete lead?')) return;
+              try {
+                await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: l.id } });
+                toast('Lead deleted');
+                render();
+              } catch (e) { toast('Delete failed: ' + e.message, true); }
+            }}, 'Delete')
+          ))
+        );
+      }))
     ));
   } catch (e) { panel.innerHTML = `<p class="err">${e.message}</p>`; }
   return wrap;
@@ -1565,8 +1765,11 @@ async function loadLeadMetrics(container) {
       api('/api/portal/crm?action=leads')
     ]);
     const views = ga.page_views || ga.sessions || 0;
-    const leads = (lr.leads || []).length;
+    const leadList = lr.leads || [];
+    const leads = leadList.length;
+    const paidLeads = leadList.filter(l => l.paid_at).length;
     const rate = views > 0 ? ((leads / views) * 100).toFixed(1) : '0.0';
+    const paidRate = leads > 0 ? ((paidLeads / leads) * 100).toFixed(1) : '0.0';
 
     container.innerHTML = '';
     container.appendChild(el('div', { class: 'leads-metrics-strip' },
@@ -1580,9 +1783,14 @@ async function loadLeadMetrics(container) {
         el('span', { class: 'metric-stat-label' }, 'Leads Captured')
       ),
       el('div', { class: 'metric-divider' }),
-      el('div', { class: 'metric-stat accent' },
+      el('div', { class: 'metric-stat' },
         el('span', { class: 'metric-stat-value' }, `${rate}%`),
-        el('span', { class: 'metric-stat-label' }, 'Conversion Rate')
+        el('span', { class: 'metric-stat-label' }, 'Lead Conversion')
+      ),
+      el('div', { class: 'metric-divider' }),
+      el('div', { class: 'metric-stat accent' },
+        el('span', { class: 'metric-stat-value' }, `${paidLeads} (${paidRate}%)`),
+        el('span', { class: 'metric-stat-label' }, 'Free → Paid')
       )
     ));
   } catch (e) {
@@ -2282,12 +2490,22 @@ async function loadBlastsContacts(container) {
           headerCb.indeterminate = selected.size > 0 && selected.size < contacts.length;
           updateToolbar();
         });
+        let currentTags = c.tags || [];
+        const tagsCell = tagChips({
+          getTags: () => currentTags,
+          saveTags: async (next) => {
+            await api('/api/portal/crm?action=contacts', {
+              method: 'PATCH', body: { id: c.id, tags: next }
+            });
+            currentTags = next;
+          }
+        });
         return el('tr', {},
           el('td', {}, cb),
           el('td', {}, c.name || '—'),
           el('td', {}, c.phone || '—'),
           el('td', {}, c.email || '—'),
-          el('td', {}, (c.tags || []).join(', ') || '—'),
+          el('td', {}, tagsCell),
           el('td', {}, el('span', { class: 'badge' + (c.source === 'import' ? ' info' : '') }, c.source || 'manual')),
           el('td', { style: 'white-space:nowrap' },
             el('button', { class: 'btn sm', style: 'margin-right:4px', onclick: () => {
@@ -2815,11 +3033,55 @@ function openBlastModal(wrap) {
 
   msgIn.addEventListener('input', updatePreview);
   promoIn.addEventListener('input', updatePreview);
+  // Tag-based recipient filters. Layered on top of the segment dropdown:
+  //   - Include tags = recipient must have at least one of these
+  //   - Exclude tags = recipient is dropped if they have any of these
+  // Common workflow: send to All Contacts but exclude "Do Not Contact" and
+  // "Current Client" so paying clients don't get re-marketing pings.
+  let includeTags = [];
+  let excludeTags = [];
+  const includeChipsHost = el('div', { class: 'tag-chips' });
+  const excludeChipsHost = el('div', { class: 'tag-chips' });
+  const drawIncludeChips = () => {
+    includeChipsHost.innerHTML = '';
+    for (const t of includeTags) {
+      includeChipsHost.appendChild(el('span', { class: 'tag-chip' }, t,
+        el('button', { class: 'tag-chip-x', onclick: () => {
+          includeTags = includeTags.filter(x => x !== t); drawIncludeChips();
+        } }, '×')
+      ));
+    }
+    includeChipsHost.appendChild(el('button', { class: 'tag-chip-add', onclick: () => {
+      openTagPicker({ current: includeTags, onAdd: (t) => { includeTags = [...new Set([...includeTags, t])]; drawIncludeChips(); } });
+    } }, '+'));
+  };
+  const drawExcludeChips = () => {
+    excludeChipsHost.innerHTML = '';
+    for (const t of excludeTags) {
+      excludeChipsHost.appendChild(el('span', { class: 'tag-chip', style: 'background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.35);color:#fca5a5' }, t,
+        el('button', { class: 'tag-chip-x', onclick: () => {
+          excludeTags = excludeTags.filter(x => x !== t); drawExcludeChips();
+        } }, '×')
+      ));
+    }
+    excludeChipsHost.appendChild(el('button', { class: 'tag-chip-add', onclick: () => {
+      openTagPicker({ current: excludeTags, onAdd: (t) => { excludeTags = [...new Set([...excludeTags, t])]; drawExcludeChips(); } });
+    } }, '+'));
+  };
+  drawIncludeChips();
+  drawExcludeChips();
+
   const sendBtn = el('button', { class: 'btn primary', onclick: async () => {
     if (!nameIn.value.trim() || !msgIn.value.trim()) { toast('Name and message are required', true); return; }
     sendBtn.disabled = true; sendBtn.textContent = 'Sending...';
     try {
-      const body = { name: nameIn.value.trim(), message: msgIn.value.trim(), segment: segSel.value };
+      const body = {
+        name: nameIn.value.trim(),
+        message: msgIn.value.trim(),
+        segment: segSel.value,
+        includeTags,
+        excludeTags
+      };
       if (promoIn.value.trim()) body.promoCode = promoIn.value.trim();
       const data = await api('/api/portal/blasts', { method: 'POST', body });
       toast(`Blast sent! ${data.sent || 0} delivered, ${data.failed || 0} failed`);
@@ -2839,6 +3101,13 @@ function openBlastModal(wrap) {
     previewBox,
     el('label', {}, 'Promo Code'), promoIn,
     el('label', {}, 'Segment'), segSel,
+    el('label', { style: 'margin-top:10px' }, 'Include only these tags (any-of)'),
+    includeChipsHost,
+    el('label', { style: 'margin-top:10px' }, 'Exclude these tags'),
+    excludeChipsHost,
+    el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:4px' },
+      'Tip: exclude "Do Not Contact" and "Current Client" to keep blasts focused on prospects.'
+    ),
     result,
     el('div', { style: 'display:flex;gap:12px;justify-content:flex-end;margin-top:16px' },
       el('button', { class: 'btn', onclick: () => bg.remove() }, 'Cancel'),

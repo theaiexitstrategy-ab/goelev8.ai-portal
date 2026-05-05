@@ -31,8 +31,15 @@ export default async function handler(req, res) {
   }
 
   // ---------- POST: send blast ----------
-  const { name, message, promoCode, segment, artistFilter } = await readJson(req);
+  const { name, message, promoCode, segment, artistFilter, includeTags, excludeTags } =
+    await readJson(req);
   if (!name || !message) return res.status(400).json({ error: 'name_and_message_required' });
+
+  // Tag filters apply to leads and contacts uniformly.
+  const includeArr = Array.isArray(includeTags)
+    ? includeTags.map(t => String(t).trim()).filter(Boolean) : [];
+  const excludeArr = Array.isArray(excludeTags)
+    ? excludeTags.map(t => String(t).trim()).filter(Boolean) : [];
 
   // Build the recipient list. The 'contacts' segment pulls from the
   // contacts table (covers imported CSV uploads + funnel-sourced
@@ -40,12 +47,16 @@ export default async function handler(req, res) {
   // from leads and applies a status/booking filter.
   let recipients = [];
   if (segment === 'contacts') {
-    const { data: contacts, error: cErr } = await supabaseAdmin
-      .from('contacts').select('id, name, phone, email, opted_out')
+    let cq = supabaseAdmin
+      .from('contacts').select('id, name, phone, email, opted_out, tags')
       .eq('client_id', clientId);
+    if (includeArr.length) cq = cq.overlaps('tags', includeArr);
+    const { data: contacts, error: cErr } = await cq;
     if (cErr) return res.status(500).json({ error: cErr.message });
     recipients = (contacts || [])
       .filter(c => c.phone && !c.opted_out)
+      .filter(c => !excludeArr.length ||
+        !(c.tags || []).some(t => excludeArr.includes(t)))
       .map(c => ({ id: c.id, name: c.name, phone: c.phone, email: c.email, _source: 'contact' }));
   } else {
     let query = supabaseAdmin.from('leads').select('*').eq('client_id', clientId);
@@ -58,10 +69,13 @@ export default async function handler(req, res) {
       case 'by_artist':    query = query.eq('artist_selected', artistFilter); break;
       // 'all' — no filter
     }
+    if (includeArr.length) query = query.overlaps('tags', includeArr);
     const { data: leads, error: leadsErr } = await query;
     if (leadsErr) return res.status(500).json({ error: leadsErr.message });
     recipients = (leads || [])
       .filter(l => l.phone)
+      .filter(l => !excludeArr.length ||
+        !(l.tags || []).some(t => excludeArr.includes(t)))
       .map(l => ({ id: l.id, name: l.name, phone: l.phone, email: l.email, _source: 'lead' }));
   }
   if (!recipients.length) return res.status(400).json({ error: 'no_recipients_with_phone' });

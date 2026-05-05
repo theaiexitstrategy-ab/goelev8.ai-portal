@@ -1138,6 +1138,88 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Tag chips + tag picker
+   ============================================================ */
+.tag-chips {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  min-height: 24px;
+}
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 4px 2px 8px;
+  background: rgba(0, 207, 255, 0.12);
+  border: 1px solid rgba(0, 207, 255, 0.3);
+  color: #7dd3fc;
+  border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600;
+  white-space: nowrap;
+}
+.tag-chip-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; padding: 0;
+  background: transparent; border: none; cursor: pointer;
+  color: inherit; opacity: 0.6;
+  font-size: 14px; line-height: 1;
+  border-radius: 50%;
+}
+.tag-chip-x:hover { opacity: 1; background: rgba(255,255,255,0.08); }
+.tag-chip-add {
+  width: 22px; height: 22px; padding: 0;
+  background: transparent;
+  border: 1px dashed var(--border, #2a3a5c);
+  color: var(--text-mute, #888);
+  border-radius: 50%; cursor: pointer;
+  font-size: 14px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.tag-chip-add:hover {
+  border-color: var(--brand-1, #00CFFF);
+  color: var(--brand-1, #00CFFF);
+}
+.tag-picker-bg {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2000;
+  backdrop-filter: blur(4px);
+}
+.tag-picker {
+  background: var(--bg-elevated, #141c2e);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-md, 12px);
+  padding: 20px; width: 90%; max-width: 360px;
+}
+.tag-picker-label {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--brand-1, #00CFFF);
+  margin-bottom: 8px;
+}
+.tag-picker input[type="text"] {
+  width: 100%; padding: 8px 10px;
+  background: var(--bg-1, #0d1117);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: 6px;
+  color: var(--text, #e0e0e0); font-size: 0.9rem;
+}
+.tag-picker input[type="text"]:focus {
+  outline: none; border-color: var(--brand-1, #00CFFF);
+}
+.tag-picker-hint { font-size: 0.7rem; margin: 12px 0 6px; }
+.tag-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-suggestion {
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, #2a3a5c);
+  color: var(--text, #e0e0e0);
+  border-radius: 999px;
+  font-size: 0.72rem; cursor: pointer;
+}
+.tag-suggestion:hover {
+  background: rgba(0, 207, 255, 0.08);
+  border-color: var(--brand-1, #00CFFF);
+}
+
+/* ============================================================
    Twilio Reserve panel
    ============================================================ */
 .twilio-reserve-panel {
