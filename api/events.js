@@ -35,6 +35,7 @@ import { sendWelcomeForEvent } from '../lib/welcome.js';
 import { scheduleNudgeSequence } from '../lib/nudge-sms.js';
 import { sendPushToClient, sendPushToAdmins } from '../lib/push.js';
 import { toE164 } from '../lib/phone.js';
+import { findOrUpsertLead } from '../lib/lead-dedupe.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -347,9 +348,11 @@ async function handleVapi(req, res) {
       await supabaseAdmin.from('vapi_calls').update({ contact_id: contactId }).eq('id', vapiRow.id);
     }
 
-    // Always create a lead row for an ended call so it shows up on the dash.
-    const { data: leadRow } = await supabaseAdmin.from('leads').insert({
-      client_id: clientId,
+    // Always surface an ended call as a lead — but dedupe against any
+    // recent web-form submission from the same person on the same client
+    // so we don't double-count when someone submits a form and then takes
+    // the follow-up Vapi call.
+    const upserted = await findOrUpsertLead(clientId, {
       contact_id: contactId,
       vapi_call_id: vapiRow.id,
       name,
@@ -359,8 +362,8 @@ async function handleVapi(req, res) {
       intent: structured.intent || structured.reason || null,
       notes: msg.summary || msg.analysis?.summary || null,
       payload: structured
-    }).select('id').single();
-    leadId = leadRow?.id || leadId;
+    });
+    leadId = upserted.id || leadId;
     if (leadId) {
       await supabaseAdmin.from('vapi_calls').update({ lead_id: leadId }).eq('id', vapiRow.id);
     }
@@ -442,18 +445,30 @@ async function handleLead(req, res) {
   const email = body.email || null;
   if (!name && !phone && !email) return res.status(400).json({ error: 'no_contact_info' });
 
-  const { data: lead, error } = await supabaseAdmin.from('leads').insert({
-    client_id: client.id,
-    name:   name,
-    phone:  phone,
-    email:  email,
-    source: body.source || 'web_form',
-    funnel: body.funnel || null,
-    status: 'New',
-    tags:   body.funnel ? [body.funnel] : []
-  }).select('id').single();
-
-  if (error) return res.status(500).json({ error: error.message });
+  // Dedupe across funnel sources — same phone or email submitting on
+  // theflexfacility.com AND book.theflexfacility.com should resolve to a
+  // single lead. created=false means we updated an existing row instead
+  // of inserting a new one, so we skip the welcome push + nudge
+  // enrollment to avoid spamming the prospect twice.
+  let lead, isNew = true;
+  try {
+    const upserted = await findOrUpsertLead(client.id, {
+      name, phone, email,
+      source: body.source || 'web_form',
+      funnel: body.funnel || null,
+      status: 'New',
+      tags: body.funnel ? [body.funnel] : []
+    });
+    lead = { id: upserted.id };
+    isNew = upserted.created;
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  if (!isNew) {
+    // Quietly acknowledge — caller (the funnel form beacon) doesn't need
+    // to know whether it was a fresh insert or a merge.
+    return res.status(200).json({ ok: true, lead_id: lead.id, deduped: true });
+  }
 
   // Push notification to portal users + admin (must await so Vercel
   // doesn't kill the function before the push is delivered)

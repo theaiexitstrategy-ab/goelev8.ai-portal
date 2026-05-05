@@ -368,6 +368,109 @@ async function ensureDefaultClients(req, res) {
 // Each statement runs in its own request and is fully idempotent
 // (ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / DROP POLICY
 // IF EXISTS / CREATE POLICY) so re-running is safe.
+// Find duplicate leads (same client + same phone OR same email) and merge
+// them into the oldest row. FK references on bookings, vapi_calls,
+// messages, and nudge_queue are repointed to the canonical lead before
+// the duplicates are deleted, so nothing is orphaned and nothing breaks.
+//
+// Idempotent — running it twice is a no-op once dupes are gone.
+async function dedupeLeads(req, res) {
+  const { data: clients } = await supabaseAdmin
+    .from('clients').select('id, name');
+  let scanned = 0, mergedGroups = 0, deleted = 0;
+  const perClient = [];
+
+  for (const c of clients || []) {
+    const { data: leads } = await supabaseAdmin
+      .from('leads').select('id, name, phone, email, tags, created_at, paid_at')
+      .eq('client_id', c.id)
+      .order('created_at', { ascending: true });
+    if (!leads?.length) continue;
+    scanned += leads.length;
+
+    // Group by normalized phone first (strongest signal). Anything left
+    // ungrouped gets a second pass on lower-cased email.
+    const phoneGroups = new Map();
+    const emailGroups = new Map();
+    const ungrouped = [];
+    for (const l of leads) {
+      const phoneKey = (l.phone || '').replace(/[^\d+]/g, '');
+      if (phoneKey) {
+        if (!phoneGroups.has(phoneKey)) phoneGroups.set(phoneKey, []);
+        phoneGroups.get(phoneKey).push(l);
+      } else {
+        ungrouped.push(l);
+      }
+    }
+    for (const l of ungrouped) {
+      const emailKey = (l.email || '').trim().toLowerCase();
+      if (emailKey) {
+        if (!emailGroups.has(emailKey)) emailGroups.set(emailKey, []);
+        emailGroups.get(emailKey).push(l);
+      }
+    }
+
+    const allGroups = [...phoneGroups.values(), ...emailGroups.values()].filter(g => g.length > 1);
+    let clientMerged = 0, clientDeleted = 0;
+
+    for (const group of allGroups) {
+      // Canonical = oldest (lowest created_at). Already at index 0 because
+      // the SELECT was ordered ascending.
+      const canonical = group[0];
+      const dupes = group.slice(1);
+
+      // Union tags + earliest paid_at into canonical
+      const allTags = new Set();
+      for (const l of group) for (const t of (l.tags || [])) allTags.add(t);
+      const earliestPaid = group
+        .map(l => l.paid_at).filter(Boolean)
+        .sort()[0] || null;
+      const patch = {};
+      if (allTags.size) patch.tags = Array.from(allTags);
+      if (earliestPaid) patch.paid_at = earliestPaid;
+      // If canonical is missing name/phone/email, fill from a dupe.
+      for (const f of ['name', 'phone', 'email']) {
+        if (!canonical[f]) {
+          const filler = dupes.find(d => d[f]);
+          if (filler) patch[f] = filler[f];
+        }
+      }
+      if (Object.keys(patch).length) {
+        await supabaseAdmin.from('leads').update(patch).eq('id', canonical.id);
+      }
+
+      // Repoint every FK reference from the dupes to canonical, then
+      // delete the dupes.
+      const dupeIds = dupes.map(d => d.id);
+      for (const tbl of ['bookings', 'vapi_calls', 'messages', 'nudge_queue']) {
+        await supabaseAdmin.from(tbl)
+          .update({ lead_id: canonical.id })
+          .in('lead_id', dupeIds)
+          .then(() => {}, () => {}); // tolerant of missing tables
+      }
+      const { error: delErr } = await supabaseAdmin
+        .from('leads').delete().in('id', dupeIds);
+      if (!delErr) {
+        clientMerged++;
+        clientDeleted += dupes.length;
+      }
+    }
+
+    if (clientMerged) {
+      mergedGroups += clientMerged;
+      deleted += clientDeleted;
+      perClient.push({ client: c.name, groups_merged: clientMerged, dupes_removed: clientDeleted });
+    }
+  }
+
+  return res.status(200).json({
+    scanned_leads: scanned,
+    merged_groups: mergedGroups,
+    duplicates_removed: deleted,
+    per_client: perClient
+  });
+}
+
 async function applyPendingMigrations(req, res) {
   const token = process.env.SUPABASE_ACCESS_TOKEN;
   if (!token) {
@@ -648,6 +751,7 @@ export default async function handler(req, res) {
       case 'set-booking-url':return await setBookingUrl(req, res);
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
+      case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
       case 'activity-feed':  return await activityFeed(req, res);
       case 'analytics':      return await analytics(req, res);

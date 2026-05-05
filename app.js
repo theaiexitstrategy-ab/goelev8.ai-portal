@@ -4099,6 +4099,29 @@ async function viewAdmin() {
   } }, 'Run Pending Migrations');
   migPanel.appendChild(migBtn);
   migPanel.appendChild(migOut);
+
+  // Dedupe leads — merges any leads sharing a phone/email into the
+  // oldest row, repoints bookings + calls + messages + nudges, and
+  // deletes the dupes. Idempotent.
+  const dedupeOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:240px;margin-top:8px' });
+  const dedupeBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    if (!confirm('Find and merge duplicate leads across every tenant?\n\nThis groups leads by phone (then email), keeps the oldest, repoints all FK references, and deletes the dupes. Idempotent.')) return;
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Merging…';
+    try {
+      const r = await api('/api/admin?action=dedupe-leads', { method: 'POST' });
+      toast(`Merged ${r.merged_groups} groups · removed ${r.duplicates_removed} duplicate leads`);
+      dedupeOut.style.display = 'block';
+      dedupeOut.textContent = JSON.stringify(r, null, 2);
+    } catch (err) {
+      toast('Dedupe failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Merge Duplicate Leads';
+    }
+  } }, 'Merge Duplicate Leads');
+  migPanel.appendChild(dedupeBtn);
+  migPanel.appendChild(dedupeOut);
   wrap.appendChild(migPanel);
 
   // ----- Twilio Reserve (platform-wide accounting) -----
