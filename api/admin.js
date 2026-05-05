@@ -603,6 +603,62 @@ async function ensurePortalTabs(req, res) {
   });
 }
 
+// Read or set the per-segment Twilio cost (cents) used by both the
+// Twilio Reserve trigger and the backfill helper. Stored as a Postgres
+// session-scope setting via ALTER DATABASE so the value persists across
+// connections and is readable inside the trigger function via
+// current_setting('app.twilio_cost_cents').
+async function twilioCostSetting(req, res) {
+  const token = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!token) return res.status(400).json({ error: 'SUPABASE_ACCESS_TOKEN not set in Vercel env' });
+  let projectRef = null;
+  try { projectRef = new URL(process.env.SUPABASE_URL || '').host.split('.')[0]; } catch {}
+  if (!projectRef) return res.status(400).json({ error: 'invalid SUPABASE_URL' });
+  const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
+
+  if (req.method === 'GET') {
+    // Show current value + the env var fallback the backfill uses.
+    let dbVal = null;
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: "SELECT current_setting('app.twilio_cost_cents', true) AS cents" })
+      });
+      const j = await r.json().catch(() => null);
+      const row = Array.isArray(j) ? j[0] : (j?.[0] || null);
+      dbVal = row?.cents ? parseInt(row.cents, 10) : null;
+    } catch {}
+    return res.status(200).json({
+      db_setting_cents: dbVal,
+      env_fallback_cents: parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10),
+      effective_cents: dbVal != null ? dbVal : parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10)
+    });
+  }
+
+  if (req.method === 'POST') {
+    const body = await readJson(req);
+    const cents = parseInt(body?.cents, 10);
+    if (!Number.isFinite(cents) || cents < 0 || cents > 100) {
+      return res.status(400).json({ error: 'cents must be an integer between 0 and 100' });
+    }
+    // ALTER DATABASE persists the setting across reconnects; the trigger
+    // reads it via current_setting('app.twilio_cost_cents', true).
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: `ALTER DATABASE postgres SET app.twilio_cost_cents = '${cents}';` })
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      return res.status(400).json({ error: 'failed to set: ' + txt.slice(0, 200) });
+    }
+    return res.status(200).json({ ok: true, db_setting_cents: cents });
+  }
+
+  return res.status(405).json({ error: 'method_not_allowed' });
+}
+
 async function applyPendingMigrations(req, res) {
   const token = process.env.SUPABASE_ACCESS_TOKEN;
   if (!token) {
@@ -809,7 +865,26 @@ async function backfillTwilioReserve(req, res) {
   // Recompute every client's twilio_reserve_cents from their existing
   // credit_ledger history. Idempotent — safe to run anytime. Useful right
   // after migration 0022 to seed the reserve from past purchases/sends.
-  const perSeg = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10);
+  //
+  // Cost source priority: Postgres setting (what the live trigger uses)
+  // > env var > 1¢ default. Reading the DB setting first means a
+  // backfill never disagrees with subsequent live trigger writes.
+  let perSeg = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10);
+  try {
+    const token = process.env.SUPABASE_ACCESS_TOKEN;
+    const projectRef = new URL(process.env.SUPABASE_URL || '').host.split('.')[0];
+    if (token && projectRef) {
+      const r = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/database/query`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: "SELECT current_setting('app.twilio_cost_cents', true) AS cents" })
+      });
+      const j = await r.json().catch(() => null);
+      const row = Array.isArray(j) ? j[0] : (j?.[0] || null);
+      const dbCents = row?.cents ? parseInt(row.cents, 10) : null;
+      if (Number.isFinite(dbCents)) perSeg = dbCents;
+    }
+  } catch {}
 
   const { data: clients, error: clientsErr } = await supabaseAdmin
     .from('clients').select('id');
@@ -942,6 +1017,7 @@ export default async function handler(req, res) {
       case 'set-booking-url':return await setBookingUrl(req, res);
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
+      case 'twilio-cost':              return await twilioCostSetting(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);

@@ -4714,6 +4714,175 @@ function renderClientCard(c) {
   );
 }
 
+// Master Admin client card — replaces the old wide table row. Logo at
+// the top (or initials in a name-derived circle as a fallback), then
+// stats grid (credits / sent 30d / last activity), then primary
+// actions (Impersonate, View Analytics, Add/Remove Credits) + a ⚙
+// Settings button that opens a modal with the per-tenant config
+// (GA4 ID, Stripe key, Booking URL, Pause billing).
+function renderAdminClientCard(c, refresh) {
+  const fmtAgo = (ts) => {
+    if (!ts) return 'No activity yet';
+    const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (diff < 60)    return diff + 's ago';
+    if (diff < 3600)  return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    if (diff < 30 * 86400) return Math.floor(diff / 86400) + 'd ago';
+    return new Date(ts).toLocaleDateString();
+  };
+  const isActive = !c.billing_paused;
+  const displayName = c.business_name || c.name || c.slug;
+
+  // Logo header — render the uploaded logo OR a tinted-circle initial
+  // fallback so the card looks finished even before a logo's set.
+  const logoEl = c.logo_url
+    ? el('img', { class: 'admin-card-logo-img', src: c.logo_url, alt: '' })
+    : (() => {
+        const node = el('div', { class: 'admin-card-logo-fallback' },
+          el('span', {}, customerInitials(displayName)));
+        node.style.background = avatarColorFromName(displayName);
+        return node;
+      })();
+
+  const statusBadge = isActive
+    ? el('span', { class: 'badge green' }, 'Active')
+    : el('span', { class: 'badge red' }, 'Paused');
+
+  const adjustCredits = async (sign) => {
+    const raw = prompt(`Adjust SMS credits for ${displayName}\n\nEnter a positive number to ${sign > 0 ? 'add' : 'remove'} credits:`, '20');
+    if (raw == null) return;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) { toast('Enter a positive integer', true); return; }
+    try {
+      const r = await api('/api/admin?action=set-credits', {
+        method: 'POST',
+        body: { client_id: c.id, delta: sign * n, note: `admin card ${sign > 0 ? '+' : '-'}${n}` }
+      });
+      toast(`${displayName}: ${r.client.credit_balance} credits`);
+      await refresh();
+    } catch (e) { toast('Credit adjust failed: ' + e.message, true); }
+  };
+
+  return el('div', { class: 'admin-client-card' },
+    el('div', { class: 'admin-card-header' },
+      el('div', { class: 'admin-card-logo' }, logoEl),
+      el('div', { class: 'admin-card-title' },
+        el('div', { class: 'admin-card-name' }, displayName),
+        el('div', { class: 'admin-card-status' }, statusBadge,
+          c.twilio_phone_number ? el('span', { class: 'muted', style: 'font-size:0.7rem;margin-left:6px' }, c.twilio_phone_number) : null
+        )
+      )
+    ),
+    el('div', { class: 'admin-card-stats' },
+      el('div', { class: 'admin-card-stat' },
+        el('div', { class: 'admin-card-stat-value' }, String(c.credit_balance ?? 0)),
+        el('div', { class: 'admin-card-stat-label muted' }, 'SMS Credits')
+      ),
+      el('div', { class: 'admin-card-stat' },
+        el('div', { class: 'admin-card-stat-value' }, String(c.sent_30d || 0)),
+        el('div', { class: 'admin-card-stat-label muted' }, 'Sent 30d')
+      ),
+      el('div', { class: 'admin-card-stat' },
+        el('div', { class: 'admin-card-stat-value', style: 'font-size:0.85rem' }, fmtAgo(c.last_activity_at)),
+        el('div', { class: 'admin-card-stat-label muted' }, 'Last Activity')
+      )
+    ),
+    el('div', { class: 'admin-card-actions' },
+      el('button', { class: 'btn sm primary',
+        onclick: () => { setImpersonation(c.id); state.view = 'overview'; render(); }
+      }, 'Impersonate'),
+      el('button', { class: 'btn sm',
+        onclick: () => { setImpersonation(c.id); state.view = 'analytics'; render(); }
+      }, 'Analytics'),
+      el('button', { class: 'btn sm', onclick: () => adjustCredits(+1) }, '+ Credits'),
+      el('button', { class: 'btn sm ghost', onclick: () => adjustCredits(-1) }, '− Credits'),
+      el('button', { class: 'btn sm', onclick: () => openClientSettingsModal(c, refresh) }, '⚙ Settings')
+    )
+  );
+}
+
+// Per-tenant config modal — keeps the GA4 / Stripe / Booking / pause
+// controls off the cluttered card surface.
+function openClientSettingsModal(c, refresh) {
+  const existing = document.querySelector('.client-settings-bg');
+  if (existing) existing.remove();
+
+  const ga4In = el('input', { type: 'text', placeholder: 'GA4 property ID (numeric)', value: c.ga4_property_id || '' });
+  const buIn  = el('input', { type: 'text', placeholder: 'book.theflexfacility.com', value: c.booking_custom_domain || '' });
+  const skIn  = el('input', { type: 'password', placeholder: 'sk_live_… (paste to set, leave blank to keep current)' });
+
+  const close = () => bg.remove();
+  const result = el('div', { style: 'min-height:1.2em;font-size:0.8rem' });
+
+  const saveAll = async () => {
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    try {
+      // GA4 + Booking always save (even when blank — clears them).
+      await api('/api/admin?action=set-ga4', { method: 'POST', body: { client_id: c.id, ga4_property_id: ga4In.value.trim() } });
+      await api('/api/admin?action=set-booking-url', { method: 'POST', body: { client_id: c.id, booking_url: buIn.value.trim() } });
+      // Stripe key only saves when the field is non-empty (keeps existing on blank).
+      if (skIn.value.trim()) {
+        await api('/api/admin?action=set-stripe-key', { method: 'POST', body: { client_id: c.id, stripe_secret_key: skIn.value.trim() } });
+      }
+      toast('Settings saved for ' + (c.business_name || c.name));
+      close();
+      await refresh();
+    } catch (e) {
+      result.textContent = 'Error: ' + e.message;
+      result.style.color = 'var(--danger,#e74c3c)';
+    } finally { saveBtn.disabled = false; saveBtn.textContent = 'Save'; }
+  };
+
+  const togglePause = async () => {
+    try {
+      await api('/api/admin?action=billing-pause', {
+        method: 'POST', body: { client_id: c.id, paused: !c.billing_paused }
+      });
+      toast(c.billing_paused ? 'Billing resumed' : 'Billing paused');
+      close();
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  const saveBtn = el('button', { class: 'btn primary', onclick: saveAll }, 'Save');
+
+  const field = (label, hint, input) => el('div', { class: 'csm-field' },
+    el('label', {}, label),
+    hint ? el('div', { class: 'muted', style: 'font-size:0.7rem;margin-bottom:4px' }, hint) : null,
+    input
+  );
+
+  const modal = el('div', { class: 'client-settings-modal' },
+    el('div', { class: 'csm-header' },
+      el('h3', {}, '⚙ ' + (c.business_name || c.name) + ' — Settings'),
+      el('button', { class: 'profile-close', type: 'button', 'aria-label': 'Close',
+        onclick: close, ontouchend: close }, '×')
+    ),
+    field('GA4 Property ID',
+      'Numeric GA4 property (e.g. 123456789). Leave blank to clear.',
+      ga4In),
+    field('Booking URL',
+      'Custom domain for this tenant\'s booking widget (no protocol). Drives the Vapi assistant + welcome SMS.',
+      buIn),
+    field('Stripe Secret Key',
+      'sk_live_... — only used to sync sales from this tenant\'s Stripe account. Leave blank to keep the existing key.',
+      skIn),
+    el('div', { class: 'csm-row' },
+      el('button', {
+        class: 'btn ' + (c.billing_paused ? 'btn-success' : 'btn-warn'),
+        onclick: togglePause
+      }, c.billing_paused ? 'Resume Billing' : 'Pause Billing'),
+      el('div', { style: 'flex:1' }),
+      el('button', { class: 'btn', onclick: close }, 'Cancel'),
+      saveBtn
+    ),
+    result
+  );
+
+  const bg = el('div', { class: 'client-settings-bg', onclick: (e) => { if (e.target === bg) close(); } }, modal);
+  document.body.appendChild(bg);
+}
+
 async function viewAdmin() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
@@ -4853,8 +5022,49 @@ async function viewAdmin() {
   reservePanel.appendChild(el('h2', {}, '📡 Twilio Reserve'));
   reservePanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
     'How much of incoming Stripe revenue is auto-reserved to cover Twilio SMS costs. The Reserved bucket grows on each credit-pack purchase and shrinks on each SMS send. Anything above the reserve is true platform margin.'));
+
+  // Per-segment cost editor — drives both the live trigger and the
+  // backfill helper. Default is 1¢; if Twilio is actually charging you
+  // more (e.g. 2¢ for US carriers, more for international), set it
+  // here so the reserve numbers actually reflect reality.
+  const costInput = el('input', {
+    type: 'number', min: '0', max: '100', step: '1',
+    placeholder: '1',
+    style: 'width:80px;padding:6px 8px;background:var(--bg-1,#0d1117);border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem'
+  });
+  const costStatus = el('span', { class: 'muted', style: 'font-size:0.75rem' }, 'Loading current cost…');
+  api('/api/admin?action=twilio-cost').then(r => {
+    costInput.value = String(r.effective_cents ?? 1);
+    costStatus.textContent = r.db_setting_cents != null
+      ? `Current: ${r.db_setting_cents}¢/segment (set in DB)`
+      : `Current: ${r.effective_cents}¢/segment (env var fallback — set a value below to persist in DB)`;
+  }).catch(() => { costStatus.textContent = 'Cost setting unavailable'; });
+
+  const saveCostBtn = el('button', { class: 'btn sm', onclick: async () => {
+    const cents = parseInt(costInput.value, 10);
+    if (!Number.isFinite(cents) || cents < 0) { toast('Enter a non-negative integer', true); return; }
+    saveCostBtn.disabled = true; saveCostBtn.textContent = 'Saving + rebuilding…';
+    try {
+      await api('/api/admin?action=twilio-cost', { method: 'POST', body: { cents } });
+      // Cost change → rebuild from history so existing reserve totals
+      // get re-priced at the new rate immediately.
+      const r = await api('/api/admin?action=backfill-twilio-reserve', { method: 'POST' });
+      toast(`Set Twilio cost to ${cents}¢/segment. Rebuilt ${r.processed} clients.`);
+      render();
+    } catch (e) { toast('Failed: ' + e.message, true); }
+    finally { saveCostBtn.disabled = false; saveCostBtn.textContent = 'Save + Rebuild'; }
+  } }, 'Save + Rebuild');
+
+  reservePanel.appendChild(el('div', { class: 'twilio-cost-row' },
+    el('label', { style: 'font-size:0.8rem;font-weight:600' }, 'Twilio cost per segment (¢):'),
+    costInput,
+    saveCostBtn,
+    costStatus
+  ));
+
   const reserveBody = el('div', {}, el('div', { class: 'muted' }, 'Loading…'));
   reservePanel.appendChild(reserveBody);
+
   const backfillBtn = el('button', { class: 'btn sm', style: 'margin-top:12px', onclick: async (e) => {
     if (!confirm('Rebuild Twilio reserve from existing credit_ledger history?\n\nThis is idempotent and safe.')) return;
     e.currentTarget.disabled = true;
@@ -4908,156 +5118,37 @@ async function viewAdmin() {
     }
   })();
 
-  // ----- Client Accounts (merged: full management table, no slug, no DLP,
-  //       horizontal scroll so every control is reachable on any screen) -----
+  // ----- Client Accounts (clean card grid with logos) -----
+  // Per-tenant config (GA4 ID, Stripe key, Booking URL, billing pause)
+  // moved into a Settings modal opened from each card so the grid
+  // surface only shows the at-a-glance info.
   const tablePanel = el('div', { class: 'panel client-mgmt-panel' });
   tablePanel.appendChild(el('h2', {}, 'Client Accounts'));
   tablePanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
-    'Manage every tenant portal. Click Impersonate to enter a client\'s view.'));
-  const tableScroller = el('div', { class: 'admin-table-scroller' });
-  const tableHost = el('div', {}, el('div', { class: 'muted' }, 'Loading…'));
-  tableScroller.appendChild(tableHost);
-  tablePanel.appendChild(tableScroller);
+    'Click any card\'s ⚙ Settings button for per-tenant config (GA4, Stripe, Booking URL, pause billing).'));
+  const cardGridHost = el('div', {}, el('div', { class: 'muted' }, 'Loading…'));
+  tablePanel.appendChild(cardGridHost);
   wrap.appendChild(tablePanel);
 
   let allClients = [];
   const onClientsLoaded = [];
   const refresh = async () => {
     const r = await api('/api/admin?action=list-clients');
-    // DLP is a duplicate/acronym for Daniels Legacy Planning — never show it.
     allClients = (r.clients || []).filter(c =>
       c.slug !== 'dlp' && (c.name || '').toLowerCase() !== 'dlp'
     );
     for (const fn of onClientsLoaded) { try { fn(allClients); } catch {} }
-    tableHost.innerHTML = '';
+    cardGridHost.innerHTML = '';
     if (!allClients.length) {
-      tableHost.appendChild(el('div', { class: 'muted' }, 'No clients yet.'));
+      cardGridHost.appendChild(el('div', { class: 'muted' }, 'No clients yet.'));
       return;
     }
-    const table = el('table', { class: 'admin-table' },
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'Client'),
-        el('th', {}, 'Twilio'),
-        el('th', {}, 'Credits'),
-        el('th', {}, 'Sent 30d'),
-        el('th', {}, 'Last Activity'),
-        el('th', {}, 'Status'),
-        el('th', {}, 'Actions')
-      )),
-      el('tbody', {}, ...allClients.map((c) => {
-        const fmtAgo = (ts) => {
-          if (!ts) return '—';
-          const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
-          if (diff < 60)    return diff + 's ago';
-          if (diff < 3600)  return Math.floor(diff / 60) + 'm ago';
-          if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-          if (diff < 30 * 86400) return Math.floor(diff / 86400) + 'd ago';
-          return new Date(ts).toLocaleDateString();
-        };
-        const amountInput = el('input', { type: 'number', min: '1', value: '20', style: 'width:70px' });
-        const noteInput   = el('input', { type: 'text', placeholder: 'note (optional)', style: 'width:140px' });
-        const ga4Input    = el('input', { type: 'text', placeholder: 'GA4 property ID', value: c.ga4_property_id || '', style: 'width:140px' });
-        const saveGa4 = async () => {
-          try {
-            await api('/api/admin?action=set-ga4', {
-              method: 'POST', body: { client_id: c.id, ga4_property_id: ga4Input.value.trim() }
-            });
-            toast('GA4 property saved for ' + c.name);
-            await refresh();
-          } catch (e) { toast(e.message, true); }
-        };
-        const adjust = async (sign) => {
-          const raw = parseInt(amountInput.value, 10);
-          if (!Number.isFinite(raw) || raw <= 0) { toast('Enter a positive amount', true); return; }
-          const delta = sign * Math.abs(raw);
-          try {
-            const r = await api('/api/admin?action=set-credits', {
-              method: 'POST', body: { client_id: c.id, delta, note: noteInput.value }
-            });
-            toast(`${c.name}: ${r.client.credit_balance} credits`);
-            await refresh();
-          } catch (e) { toast(e.message, true); }
-        };
-        return el('tr', {},
-          el('td', {}, el('strong', {}, c.business_name || c.name || '—')),
-          el('td', { class: 'muted mono' }, c.twilio_phone_number || '—'),
-          el('td', {}, String(c.credit_balance ?? 0)),
-          el('td', { class: 'muted' }, String(c.sent_30d || 0)),
-          el('td', { class: 'muted' }, fmtAgo(c.last_activity_at)),
-          el('td', {}, c.billing_paused
-              ? el('span', { class: 'pill warn' }, 'PAUSED')
-              : el('span', { class: 'pill ok' }, 'active')),
-          el('td', { class: 'actions' },
-            el('button', { class: 'btn sm primary', onclick: () => {
-              setImpersonation(c.id); state.view = 'overview'; render();
-            }}, 'Impersonate'),
-            el('button', { class: 'btn sm', onclick: () => {
-              setImpersonation(c.id); state.view = 'analytics'; render();
-            }}, 'View Analytics'),
-            amountInput, noteInput,
-            el('button', { class: 'btn sm btn-success', onclick: () => adjust(+1) }, '+ Add'),
-            el('button', { class: 'btn sm btn-warn',    onclick: () => adjust(-1) }, '− Remove'),
-            el('button', { class: 'btn sm ' + (c.billing_paused ? 'btn-success' : 'btn-warn'), onclick: async () => {
-              try {
-                await api('/api/admin?action=billing-pause', {
-                  method: 'POST', body: { client_id: c.id, paused: !c.billing_paused }
-                });
-                toast(c.billing_paused ? 'Billing resumed' : 'Billing paused');
-                await refresh();
-              } catch (e) { toast(e.message, true); }
-            }}, c.billing_paused ? 'Resume billing' : 'Pause billing'),
-            el('div', { style: 'display:flex;gap:4px;align-items:center;margin-top:6px' },
-              el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'GA4:'),
-              ga4Input,
-              el('button', { class: 'btn sm', onclick: saveGa4 }, 'Save')
-            ),
-            (() => {
-              const skInput = el('input', { type: 'password', placeholder: 'sk_live_... (paste to set)', style: 'width:160px' });
-              const saveKey = async () => {
-                const val = skInput.value.trim();
-                try {
-                  await api('/api/admin?action=set-stripe-key', {
-                    method: 'POST', body: { client_id: c.id, stripe_secret_key: val }
-                  });
-                  toast('Stripe key saved for ' + c.name);
-                  skInput.value = '';
-                } catch (e) { toast(e.message, true); }
-              };
-              return el('div', { style: 'display:flex;gap:4px;align-items:center;margin-top:4px' },
-                el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'Stripe:'),
-                skInput,
-                el('button', { class: 'btn sm', onclick: saveKey }, 'Save')
-              );
-            })(),
-            (() => {
-              const buInput = el('input', {
-                type: 'text',
-                placeholder: 'book.theflexfacility.com',
-                value: c.booking_custom_domain || '',
-                style: 'width:200px'
-              });
-              const saveBu = async () => {
-                try {
-                  await api('/api/admin?action=set-booking-url', {
-                    method: 'POST', body: { client_id: c.id, booking_url: buInput.value.trim() }
-                  });
-                  toast('Booking URL saved for ' + c.name + ' — Vapi assistant + welcome SMS will use it next time');
-                  await refresh();
-                } catch (e) { toast(e.message, true); }
-              };
-              return el('div', { style: 'display:flex;gap:4px;align-items:center;margin-top:4px' },
-                el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'Booking:'),
-                buInput,
-                el('button', { class: 'btn sm', onclick: saveBu }, 'Save')
-              );
-            })()
-          )
-        );
-      }))
+    const grid = el('div', { class: 'admin-clients-grid' },
+      ...allClients.map(c => renderAdminClientCard(c, refresh))
     );
-    tableHost.appendChild(table);
+    cardGridHost.appendChild(grid);
   };
-  refresh().catch((e) => { tableHost.innerHTML = ''; tableHost.appendChild(el('div', { class: 'err' }, e.message)); });
+  refresh().catch((e) => { cardGridHost.innerHTML = ''; cardGridHost.appendChild(el('div', { class: 'err' }, e.message)); });
 
   // ----- Send free SMS as any client -----
   const sendPanel = el('div', { class: 'panel' });

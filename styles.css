@@ -1572,6 +1572,130 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Master Admin — Client cards (with logos)
+   ============================================================ */
+.admin-clients-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+.admin-client-card {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 16px;
+  background: var(--bg-elevated, #141c2e);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-md, 12px);
+  transition: border-color 0.15s, transform 0.15s;
+}
+.admin-client-card:hover {
+  border-color: var(--brand-1, #00CFFF);
+  transform: translateY(-2px);
+}
+.admin-card-header {
+  display: flex; align-items: center; gap: 12px;
+  min-width: 0;
+}
+.admin-card-logo {
+  width: 56px; height: 56px; flex-shrink: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  display: flex; align-items: center; justify-content: center;
+}
+.admin-card-logo-img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.admin-card-logo-fallback {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  font-size: 1.4rem; font-weight: 700;
+  text-transform: uppercase;
+}
+.admin-card-title {
+  flex: 1; min-width: 0;
+}
+.admin-card-name {
+  font-size: 1rem; font-weight: 700;
+  color: var(--text, #e0e0e0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.admin-card-status {
+  margin-top: 4px;
+  display: flex; align-items: center;
+}
+.admin-card-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border, #2a3a5c);
+  border-bottom: 1px solid var(--border, #2a3a5c);
+}
+.admin-card-stat { text-align: center; }
+.admin-card-stat-value {
+  font-size: 1rem; font-weight: 700; color: var(--text, #e0e0e0);
+}
+.admin-card-stat-label {
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.admin-card-actions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.admin-card-actions .btn { flex: 1; min-width: fit-content; }
+
+/* ============================================================
+   Per-tenant Settings modal (opened from each admin client card)
+   ============================================================ */
+.client-settings-bg {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1500;
+  padding: 20px;
+}
+.client-settings-modal {
+  background: var(--bg-elevated, #141c2e);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: var(--r-md, 12px);
+  padding: 24px;
+  width: 100%; max-width: 520px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+.csm-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border, #2a3a5c);
+}
+.csm-header h3 {
+  font-size: 1.05rem; font-weight: 700;
+  color: var(--brand-1, #00CFFF);
+  margin: 0;
+}
+.csm-field { margin-bottom: 14px; display: flex; flex-direction: column; gap: 4px; }
+.csm-field label {
+  font-size: 0.75rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-dim, #a8acbb);
+}
+.csm-field input {
+  width: 100%; padding: 9px 12px;
+  background: var(--bg-1, #0d1117);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: 6px;
+  color: var(--text, #e0e0e0); font-size: 0.9rem;
+}
+.csm-field input:focus { outline: none; border-color: var(--brand-1, #00CFFF); }
+.csm-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+/* ============================================================
    Twilio Reserve panel
    ============================================================ */
 .twilio-reserve-panel {
@@ -1579,6 +1703,14 @@ tbody tr:last-child td { border-bottom: none; }
   background: linear-gradient(180deg, rgba(0, 207, 255, 0.04), transparent);
 }
 .twilio-reserve-panel h2 { color: var(--brand-1, #00CFFF); }
+.twilio-cost-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border, #2a3a5c);
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
 
 /* ============================================================
    Master Admin — Client management cards
