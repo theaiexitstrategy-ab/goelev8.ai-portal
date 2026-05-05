@@ -1727,6 +1727,16 @@ tbody tr:last-child td { border-bottom: none; }
   border-radius: 8px;
   margin-bottom: 14px;
 }
+.reserve-setup-banner {
+  padding: 16px 18px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 10px;
+  color: var(--text, #e0e0e0);
+}
+.reserve-setup-banner strong {
+  font-size: 0.95rem; color: #fcd34d;
+}
 
 /* ============================================================
    Master Admin — Client management cards

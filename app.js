@@ -5171,6 +5171,36 @@ async function viewAdmin() {
     try {
       const r = await api('/api/portal/twilio-reserve');
       reserveBody.innerHTML = '';
+
+      // Setup-not-ready states get a clear banner + one-click fix.
+      // Without this branch the panel renders silent zeros and the
+      // operator can't tell whether the reserve genuinely is empty
+      // or the migration just hasn't run.
+      if (r.setup_status === 'column_missing' || r.setup_status === 'table_missing') {
+        const banner = el('div', { class: 'reserve-setup-banner' },
+          el('strong', {}, '⚠️ Setup not complete'),
+          el('div', { style: 'margin:6px 0 12px;font-size:0.85rem' },
+            r.setup_message || 'Migration 0022 has not been fully applied yet.'
+          ),
+          el('button', { class: 'btn primary', onclick: async (ev) => {
+            ev.currentTarget.disabled = true;
+            ev.currentTarget.textContent = 'Repairing…';
+            try {
+              const fix = await api('/api/admin?action=twilio-reserve-diagnose', { method: 'POST' });
+              const failedSteps = (fix.repairs || []).filter(s => !s.ok);
+              if (failedSteps.length) {
+                toast(`Repair failed at: ${failedSteps[0].step}. Check SUPABASE_ACCESS_TOKEN env var in Vercel.`, true);
+              } else {
+                toast('Reserve repaired — refreshing…');
+              }
+              render();
+            } catch (e) { toast('Repair failed: ' + e.message, true); }
+          } }, 'Repair Now')
+        );
+        reserveBody.appendChild(banner);
+        return;
+      }
+
       const fmt = (c) => '$' + ((c || 0) / 100).toFixed(2);
       reserveBody.appendChild(el('div', { class: 'leads-metrics-strip', style: 'margin-bottom:12px' },
         el('div', { class: 'metric-stat' },
