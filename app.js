@@ -592,6 +592,46 @@ function bucketSources(rows) {
   return [...buckets.values()].sort((a, b) => b.sessions - a.sessions);
 }
 
+// Render a page list as a clean horizontal-bar list. Each row is the
+// path (monospace) + bar fill + view count + percentage. `denom` is
+// optional — when provided it's used for the % share (so a Funnel
+// Pages list can show "% of total traffic" instead of "% of funnel
+// pages"). Defaults to the sum of the supplied rows' views.
+function renderPageList(pages, opts = {}) {
+  const list = (Array.isArray(pages) ? pages : []).slice(0, opts.limit || 15);
+  if (!list.length) {
+    return el('p', { class: 'muted' }, opts.emptyText || 'No page data yet.');
+  }
+  const denom = opts.denom != null
+    ? opts.denom
+    : list.reduce((s, p) => s + (Number(p.views) || 0), 0);
+  // Bar widths scale relative to the top page on screen so the chart
+  // is visually meaningful even when one page dominates.
+  const maxViews = Math.max(...list.map(p => Number(p.views) || 0), 1);
+
+  const host = el('div', { class: 'page-bar-list' });
+  for (const p of list) {
+    const v = Number(p.views) || 0;
+    const sessions = Number(p.sessions) || 0;
+    const pct = denom > 0 ? (v / denom) * 100 : 0;
+    const fillPct = (v / maxViews) * 100;
+    host.appendChild(el('div', { class: 'page-bar' },
+      el('div', { class: 'page-bar-head' },
+        el('code', { class: 'page-bar-path', title: p.path }, p.path || '/'),
+        el('span', { class: 'page-bar-count muted' },
+          String(v) + ' view' + (v === 1 ? '' : 's') +
+          (denom > 0 ? ' · ' + pct.toFixed(1) + '%' : '') +
+          (sessions ? ' · ' + sessions + ' session' + (sessions === 1 ? '' : 's') : '')
+        )
+      ),
+      el('div', { class: 'page-bar-track' },
+        el('div', { class: 'page-bar-fill', style: 'width:' + Math.max(2, fillPct) + '%' })
+      )
+    ));
+  }
+  return host;
+}
+
 // Render the bucketed sources as a clean horizontal-bar list. Each row
 // is icon + channel label + bar fill + session count + percentage.
 function renderTrafficChannels(rows) {
@@ -5409,44 +5449,29 @@ async function viewAnalytics() {
   // Top pages (show first 15 in main table)
   const pagePanel = el('div', { class: 'panel' });
   pagePanel.appendChild(el('h2', {}, '📄 Top Pages'));
-  if ((ga.top_pages || []).length) {
-    pagePanel.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'Page'), el('th', {}, 'Views'), el('th', {}, 'Sessions')
-      )),
-      el('tbody', {}, ...ga.top_pages.slice(0, 15).map(p => el('tr', {},
-        el('td', {}, el('code', {}, p.path)),
-        el('td', {}, String(p.views)),
-        el('td', {}, String(p.sessions))
-      )))
-    ));
-  } else {
-    pagePanel.appendChild(el('p', { class: 'muted' }, 'No page data yet.'));
-  }
+  pagePanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
+    'Most-viewed pages on your site, last 30 days. Bar width is relative to the top page on screen.'));
+  pagePanel.appendChild(renderPageList(ga.top_pages || [], {
+    limit: 15,
+    emptyText: 'No page data yet.'
+  }));
   restOfPage.appendChild(pagePanel);
 
-  // Funnel page performance
+  // Funnel page performance — same bar-list treatment, but the % share
+  // is calculated against TOTAL site traffic (not just funnel pages) so
+  // "what fraction of visits hit /r2s" is meaningful.
   const funnelPanel = el('div', { class: 'panel' });
   funnelPanel.appendChild(el('h2', {}, '🔗 Funnel Page Performance'));
+  funnelPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
+    'Funnel pages only (e.g. /r2s, /fit, /book). Percentage is share of total site traffic.'));
   const funnelPages = (ga.top_pages || []).filter(p =>
     p.path && (p.path.startsWith('/r') || p.path.startsWith('/fit') || p.path === '/' || p.path.startsWith('/book'))
   );
-  if (funnelPages.length) {
-    const totalPageViews = (ga.top_pages || []).reduce((s, p) => s + p.views, 0);
-    funnelPanel.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'Page'), el('th', {}, 'Views'), el('th', {}, 'Sessions'), el('th', {}, '% of Traffic')
-      )),
-      el('tbody', {}, ...funnelPages.map(p => el('tr', {},
-        el('td', {}, el('code', {}, p.path)),
-        el('td', {}, String(p.views)),
-        el('td', {}, String(p.sessions)),
-        el('td', {}, totalPageViews > 0 ? ((p.views / totalPageViews) * 100).toFixed(1) + '%' : '—')
-      )))
-    ));
-  } else {
-    funnelPanel.appendChild(el('p', { class: 'muted' }, 'No funnel page data yet. Funnel pages like /r2s, /fit, /book will appear here once they receive traffic.'));
-  }
+  const totalPageViews = (ga.top_pages || []).reduce((s, p) => s + (Number(p.views) || 0), 0);
+  funnelPanel.appendChild(renderPageList(funnelPages, {
+    denom: totalPageViews,
+    emptyText: 'No funnel page data yet. Funnel pages like /r2s, /fit, /book will appear here once they receive traffic.'
+  }));
   restOfPage.appendChild(funnelPanel);
 
   // Road To The Stage Ebook Sales — only when the active tenant context

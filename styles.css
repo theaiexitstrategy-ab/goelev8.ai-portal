@@ -1367,6 +1367,47 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ============================================================
+   Page bar list (Top Pages + Funnel Page Performance)
+   ============================================================ */
+.page-bar-list {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.page-bar { display: flex; flex-direction: column; gap: 4px; }
+.page-bar-head {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 0.82rem;
+}
+.page-bar-path {
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  color: var(--text, #e0e0e0);
+  background: rgba(0, 207, 255, 0.06);
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.page-bar-count {
+  font-size: 0.72rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.page-bar-track {
+  height: 8px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+.page-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--brand-1, #00CFFF), rgba(0, 207, 255, 0.5));
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+/* ============================================================
    Traffic channel bar list (replaces the noisy raw GA4 source table)
    ============================================================ */
 .traffic-channel-list {
