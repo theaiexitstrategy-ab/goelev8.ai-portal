@@ -105,14 +105,42 @@ export default async function handler(req, res) {
       // them with prospect drips.
       if (row.lead_id) {
         const { data: lead } = await supabaseAdmin
-          .from('leads').select('paid_at, tags').eq('id', row.lead_id).maybeSingle();
+          .from('leads').select('paid_at, tags, phone, email').eq('id', row.lead_id).maybeSingle();
         const leadTagSet = new Set((lead?.tags || []).map(t => String(t)));
         if (lead?.paid_at
             || leadTagSet.has('Do Not Contact')
             || leadTagSet.has('Current Client')
-            || leadTagSet.has('Paid')) {
+            || leadTagSet.has('Paid')
+            || leadTagSet.has('Booked')) {
           await supabaseAdmin.from('nudge_queue')
             .update({ failed_reason: 'lead_already_converted_or_blocked' }).eq('id', row.id);
+          skipped++;
+          continue;
+        }
+
+        // Defense in depth: if the trigger somehow missed, still skip
+        // when an actual booking row exists for this lead OR for the
+        // same phone/email in the same tenant.
+        let hasBooking = false;
+        const { count: byLead } = await supabaseAdmin
+          .from('bookings').select('id', { count: 'exact', head: true })
+          .eq('lead_id', row.lead_id);
+        if (byLead && byLead > 0) hasBooking = true;
+        if (!hasBooking && lead?.phone) {
+          const { count } = await supabaseAdmin
+            .from('bookings').select('id', { count: 'exact', head: true })
+            .eq('client_id', clientId).eq('phone', lead.phone);
+          if (count && count > 0) hasBooking = true;
+        }
+        if (!hasBooking && lead?.email) {
+          const { count } = await supabaseAdmin
+            .from('bookings').select('id', { count: 'exact', head: true })
+            .eq('client_id', clientId).ilike('email', lead.email);
+          if (count && count > 0) hasBooking = true;
+        }
+        if (hasBooking) {
+          await supabaseAdmin.from('nudge_queue')
+            .update({ failed_reason: 'booking_made' }).eq('id', row.id);
           skipped++;
           continue;
         }

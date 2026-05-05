@@ -727,7 +727,55 @@ async function applyPendingMigrations(req, res) {
     `CREATE INDEX IF NOT EXISTS bookings_deleted_at_idx ON public.bookings(client_id, deleted_at) WHERE deleted_at IS NOT NULL;`,
 
     // ----- 0025: customer avatar URL on leads -----
-    `ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS avatar_url text;`
+    `ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS avatar_url text;`,
+
+    // ----- 0026: AFTER-INSERT trigger on bookings cancels pending nudges -----
+    `CREATE OR REPLACE FUNCTION public.cancel_nudges_on_booking()
+     RETURNS trigger LANGUAGE plpgsql AS $func$
+     BEGIN
+       IF NEW.lead_id IS NOT NULL THEN
+         UPDATE public.nudge_queue
+            SET failed_reason = 'booking_made'
+          WHERE lead_id = NEW.lead_id
+            AND sent_at IS NULL
+            AND failed_reason IS NULL;
+         UPDATE public.leads
+            SET tags = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags, '{}'::text[]) || ARRAY['Booked', 'Current Client'])))
+          WHERE id = NEW.lead_id;
+       END IF;
+       IF NEW.phone IS NOT NULL AND NEW.phone <> '' THEN
+         UPDATE public.nudge_queue nq
+            SET failed_reason = 'booking_made'
+           FROM public.leads l
+          WHERE nq.lead_id = l.id
+            AND l.client_id = NEW.client_id
+            AND l.phone = NEW.phone
+            AND nq.sent_at IS NULL
+            AND nq.failed_reason IS NULL;
+         UPDATE public.leads
+            SET tags = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags, '{}'::text[]) || ARRAY['Booked', 'Current Client'])))
+          WHERE client_id = NEW.client_id AND phone = NEW.phone;
+       END IF;
+       IF NEW.email IS NOT NULL AND NEW.email <> '' THEN
+         UPDATE public.nudge_queue nq
+            SET failed_reason = 'booking_made'
+           FROM public.leads l
+          WHERE nq.lead_id = l.id
+            AND l.client_id = NEW.client_id
+            AND lower(l.email) = lower(NEW.email)
+            AND nq.sent_at IS NULL
+            AND nq.failed_reason IS NULL;
+         UPDATE public.leads
+            SET tags = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(tags, '{}'::text[]) || ARRAY['Booked', 'Current Client'])))
+          WHERE client_id = NEW.client_id AND lower(email) = lower(NEW.email);
+       END IF;
+       RETURN NEW;
+     END;
+     $func$;`,
+    `DROP TRIGGER IF EXISTS bookings_cancel_nudges ON public.bookings;`,
+    `CREATE TRIGGER bookings_cancel_nudges
+       AFTER INSERT ON public.bookings
+       FOR EACH ROW EXECUTE FUNCTION public.cancel_nudges_on_booking();`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
