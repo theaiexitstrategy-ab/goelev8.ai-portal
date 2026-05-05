@@ -938,6 +938,132 @@ async function openCustomerProfile(leadId) {
   sheet.append(header, tagsRow, actionBar, metrics, bookingsSection, callsSection, messagesSection, nudgesSection, doneBar);
 }
 
+// Trash view — slide-over panel listing soft-deleted records from the
+// last 30 days across leads / contacts / bookings. Per-row Restore +
+// Permanently Delete buttons. Uses the same slide-over chrome as the
+// customer profile so the close behavior + safe-area handling match.
+async function openTrashView() {
+  const existing = document.querySelector('.profile-bg');
+  if (existing) existing.remove();
+
+  const sheet = el('div', { class: 'profile-sheet' },
+    el('div', { class: 'profile-loading muted' }, 'Loading recently deleted…'));
+  const dismissOnBg = (e) => { if (e.target === bg) closeTrash(e); };
+  const bg = el('div', { class: 'profile-bg', onclick: dismissOnBg, ontouchend: dismissOnBg }, sheet);
+  const onKey = (e) => { if (e.key === 'Escape') closeTrash(e); };
+  function closeTrash(ev) {
+    if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
+    document.removeEventListener('keydown', onKey);
+    bg.remove();
+  }
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(bg);
+
+  const fmtAgo = (ts) => {
+    if (!ts) return '—';
+    const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  };
+
+  async function refresh() {
+    let r;
+    try {
+      r = await api('/api/admin?action=trash');
+    } catch (e) {
+      sheet.innerHTML = '';
+      sheet.appendChild(el('div', { class: 'err', style: 'padding:24px' }, 'Failed to load: ' + e.message));
+      return;
+    }
+
+    const totalCount = (r.leads?.length || 0) + (r.contacts?.length || 0) + (r.bookings?.length || 0);
+    const closeBtn = el('button', {
+      class: 'profile-close', type: 'button', 'aria-label': 'Close',
+      onclick: closeTrash, ontouchend: closeTrash
+    }, '×');
+
+    const buildSection = (label, type, rows, columns) => {
+      const sec = el('div', { class: 'profile-section' });
+      sec.appendChild(el('h3', {}, label + ' (' + (rows?.length || 0) + ')'));
+      if (!rows?.length) {
+        sec.appendChild(el('p', { class: 'muted' }, 'No deleted ' + label.toLowerCase() + ' in the last 30 days.'));
+        return sec;
+      }
+      const tbl = el('table', {},
+        el('thead', {}, el('tr', {},
+          ...columns.map(c => el('th', {}, c.label)),
+          el('th', {}, 'Tenant'),
+          el('th', {}, 'Deleted'),
+          el('th', {}, '')
+        )),
+        el('tbody', {}, ...rows.map(row => {
+          const tenantName = r.client_names?.[row.client_id] || row.client_id?.slice(0, 8) || '—';
+          const restoreBtn = el('button', {
+            class: 'btn sm primary', onclick: async () => {
+              try {
+                await api('/api/admin?action=restore-record', { method: 'POST', body: { type, id: row.id } });
+                toast(label + ' restored');
+                await refresh();
+              } catch (e) { toast('Restore failed: ' + e.message, true); }
+            }
+          }, 'Restore');
+          const purgeBtn = el('button', {
+            class: 'btn sm danger', onclick: async () => {
+              if (!confirm(`Permanently delete this ${label.toLowerCase().replace(/s$/, '')}?\n\nThis cannot be undone.`)) return;
+              try {
+                await api('/api/admin?action=restore-record', { method: 'POST', body: { type, id: row.id, permanent: true } });
+                toast('Permanently deleted');
+                await refresh();
+              } catch (e) { toast('Failed: ' + e.message, true); }
+            }
+          }, 'Purge');
+          return el('tr', {},
+            ...columns.map(c => el('td', {}, c.cell(row))),
+            el('td', { class: 'muted' }, tenantName),
+            el('td', { class: 'muted' }, fmtAgo(row.deleted_at)),
+            el('td', {}, el('div', { class: 'row', style: 'gap:4px;justify-content:flex-end' }, restoreBtn, purgeBtn))
+          );
+        }))
+      );
+      sec.appendChild(tbl);
+      return sec;
+    };
+
+    sheet.innerHTML = '';
+    sheet.append(
+      el('div', { class: 'profile-header' },
+        el('div', { class: 'profile-header-top' },
+          el('h2', {}, '🗑 Trash'),
+          closeBtn
+        ),
+        el('div', { class: 'profile-contact muted' },
+          totalCount + ' record' + (totalCount === 1 ? '' : 's') + ' deleted in the last 30 days. Click Restore to recover; Purge to permanently remove.')
+      ),
+      buildSection('Leads', 'leads', r.leads, [
+        { label: 'Name',  cell: x => x.name  || '—' },
+        { label: 'Phone', cell: x => x.phone || '—' },
+        { label: 'Email', cell: x => x.email || '—' }
+      ]),
+      buildSection('Contacts', 'contacts', r.contacts, [
+        { label: 'Name',  cell: x => x.name  || '—' },
+        { label: 'Phone', cell: x => x.phone || '—' },
+        { label: 'Email', cell: x => x.email || '—' }
+      ]),
+      buildSection('Bookings', 'bookings', r.bookings, [
+        { label: 'Name',    cell: x => x.lead_name || '—' },
+        { label: 'Service', cell: x => x.service   || '—' },
+        { label: 'When',    cell: x => x.starts_at ? new Date(x.starts_at).toLocaleString() : '—' }
+      ]),
+      el('div', { class: 'profile-done-bar' },
+        el('button', { class: 'btn primary profile-done-btn', type: 'button',
+          onclick: closeTrash, ontouchend: closeTrash }, 'Done'))
+    );
+  }
+  await refresh();
+}
+
 function card(label, value, sub, cls = '') {
   return el('div', { class: 'card ' + cls },
     el('div', { class: 'label' }, label),
@@ -4430,6 +4556,10 @@ async function viewAdmin() {
   } }, 'Sync Tabs to All Tenants');
   migPanel.appendChild(tabsBtn);
   migPanel.appendChild(tabsOut);
+
+  // Open the cross-tenant Trash view (soft-deleted records, last 30 days).
+  const trashBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: () => openTrashView() }, '🗑 View Trash (30d)');
+  migPanel.appendChild(trashBtn);
   wrap.appendChild(migPanel);
 
   // ----- Twilio Reserve (platform-wide accounting) -----

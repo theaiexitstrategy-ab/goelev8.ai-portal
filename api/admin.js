@@ -472,8 +472,16 @@ async function dedupeLeads(req, res) {
           .in('lead_id', dupeIds)
           .then(() => {}, () => {}); // tolerant of missing tables
       }
-      const { error: delErr } = await supabaseAdmin
-        .from('leads').delete().in('id', dupeIds);
+      // Soft-delete the duplicates so they're recoverable from Trash
+      // for 30 days. Falls back to hard delete on pre-0024 schemas.
+      let delErr;
+      ({ error: delErr } = await supabaseAdmin
+        .from('leads').update({ deleted_at: new Date().toISOString() })
+        .in('id', dupeIds));
+      if (delErr && /column .*deleted_at.* does not exist/i.test(delErr.message)) {
+        const retry = await supabaseAdmin.from('leads').delete().in('id', dupeIds);
+        delErr = retry.error;
+      }
       if (!delErr) {
         clientMerged++;
         clientDeleted += dupes.length;
@@ -500,6 +508,71 @@ async function dedupeLeads(req, res) {
 // tabs to each tenant's existing list (never removes tabs an operator
 // has explicitly hidden). Use this after shipping a new tab to push
 // it across every tenant in one click.
+// Trash endpoints — soft-deleted records within the 30-day recovery
+// window. Cross-tenant for the platform admin; the per-tenant Trash
+// view in the portal UI scopes via ctx.clientId.
+const TRASH_TABLES = {
+  leads:    { cols: 'id, client_id, name, phone, email, source, created_at, deleted_at' },
+  contacts: { cols: 'id, client_id, name, phone, email, source, created_at, deleted_at' },
+  bookings: { cols: 'id, client_id, lead_name, phone, email, service, starts_at, status, created_at, deleted_at' }
+};
+
+async function listTrash(req, res, ctx) {
+  const url = new URL(req.url, 'http://x');
+  const cutoff = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
+  const out = {};
+  for (const [table, def] of Object.entries(TRASH_TABLES)) {
+    const r = await supabaseAdmin.from(table).select(def.cols)
+      .not('deleted_at', 'is', null)
+      .gte('deleted_at', cutoff)
+      .order('deleted_at', { ascending: false })
+      .limit(500);
+    if (r.error && /column .*deleted_at.* does not exist/i.test(r.error.message)) {
+      out[table] = [];
+      continue;
+    }
+    if (r.error) {
+      out[table] = { error: r.error.message };
+      continue;
+    }
+    out[table] = r.data || [];
+  }
+  // Resolve client names so the UI can label each row.
+  const ids = new Set();
+  for (const t of Object.values(out)) {
+    if (Array.isArray(t)) for (const r of t) if (r.client_id) ids.add(r.client_id);
+  }
+  let clientNames = {};
+  if (ids.size) {
+    const { data: cs } = await supabaseAdmin
+      .from('clients').select('id, name, business_name').in('id', [...ids]);
+    for (const c of cs || []) clientNames[c.id] = c.business_name || c.name;
+  }
+  return res.status(200).json({
+    cutoff_iso: cutoff,
+    leads:    Array.isArray(out.leads)    ? out.leads    : [],
+    contacts: Array.isArray(out.contacts) ? out.contacts : [],
+    bookings: Array.isArray(out.bookings) ? out.bookings : [],
+    client_names: clientNames
+  });
+}
+
+async function restoreTrashRecord(req, res) {
+  const body = await readJson(req);
+  const { type, id, permanent } = body || {};
+  if (!type || !id) return res.status(400).json({ error: 'type_and_id_required' });
+  if (!TRASH_TABLES[type]) return res.status(400).json({ error: 'invalid_type' });
+  if (permanent === true) {
+    const { error } = await supabaseAdmin.from(type).delete().eq('id', id);
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(200).json({ ok: true, action: 'permanently_deleted' });
+  }
+  const { error } = await supabaseAdmin.from(type)
+    .update({ deleted_at: null }).eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  return res.status(200).json({ ok: true, action: 'restored' });
+}
+
 async function ensurePortalTabs(req, res) {
   const STANDARD_TABS = [
     'overview', 'leads', 'messages', 'contacts', 'blasts',
@@ -643,7 +716,15 @@ async function applyPendingMigrations(req, res) {
     `CREATE INDEX IF NOT EXISTS contacts_tags_gin    ON public.contacts   USING gin(tags);`,
     `CREATE INDEX IF NOT EXISTS leads_tags_gin_idx   ON public.leads      USING gin(tags);`,
     `CREATE INDEX IF NOT EXISTS bookings_paid_at_idx ON public.bookings(client_id, paid_at) WHERE paid_at IS NOT NULL;`,
-    `CREATE INDEX IF NOT EXISTS leads_paid_at_idx    ON public.leads(client_id, paid_at)    WHERE paid_at IS NOT NULL;`
+    `CREATE INDEX IF NOT EXISTS leads_paid_at_idx    ON public.leads(client_id, paid_at)    WHERE paid_at IS NOT NULL;`,
+
+    // ----- 0024: soft-delete recovery -----
+    `ALTER TABLE public.leads    ADD COLUMN IF NOT EXISTS deleted_at timestamptz;`,
+    `ALTER TABLE public.contacts ADD COLUMN IF NOT EXISTS deleted_at timestamptz;`,
+    `ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS deleted_at timestamptz;`,
+    `CREATE INDEX IF NOT EXISTS leads_deleted_at_idx    ON public.leads(client_id, deleted_at)    WHERE deleted_at IS NOT NULL;`,
+    `CREATE INDEX IF NOT EXISTS contacts_deleted_at_idx ON public.contacts(client_id, deleted_at) WHERE deleted_at IS NOT NULL;`,
+    `CREATE INDEX IF NOT EXISTS bookings_deleted_at_idx ON public.bookings(client_id, deleted_at) WHERE deleted_at IS NOT NULL;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
@@ -812,6 +893,8 @@ export default async function handler(req, res) {
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
+      case 'trash':                     return await listTrash(req, res, ctx);
+      case 'restore-record':            return await restoreTrashRecord(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
       case 'activity-feed':  return await activityFeed(req, res);
       case 'analytics':      return await analytics(req, res);

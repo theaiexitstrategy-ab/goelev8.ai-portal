@@ -31,9 +31,16 @@ async function handleContacts(req, res, ctx) {
   const { sb, clientId } = ctx;
 
   if (req.method === 'GET') {
-    const { data, error } = await sb
-      .from('contacts').select('*').eq('client_id', clientId)
+    // Soft-deleted rows hidden from the default list (recoverable via
+    // Trash). Tolerant if the deleted_at column hasn't migrated yet.
+    let { data, error } = await sb
+      .from('contacts').select('*').eq('client_id', clientId).is('deleted_at', null)
       .order('created_at', { ascending: false });
+    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
+      const retry = await sb.from('contacts').select('*').eq('client_id', clientId)
+        .order('created_at', { ascending: false });
+      data = retry.data; error = retry.error;
+    }
     if (error) return res.status(500).json({ error: error.message });
     return res.status(200).json({ contacts: data });
   }
@@ -65,12 +72,18 @@ async function handleContacts(req, res, ctx) {
     const body = await readJson(req);
     const ids = Array.isArray(body.ids) ? body.ids : (body.id ? [body.id] : []);
     if (!ids.length) return res.status(400).json({ error: 'id_or_ids_required' });
-    // Defense in depth: scope by client_id even with service-role sb so a
-    // crafted payload can't reach across tenants during admin impersonation.
-    const { error } = await sb.from('contacts').delete()
+    // Soft-delete + tenant-scoped to keep cross-tenant deletes
+    // impossible. Falls back to hard-delete only on pre-0024 schemas.
+    let { error } = await sb.from('contacts')
+      .update({ deleted_at: new Date().toISOString() })
       .in('id', ids).eq('client_id', clientId);
+    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
+      const retry = await sb.from('contacts').delete()
+        .in('id', ids).eq('client_id', clientId);
+      error = retry.error;
+    }
     if (error) return res.status(400).json({ error: error.message });
-    return res.status(200).json({ ok: true, deleted: ids.length });
+    return res.status(200).json({ ok: true, deleted: ids.length, soft_deleted: true });
   }
   return res.status(405).json({ error: 'method_not_allowed' });
 }
@@ -79,9 +92,15 @@ async function handleBookings(req, res, ctx) {
   const { sb, clientId } = ctx;
 
   if (req.method === 'GET') {
-    const { data, error } = await sb
+    let { data, error } = await sb
       .from('bookings').select('*, contacts(name, phone)')
-      .eq('client_id', clientId).order('starts_at', { ascending: true });
+      .eq('client_id', clientId).is('deleted_at', null)
+      .order('starts_at', { ascending: true });
+    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
+      const retry = await sb.from('bookings').select('*, contacts(name, phone)')
+        .eq('client_id', clientId).order('starts_at', { ascending: true });
+      data = retry.data; error = retry.error;
+    }
     if (error) return res.status(500).json({ error: error.message });
     return res.status(200).json({ bookings: data });
   }
@@ -106,9 +125,14 @@ async function handleBookings(req, res, ctx) {
   }
   if (req.method === 'DELETE') {
     const { id } = await readJson(req);
-    const { error } = await sb.from('bookings').delete().eq('id', id);
+    let { error } = await sb.from('bookings')
+      .update({ deleted_at: new Date().toISOString() }).eq('id', id);
+    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
+      const retry = await sb.from('bookings').delete().eq('id', id);
+      error = retry.error;
+    }
     if (error) return res.status(400).json({ error: error.message });
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, soft_deleted: true });
   }
   return res.status(405).json({ error: 'method_not_allowed' });
 }
@@ -119,22 +143,31 @@ async function handleLeads(req, res, ctx) {
   if (req.method === 'GET') {
     const url = new URL(req.url, 'http://x');
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
-    let { data, error } = await sb
-      .from('leads')
+    // Build the query with the soft-delete + paid_at filters; retry
+    // with progressively leaner column sets if either migration hasn't
+    // been applied yet.
+    let q = sb.from('leads')
       .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at')
       .eq('client_id', clientId)
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(limit);
-    // Fall back if migration 0023 hasn't been applied (paid_at column missing).
+    let { data, error } = await q;
+    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
+      const retry = await sb.from('leads')
+        .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      data = retry.data; error = retry.error;
+    }
     if (error && /column .*paid_at.* does not exist/i.test(error.message)) {
-      const retry = await sb
-        .from('leads')
+      const retry = await sb.from('leads')
         .select('id, name, phone, email, source, status, notes, tags, funnel, created_at')
         .eq('client_id', clientId)
         .order('created_at', { ascending: false })
         .limit(limit);
-      data = retry.data;
-      error = retry.error;
+      data = retry.data; error = retry.error;
     }
     if (error) return res.status(500).json({ error: error.message });
 
@@ -229,14 +262,28 @@ async function handleLeads(req, res, ctx) {
   if (req.method === 'DELETE') {
     const { id } = await readJson(req);
     if (!id) return res.status(400).json({ error: 'id_required' });
-    // Nullify lead_id in related tables to avoid FK constraint errors
-    await sb.from('bookings').update({ lead_id: null }).eq('lead_id', id);
-    await sb.from('vapi_calls').update({ lead_id: null }).eq('lead_id', id);
-    await sb.from('messages').update({ lead_id: null }).eq('lead_id', id);
-    await sb.from('nudge_queue').update({ lead_id: null }).eq('lead_id', id);
-    const { error } = await sb.from('leads').delete().eq('id', id);
+    // Soft-delete with 30-day recovery window. Pending nudges still get
+    // cancelled so a deleted lead doesn't keep getting drips. FK rows
+    // (bookings, calls, messages) keep their lead_id so a Restore
+    // re-attaches them automatically.
+    await sb.from('nudge_queue')
+      .update({ failed_reason: 'lead_deleted' })
+      .eq('lead_id', id)
+      .is('sent_at', null)
+      .is('failed_reason', null);
+    let { error } = await sb.from('leads')
+      .update({ deleted_at: new Date().toISOString() }).eq('id', id);
+    if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
+      // Pre-0024 schema: hard delete fallback. Nullify FK refs first.
+      await sb.from('bookings').update({ lead_id: null }).eq('lead_id', id);
+      await sb.from('vapi_calls').update({ lead_id: null }).eq('lead_id', id);
+      await sb.from('messages').update({ lead_id: null }).eq('lead_id', id);
+      await sb.from('nudge_queue').update({ lead_id: null }).eq('lead_id', id);
+      const retry = await sb.from('leads').delete().eq('id', id);
+      error = retry.error;
+    }
     if (error) return res.status(400).json({ error: error.message });
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, soft_deleted: true });
   }
   return res.status(405).json({ error: 'method_not_allowed' });
 }
