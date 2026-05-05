@@ -79,6 +79,11 @@ html, body {
   font-feature-settings: "cv11", "ss01", "ss03";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Hard guarantee: the viewport itself never scrolls horizontally.
+     Anything wider than the viewport gets clipped instead of inducing
+     a horizontal scrollbar. */
+  overflow-x: hidden;
+  max-width: 100vw;
   min-height: 100vh;
   letter-spacing: -0.01em;
 }
@@ -1434,22 +1439,46 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .client-card-actions .btn { flex: 1; min-width: fit-content; }
 
-/* Horizontal scroll wrapper so the full admin table (including the
-   actions column with GA4/Stripe/credit inputs) stays reachable. */
+/* Admin table — no forced side-scroll. Cells wrap, the actions column
+   stays full-width and stacks its inputs. */
 .admin-table-scroller {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  margin: 0 -4px; /* bleed so scrollbar doesn't hug the panel edge */
+  overflow-x: visible;
+  margin: 0;
 }
 .admin-table-scroller .admin-table {
-  min-width: 960px; /* forces side-scroll until every column fits */
+  width: 100%;
+  table-layout: auto;
 }
-.admin-table-scroller::-webkit-scrollbar { height: 8px; }
-.admin-table-scroller::-webkit-scrollbar-thumb {
-  background: var(--border, #2a3a5c); border-radius: 4px;
+.admin-table-scroller .admin-table th,
+.admin-table-scroller .admin-table td {
+  word-break: break-word;
+  white-space: normal;
 }
-.admin-table-scroller::-webkit-scrollbar-thumb:hover {
-  background: var(--brand-1, #00CFFF);
+/* Inputs inside the actions cell take full width on small screens so
+   they sit on their own row instead of forcing the column wider. */
+.admin-table-scroller .admin-table .actions {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.admin-table-scroller .admin-table .actions input {
+  min-width: 0;
+  max-width: 100%;
+}
+@media (max-width: 700px) {
+  .admin-table-scroller .admin-table thead { display: none; }
+  .admin-table-scroller .admin-table,
+  .admin-table-scroller .admin-table tbody,
+  .admin-table-scroller .admin-table tr,
+  .admin-table-scroller .admin-table td { display: block; width: 100%; }
+  .admin-table-scroller .admin-table tr {
+    border: 1px solid var(--border, #2a3a5c);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    padding: 10px;
+  }
+  .admin-table-scroller .admin-table td {
+    border: none;
+    padding: 6px 0;
+  }
 }
 
 /* ============================================================
@@ -1804,10 +1833,32 @@ tbody tr:last-child td { border-bottom: none; }
   .btn { padding: 12px 18px; font-size: 14px; min-height: 44px; }
   .btn.sm { padding: 8px 12px; font-size: 12px; min-height: 0; }
 
-  /* Tables — horizontal scroll */
-  .panel { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  table { min-width: 560px; font-size: 13px; }
-  th, td { padding: 10px 10px; }
+  /* Tables — collapse to stacked-card layout on mobile so cells wrap
+     and the page never side-scrolls. Each row becomes a vertical card
+     with the column header inline as a label. */
+  .panel { overflow-x: visible; }
+  table {
+    width: 100%; min-width: 0; font-size: 13px;
+    table-layout: auto; word-break: break-word;
+  }
+  th, td { padding: 8px 8px; white-space: normal; }
+  /* Stacked-row layout for any plain table inside a panel. The
+     admin-table-scroller has its own override above; this catches the
+     leads / contacts / bookings / messages tables. */
+  .panel > table thead { display: none; }
+  .panel > table,
+  .panel > table tbody,
+  .panel > table tr,
+  .panel > table td { display: block; width: 100%; }
+  .panel > table tr {
+    border: 1px solid var(--border, #2a3a5c);
+    border-radius: 8px;
+    margin-bottom: 10px;
+    padding: 10px 12px;
+  }
+  .panel > table td {
+    border: none; padding: 4px 0;
+  }
 
   /* Chat — mobile slide layout. The list and the chat pane each take
      the full viewport width and we toggle between them with the
@@ -2284,7 +2335,11 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
 .feed-time { font-size: 11px; }
 
 /* Leads */
-.filter-bar { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 12px; }
+.filter-bar {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 4px 0 12px;
+  /* Wraps onto multiple rows instead of forcing a sideways scroll. */
+}
 .chip {
   padding: 6px 14px;
   border-radius: 999px;
@@ -3068,14 +3123,16 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
    ARTIST CONVERSION PIPELINE (Part 4)
    ============================================================ */
 .pipeline {
-  display: flex;
+  /* Pipeline stages wrap to a grid instead of forcing horizontal scroll.
+     Auto-fit means as many stages as fit on a row at ≥200px each, then
+     the next row picks up. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
-  overflow-x: auto;
   padding-bottom: 8px;
-  -webkit-overflow-scrolling: touch;
 }
 .pipeline-stage {
-  min-width: 200px;
+  min-width: 0;
   flex: 1;
   background: var(--bg-glass);
   border: 1px solid var(--border);
