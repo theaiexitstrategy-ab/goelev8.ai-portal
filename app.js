@@ -5124,6 +5124,46 @@ async function viewAdmin() {
     } catch (err) { toast('Backfill failed: ' + err.message, true); }
   } }, 'Rebuild from history');
   reservePanel.appendChild(backfillBtn);
+
+  // Diagnose & repair — checks every piece of the reserve plumbing
+  // (column / table / function / trigger / RPC / cost setting / row
+  // counts), reports what's broken, and on confirmation re-creates
+  // the missing pieces idempotently + backfills.
+  const diagOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.35);padding:12px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:320px;margin-top:10px' });
+  const diagBtn = el('button', { class: 'btn sm', style: 'margin-top:12px;margin-left:8px', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Diagnosing…';
+    try {
+      const d = await api('/api/admin?action=twilio-reserve-diagnose');
+      diagOut.style.display = 'block';
+      diagOut.textContent = JSON.stringify(d, null, 2);
+      const broken = [
+        !d.checks.column_clients_twilio_reserve_cents && 'column missing',
+        !d.checks.table_twilio_reserves && 'reserve table missing',
+        !d.checks.fn_debit_twilio_reserve_on_sms && 'trigger function missing',
+        !d.checks.trigger_credit_ledger_debit_reserve && 'trigger missing',
+        !d.checks.fn_adjust_twilio_reserve && 'adjust RPC missing'
+      ].filter(Boolean);
+      if (broken.length) {
+        if (confirm('Twilio reserve is broken: ' + broken.join(', ') + '.\n\nRepair now? This re-creates the missing DB pieces (idempotent) and backfills the reserve from credit_ledger history.')) {
+          e.currentTarget.textContent = 'Repairing…';
+          const r = await api('/api/admin?action=twilio-reserve-diagnose', { method: 'POST' });
+          diagOut.textContent = JSON.stringify(r, null, 2);
+          toast('Repair complete: ' + (r.diagnosis || 'see details below'));
+          render();
+        }
+      } else {
+        toast(d.diagnosis);
+      }
+    } catch (err) { toast('Diagnose failed: ' + err.message, true); }
+    finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = '🩺 Diagnose & Repair';
+    }
+  } }, '🩺 Diagnose & Repair');
+  reservePanel.appendChild(diagBtn);
+  reservePanel.appendChild(diagOut);
+
   wrap.appendChild(reservePanel);
 
   // Load reserve data

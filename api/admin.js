@@ -608,6 +608,184 @@ async function ensurePortalTabs(req, res) {
 // session-scope setting via ALTER DATABASE so the value persists across
 // connections and is readable inside the trigger function via
 // current_setting('app.twilio_cost_cents').
+// One-shot diagnose+repair for the Twilio Reserve setup. Reports what's
+// broken (column missing, trigger missing, function missing, no cost
+// setting, no reserve rows), then optionally re-applies the migration
+// + backfills from ledger history. Returns a structured JSON so the
+// operator can see exactly what was wrong.
+//
+// GET  → diagnose only
+// POST → diagnose + repair (re-create function/trigger, set cost if
+//        unset, backfill from ledger)
+async function twilioReserveDiagnose(req, res) {
+  const token = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!token) return res.status(400).json({ error: 'SUPABASE_ACCESS_TOKEN not set in Vercel env' });
+  let projectRef = null;
+  try { projectRef = new URL(process.env.SUPABASE_URL || '').host.split('.')[0]; } catch {}
+  if (!projectRef) return res.status(400).json({ error: 'invalid SUPABASE_URL' });
+  const sqlUrl = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
+
+  const runSql = async (query) => {
+    const r = await fetch(sqlUrl, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+    const text = await r.text();
+    let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
+    return { ok: r.ok, status: r.status, data: parsed };
+  };
+
+  const checks = {};
+
+  // 1. Column exists?
+  const colRes = await runSql(`SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'clients' AND column_name = 'twilio_reserve_cents'
+  ) AS exists`);
+  checks.column_clients_twilio_reserve_cents = colRes.data?.[0]?.exists === true;
+
+  // 2. Reserve ledger table exists?
+  const tblRes = await runSql(`SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'twilio_reserves'
+  ) AS exists`);
+  checks.table_twilio_reserves = tblRes.data?.[0]?.exists === true;
+
+  // 3. Trigger function exists?
+  const funcRes = await runSql(`SELECT EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'debit_twilio_reserve_on_sms'
+  ) AS exists`);
+  checks.fn_debit_twilio_reserve_on_sms = funcRes.data?.[0]?.exists === true;
+
+  // 4. Trigger installed?
+  const trigRes = await runSql(`SELECT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'credit_ledger_debit_reserve' AND NOT tgisinternal
+  ) AS exists`);
+  checks.trigger_credit_ledger_debit_reserve = trigRes.data?.[0]?.exists === true;
+
+  // 5. adjust_twilio_reserve RPC exists?
+  const rpcRes = await runSql(`SELECT EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'adjust_twilio_reserve'
+  ) AS exists`);
+  checks.fn_adjust_twilio_reserve = rpcRes.data?.[0]?.exists === true;
+
+  // 6. Cost setting
+  const costRes = await runSql(`SELECT current_setting('app.twilio_cost_cents', true) AS cents`);
+  const costStr = costRes.data?.[0]?.cents;
+  checks.cost_setting_cents = costStr ? parseInt(costStr, 10) : null;
+
+  // 7. Counts
+  let ledgerEligible = 0, reserveRows = 0, balanceTotal = 0;
+  if (checks.column_clients_twilio_reserve_cents) {
+    const balRes = await runSql(`SELECT COALESCE(SUM(twilio_reserve_cents), 0)::bigint AS total FROM public.clients`);
+    balanceTotal = Number(balRes.data?.[0]?.total || 0);
+  }
+  if (checks.table_twilio_reserves) {
+    const rrRes = await runSql(`SELECT COUNT(*)::int AS n FROM public.twilio_reserves`);
+    reserveRows = Number(rrRes.data?.[0]?.n || 0);
+  }
+  const leRes = await runSql(`SELECT COUNT(*)::int AS n FROM public.credit_ledger
+    WHERE delta < 0 AND reason IN ('sms_send','sms_blast','welcome_sms','nudge_send','islay_sms')`);
+  ledgerEligible = Number(leRes.data?.[0]?.n || 0);
+  checks.eligible_sms_ledger_rows = ledgerEligible;
+  checks.twilio_reserves_rows = reserveRows;
+  checks.total_reserve_balance_cents = balanceTotal;
+
+  // Repair path (POST)
+  let repairs = [];
+  if (req.method === 'POST') {
+    // Re-create column / table / function / trigger / RPC. Idempotent
+    // (uses CREATE OR REPLACE / IF NOT EXISTS).
+    const repairStatements = [
+      [`ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS twilio_reserve_cents bigint NOT NULL DEFAULT 0;`, 'add column'],
+      [`CREATE TABLE IF NOT EXISTS public.twilio_reserves (
+         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+         client_id uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+         delta_cents bigint NOT NULL,
+         reason text NOT NULL,
+         ref_id text, pack text, segments integer, amount_cents integer,
+         created_at timestamptz NOT NULL DEFAULT now()
+       );`, 'create reserve table'],
+      [`CREATE INDEX IF NOT EXISTS twilio_reserves_client_idx ON public.twilio_reserves(client_id, created_at DESC);`, 'create index'],
+      [`CREATE OR REPLACE FUNCTION public.debit_twilio_reserve_on_sms()
+        RETURNS trigger LANGUAGE plpgsql AS $repair_fn$
+        DECLARE v_per_segment_cents int; v_segments int; v_cost int;
+        BEGIN
+          IF NEW.delta < 0 AND NEW.reason IN ('sms_send','sms_blast','welcome_sms','nudge_send','islay_sms') THEN
+            v_segments := -NEW.delta;
+            BEGIN
+              v_per_segment_cents := COALESCE(NULLIF(current_setting('app.twilio_cost_cents', true), '')::int, 1);
+            EXCEPTION WHEN others THEN v_per_segment_cents := 1; END;
+            v_cost := v_segments * v_per_segment_cents;
+            UPDATE public.clients SET twilio_reserve_cents = COALESCE(twilio_reserve_cents, 0) - v_cost WHERE id = NEW.client_id;
+            INSERT INTO public.twilio_reserves (client_id, delta_cents, reason, ref_id, segments)
+            VALUES (NEW.client_id, -v_cost, NEW.reason, NEW.ref_id, v_segments);
+          END IF;
+          RETURN NEW;
+        END;
+        $repair_fn$;`, 'create debit function'],
+      [`DROP TRIGGER IF EXISTS credit_ledger_debit_reserve ON public.credit_ledger;`, 'drop old trigger'],
+      [`CREATE TRIGGER credit_ledger_debit_reserve
+        AFTER INSERT ON public.credit_ledger
+        FOR EACH ROW EXECUTE FUNCTION public.debit_twilio_reserve_on_sms();`, 'create trigger'],
+      [`CREATE OR REPLACE FUNCTION public.adjust_twilio_reserve(
+         p_client_id uuid, p_delta_cents bigint, p_reason text,
+         p_ref_id text DEFAULT NULL, p_pack text DEFAULT NULL,
+         p_segments integer DEFAULT NULL, p_amount_cents integer DEFAULT NULL
+        ) RETURNS bigint LANGUAGE plpgsql AS $repair_rpc$
+        DECLARE v_new_balance bigint;
+        BEGIN
+          UPDATE public.clients SET twilio_reserve_cents = COALESCE(twilio_reserve_cents, 0) + p_delta_cents
+            WHERE id = p_client_id RETURNING twilio_reserve_cents INTO v_new_balance;
+          INSERT INTO public.twilio_reserves (client_id, delta_cents, reason, ref_id, pack, segments, amount_cents)
+            VALUES (p_client_id, p_delta_cents, p_reason, p_ref_id, p_pack, p_segments, p_amount_cents);
+          RETURN v_new_balance;
+        END;
+        $repair_rpc$;`, 'create adjust rpc']
+    ];
+    // Initialize cost if missing — use the env fallback, default 1.
+    if (checks.cost_setting_cents == null) {
+      const envCost = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10) || 1;
+      repairStatements.push([`ALTER DATABASE postgres SET app.twilio_cost_cents = '${envCost}';`, 'set cost setting']);
+    }
+    for (const [sql, label] of repairStatements) {
+      const r = await runSql(sql);
+      repairs.push({ step: label, ok: r.ok, error: r.ok ? null : (typeof r.data === 'string' ? r.data.slice(0, 200) : r.data?.message) });
+    }
+
+    // Backfill from credit_ledger history so historical purchases /
+    // sends are reflected in the reserve balance.
+    let backfillResult = null;
+    try {
+      const r = await fetch(
+        `${process.env.PORTAL_BASE_URL || ''}/api/admin?action=backfill-twilio-reserve`,
+        { method: 'POST', headers: { 'authorization': req.headers.authorization || '' } }
+      );
+      backfillResult = await r.json().catch(() => ({}));
+    } catch (e) { backfillResult = { error: e.message }; }
+    repairs.push({ step: 'backfill from ledger', ok: !backfillResult?.error, result: backfillResult });
+  }
+
+  return res.status(200).json({
+    project_ref: projectRef,
+    checks,
+    repairs: req.method === 'POST' ? repairs : undefined,
+    diagnosis: (() => {
+      if (!checks.column_clients_twilio_reserve_cents) return 'Migration 0022 has not been applied — clients.twilio_reserve_cents is missing. Run repair (POST) or click "Run Pending Migrations".';
+      if (!checks.trigger_credit_ledger_debit_reserve)  return 'Trigger missing — SMS sends are not debiting the reserve. Run repair.';
+      if (!checks.fn_debit_twilio_reserve_on_sms)       return 'Trigger function missing — run repair.';
+      if (checks.cost_setting_cents == null)             return 'Cost setting unset — defaulting to 1¢/segment via fallback. Save a value in the Twilio Reserve panel to persist it in the DB.';
+      if (reserveRows === 0 && ledgerEligible > 0)      return 'Setup looks correct but no reserve rows exist yet — click "Rebuild from history" to backfill from credit_ledger.';
+      if (balanceTotal === 0 && reserveRows > 0)        return 'Reserve has rows but balance sums to 0 — credits and debits exactly offset (which is unusual). Try Rebuild from history.';
+      return 'Looks healthy.';
+    })()
+  });
+}
+
 async function twilioCostSetting(req, res) {
   const token = process.env.SUPABASE_ACCESS_TOKEN;
   if (!token) return res.status(400).json({ error: 'SUPABASE_ACCESS_TOKEN not set in Vercel env' });
@@ -733,7 +911,7 @@ async function applyPendingMigrations(req, res) {
        THEN
          v_segments := -NEW.delta;
          BEGIN
-           v_per_segment_cents := COALESCE(current_setting('app.twilio_cost_cents', true)::int, 1);
+           v_per_segment_cents := COALESCE(NULLIF(current_setting('app.twilio_cost_cents', true), '')::int, 1);
          EXCEPTION WHEN others THEN
            v_per_segment_cents := 1;
          END;
@@ -1018,6 +1196,7 @@ export default async function handler(req, res) {
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'twilio-cost':              return await twilioCostSetting(req, res);
+      case 'twilio-reserve-diagnose':  return await twilioReserveDiagnose(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
