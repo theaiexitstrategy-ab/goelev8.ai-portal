@@ -222,9 +222,16 @@ export default async function handler(req, res) {
   // Top sources reshaped to {source, count} for the branded bar chart.
   const bySource = topSources.map(s => ({ source: s.source, count: s.count }));
 
-  // Activity counts the SPA's "Tenant Activity" panel surfaces — these
-  // replace the old GA4 custom-event panel which always showed 0 for
-  // tenant-scoped GA4 properties.
+  // Tenant Activity uses ROLLING 30-day windows — the queries above
+  // already filter `created_at >= thirtyDaysAgo`, so .length on each
+  // collection is the right "last 30 days" count. The previous numbers
+  // were keyed off monthStart, so on the 5th of the month they reset
+  // to ~5 days of data and looked alarmingly low.
+  const leads30d    = leads.length;        // already deduped + soft-delete filtered
+  const bookings30d = bookings.length;
+  const sms30d      = messages.length;     // outbound only (filtered above)
+  const calls30d    = calls.length;
+  // Keep the "this month" numbers too so legacy callers still work.
   const smsThisMonth = messages.filter(m =>
     new Date(m.created_at) >= monthStart).length;
   const callsThisMonth = calls.filter(c =>
@@ -238,7 +245,12 @@ export default async function handler(req, res) {
       bookings_this_month: bookingsThisMonth,
       revenue_this_month: revenueThisMonth,
       sms_sent: smsThisMonth,
-      calls_this_month: callsThisMonth
+      calls_this_month: callsThisMonth,
+      // Rolling 30-day counts the new Tenant Activity panel uses.
+      leads_30d: leads30d,
+      bookings_30d: bookings30d,
+      sms_30d: sms30d,
+      calls_30d: calls30d
     },
     leads_by_day: leadsByDay,
     sales_by_day: salesByDay,

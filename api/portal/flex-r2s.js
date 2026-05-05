@@ -50,6 +50,23 @@ async function runReport(propertyId, body) {
   return res.json();
 }
 
+// GA4's standard Data API has a 24–48 hour processing delay. The
+// runRealtimeReport endpoint is near-instant (≤5 minute lag) but
+// only covers the last 30 minutes of activity. We hit both: the
+// historical report for the 30-day total, the realtime one for
+// "right now" so a fresh visit shows up immediately.
+async function runRealtimeReport(propertyId, body) {
+  const token = await getAccessToken();
+  const url = `${GA4_BASE}/properties/${propertyId}:runRealtimeReport`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`GA4 Realtime API ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 // pagePath filter matching ONLY /r2s and /r2s/ exactly. The previous
 // version included a BEGINS_WITH '/r2s' rule, which also caught
 // /r2s-thanks, /r2s-checkout, /r2s-promo etc. — inflating the page-view
@@ -97,7 +114,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [overview, sources, events, byDay] = await Promise.all([
+    const [overview, sources, events, byDay, realtime] = await Promise.all([
       // 1. Overview metrics for /r2s
       runReport(propertyId, {
         dateRanges: [{ startDate: '30daysAgo', endDate: 'today' }],
@@ -147,7 +164,14 @@ export default async function handler(req, res) {
         metrics: [{ name: 'screenPageViews' }, { name: 'totalUsers' }],
         dimensionFilter: PATH_FILTER,
         orderBys: [{ dimension: { dimensionName: 'date' } }]
-      })
+      }),
+      // 5. Realtime — last 30 minutes. Bypasses the 24-48h processing
+      // delay so a fresh visit shows up in seconds. Soft-fails so a
+      // realtime API hiccup never breaks the historical report.
+      runRealtimeReport(propertyId, {
+        metrics: [{ name: 'activeUsers' }, { name: 'screenPageViews' }],
+        dimensionFilter: PATH_FILTER
+      }).catch(() => null)
     ]);
 
     const ov = overview.rows?.[0]?.metricValues || [];
@@ -179,6 +203,12 @@ export default async function handler(req, res) {
       };
     }
 
+    // Parse the realtime response: a single row whose metric values are
+    // the active users + page views in the last 30 minutes.
+    const rtRow = realtime?.rows?.[0]?.metricValues || [];
+    const realtime_active_users  = parseInt(rtRow[0]?.value || '0', 10);
+    const realtime_page_views_30m = parseInt(rtRow[1]?.value || '0', 10);
+
     return res.status(200).json({
       configured: true,
       property_id: propertyId,
@@ -191,7 +221,16 @@ export default async function handler(req, res) {
       bounce_rate,
       top_sources,
       conversions,
-      by_day
+      by_day,
+      // Near-real-time (≤5 minute lag) — surfaces visits the historical
+      // 30-day report won't show until tomorrow.
+      realtime: {
+        active_users: realtime_active_users,
+        page_views_last_30_min: realtime_page_views_30m,
+        as_of: new Date().toISOString()
+      },
+      // Operator-visible note about the historical 30-day numbers.
+      historical_note: 'Standard GA4 reports update once per day (24–48h delay). Realtime numbers above show the last 30 minutes.'
     });
   } catch (e) {
     return res.status(200).json({

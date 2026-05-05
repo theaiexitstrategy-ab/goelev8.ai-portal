@@ -5369,10 +5369,13 @@ async function viewAnalytics() {
 
   api('/api/portal/analytics').then(an => {
     activityCards.innerHTML = '';
-    activityCards.appendChild(card('🔥', 'Leads Captured',  an.overview?.total_leads ?? 0,        'this month'));
-    activityCards.appendChild(card('📅', 'Bookings Made',    an.overview?.bookings_this_month ?? 0, 'this month'));
-    activityCards.appendChild(card('💬', 'Outbound SMS',     an.overview?.sms_sent ?? 0,           'this month'));
-    activityCards.appendChild(card('📞', 'Voice Calls',      an.overview?.calls_this_month ?? 0,    'this month'));
+    // Use the rolling 30-day counts so the panel label matches the data.
+    // Falls back to the legacy "this month" fields if the API hasn't
+    // been redeployed yet.
+    activityCards.appendChild(card('🔥', 'Leads Captured', an.overview?.leads_30d    ?? an.overview?.total_leads        ?? 0, 'last 30 days'));
+    activityCards.appendChild(card('📅', 'Bookings Made',  an.overview?.bookings_30d ?? an.overview?.bookings_this_month ?? 0, 'last 30 days'));
+    activityCards.appendChild(card('💬', 'Outbound SMS',   an.overview?.sms_30d      ?? an.overview?.sms_sent            ?? 0, 'last 30 days'));
+    activityCards.appendChild(card('📞', 'Voice Calls',    an.overview?.calls_30d    ?? an.overview?.calls_this_month    ?? 0, 'last 30 days'));
   }).catch(() => {
     activityCards.innerHTML = '';
     activityCards.appendChild(el('div', { class: 'card' },
@@ -5530,6 +5533,22 @@ async function loadR2sAnalyticsSection(container) {
       el('span', { class: 'metric-stat-label' }, 'Conversion Rate')
     )
   ));
+
+  // Live ticker — last 30 minutes, bypasses GA4's 24-48h delay on the
+  // historical numbers so a fresh visit shows up immediately.
+  if (ga4Data?.realtime) {
+    const rt = ga4Data.realtime;
+    container.appendChild(el('div', { class: 'r2s-realtime' },
+      el('span', { class: 'r2s-realtime-dot' }),
+      el('span', {}, 'Live: '),
+      el('strong', {}, String(rt.active_users || 0)),
+      el('span', { class: 'muted' }, ' active now · '),
+      el('strong', {}, String(rt.page_views_last_30_min || 0)),
+      el('span', { class: 'muted' }, ' /r2s view' + (rt.page_views_last_30_min === 1 ? '' : 's') + ' in the last 30 min')
+    ));
+    container.appendChild(el('p', { class: 'muted', style: 'font-size:0.7rem;margin-top:4px' },
+      'Note: the 30-day metrics above update once per day (GA4 standard reporting has a 24–48h delay). The Live ticker is near real-time.'));
+  }
 
   // Sales over time chart
   const salesDays = Object.entries(salesData.by_day || {});
