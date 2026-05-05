@@ -4,7 +4,28 @@
 // to stay under the Vercel 12-function cap while we add /api/admin.
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
+import { supabaseAdmin } from '../../lib/supabase.js';
 import { toE164 } from '../../lib/phone.js';
+
+// Cancel every queued-but-unsent nudge tied to a lead. Called on Mark
+// Paid + Do-Not-Contact / Current-Client / Paid tag transitions so the
+// drip stops the same second the operator clicks the button. Idempotent
+// (already-sent or already-cancelled rows are filtered by the WHERE
+// clause). Tolerant if the nudge_queue table doesn't exist in the
+// current environment.
+async function supabaseAdminNudgeCancel(leadId) {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('nudge_queue')
+      .update({ failed_reason: 'lead_converted_or_blocked' })
+      .eq('lead_id', leadId)
+      .is('sent_at', null)
+      .is('failed_reason', null)
+      .select('id');
+    if (error) return { data: 0 };
+    return { data: (data || []).length };
+  } catch { return { data: 0 }; }
+}
 
 async function handleContacts(req, res, ctx) {
   const { sb, clientId } = ctx;
@@ -122,7 +143,19 @@ async function handleLeads(req, res, ctx) {
     }
     const { data, error } = await sb.from('leads').update(patch).eq('id', id).select().single();
     if (error) return res.status(400).json({ error: error.message });
-    return res.status(200).json({ lead: data });
+
+    // Stop the nudge drip immediately when a lead converts (or gets
+    // tagged Do Not Contact / Current Client / Paid). Cancels every
+    // queued-but-unsent row so they never fire — much faster than
+    // waiting for the cron's defensive guard to skip them one at a time.
+    let cancelled_nudges = 0;
+    const tagsForCheck = Array.isArray(patch.tags) ? patch.tags : (data.tags || []);
+    const blockTag = tagsForCheck.some(t => ['Do Not Contact', 'Current Client', 'Paid'].includes(t));
+    if (mark_paid === true || blockTag) {
+      const { data: cancelled } = await supabaseAdminNudgeCancel(id);
+      cancelled_nudges = cancelled || 0;
+    }
+    return res.status(200).json({ lead: data, cancelled_nudges });
   }
   if (req.method === 'DELETE') {
     const { id } = await readJson(req);

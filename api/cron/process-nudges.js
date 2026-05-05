@@ -80,10 +80,39 @@ export default async function handler(req, res) {
       // Re-check opt-out (a STOP after the row was queued must suppress).
       if (row.contact_id) {
         const { data: c } = await supabaseAdmin
-          .from('contacts').select('opted_out').eq('id', row.contact_id).maybeSingle();
+          .from('contacts').select('opted_out, tags').eq('id', row.contact_id).maybeSingle();
         if (c?.opted_out) {
           await supabaseAdmin.from('nudge_queue')
             .update({ failed_reason: 'opted_out' }).eq('id', row.id);
+          skipped++;
+          continue;
+        }
+        // Tag-based suppression — Do Not Contact + Current Client + Paid
+        // are the canonical "stop bothering this person" signals. Reading
+        // them here means even nudges queued before the tag was applied
+        // get caught.
+        const tagSet = new Set((c?.tags || []).map(t => String(t)));
+        if (tagSet.has('Do Not Contact') || tagSet.has('Current Client') || tagSet.has('Paid')) {
+          await supabaseAdmin.from('nudge_queue')
+            .update({ failed_reason: 'lead_already_converted_or_blocked' }).eq('id', row.id);
+          skipped++;
+          continue;
+        }
+      }
+
+      // Lead-level conversion suppression — paid_at on the originating
+      // lead means Coach Kenny (or anyone) hit Mark Paid; stop bothering
+      // them with prospect drips.
+      if (row.lead_id) {
+        const { data: lead } = await supabaseAdmin
+          .from('leads').select('paid_at, tags').eq('id', row.lead_id).maybeSingle();
+        const leadTagSet = new Set((lead?.tags || []).map(t => String(t)));
+        if (lead?.paid_at
+            || leadTagSet.has('Do Not Contact')
+            || leadTagSet.has('Current Client')
+            || leadTagSet.has('Paid')) {
+          await supabaseAdmin.from('nudge_queue')
+            .update({ failed_reason: 'lead_already_converted_or_blocked' }).eq('id', row.id);
           skipped++;
           continue;
         }

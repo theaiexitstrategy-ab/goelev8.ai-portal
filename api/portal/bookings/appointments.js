@@ -130,12 +130,46 @@ export default async function handler(req, res) {
       }
       if (mark_paid === true)   patch.paid_at = new Date().toISOString();
       if (mark_unpaid === true) patch.paid_at = null;
+
+      // Read the booking's originating lead_id before the update so we
+      // can cancel nudges for that lead when this booking is marked paid.
+      const { data: booking } = await supabaseAdmin
+        .from('bookings').select('lead_id').eq('id', id).eq('client_id', clientId).maybeSingle();
+
       const { data, error } = await supabaseAdmin
         .from('bookings').update(patch)
         .eq('id', id).eq('client_id', clientId)
-        .select('id, tags, paid_at').single();
+        .select('id, tags, paid_at, lead_id').single();
       if (error) return res.status(400).json({ error: error.message });
-      return res.status(200).json({ appointment: data });
+
+      // Cancel nudges + flag the originating lead as paid + tag it
+      // Current Client so future blasts/nudges treat them correctly.
+      let cancelled_nudges = 0;
+      const blockTag = (patch.tags || []).some(t => ['Do Not Contact', 'Current Client', 'Paid'].includes(t));
+      if (booking?.lead_id && (mark_paid === true || blockTag)) {
+        if (mark_paid === true) {
+          // Propagate paid_at + tags to the lead so the Leads tab metric
+          // and the cron's lead-level guard both see the conversion.
+          const { data: leadCur } = await supabaseAdmin
+            .from('leads').select('tags').eq('id', booking.lead_id).maybeSingle();
+          const mergedTags = [...new Set([
+            ...((leadCur?.tags || []).filter(t => t !== 'Free Trial')),
+            'Paid', 'Current Client'
+          ])];
+          await supabaseAdmin.from('leads')
+            .update({ paid_at: new Date().toISOString(), tags: mergedTags })
+            .eq('id', booking.lead_id);
+        }
+        const { data: cancelled } = await supabaseAdmin
+          .from('nudge_queue')
+          .update({ failed_reason: 'lead_converted_or_blocked' })
+          .eq('lead_id', booking.lead_id)
+          .is('sent_at', null)
+          .is('failed_reason', null)
+          .select('id');
+        cancelled_nudges = (cancelled || []).length;
+      }
+      return res.status(200).json({ appointment: data, cancelled_nudges });
     }
 
     // Tenant ownership check before any state change. The widget's

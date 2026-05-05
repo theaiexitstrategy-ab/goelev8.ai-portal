@@ -1288,8 +1288,12 @@ async function viewBookings() {
         class: 'btn sm primary',
         onclick: async () => {
           try {
-            await api('/api/portal/bookings/appointments', { method: 'PATCH', body: { id: a.id, mark_paid: true } });
-            toast('Marked as paid — counts toward conversion'); await reload();
+            const r = await api('/api/portal/bookings/appointments', { method: 'PATCH', body: { id: a.id, mark_paid: true } });
+            const extra = r?.cancelled_nudges
+              ? ` · cancelled ${r.cancelled_nudges} pending nudge${r.cancelled_nudges === 1 ? '' : 's'}`
+              : '';
+            toast('Marked as paid · counts toward conversion' + extra);
+            await reload();
           } catch (e) { toast(e.message, true); }
         }
       }, 'Mark Paid'));
@@ -1743,8 +1747,12 @@ async function viewLeads() {
               class: 'btn sm primary',
               onclick: async () => {
                 try {
-                  await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_paid: true, tags: [...new Set([...normalizeTags(l.tags).filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] } });
-                  toast('Marked as paid — added Paid + Current Client tags'); render();
+                  const r = await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_paid: true, tags: [...new Set([...normalizeTags(l.tags).filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] } });
+                  const extra = r?.cancelled_nudges
+                    ? ` · cancelled ${r.cancelled_nudges} pending nudge${r.cancelled_nudges === 1 ? '' : 's'}`
+                    : '';
+                  toast('Marked as paid · Paid + Current Client tags' + extra);
+                  render();
                 } catch (e) { toast(e.message, true); }
               }
             }, 'Mark Paid');
