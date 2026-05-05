@@ -3,6 +3,7 @@
 
 import { requireUser } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { dedupeLeadRows } from '../../lib/lead-dedupe.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'method_not_allowed' });
@@ -18,10 +19,29 @@ export default async function handler(req, res) {
 
   // Fetch all data in parallel. `artist_selected` is an iSlay-portal
   // column (migration 0010) used for the byArtist breakdown.
+  // Helper: tolerant fetch that strips deleted_at filter on pre-0024
+  // schemas so analytics keeps working before the migration runs.
+  const fetchLeads30 = async () => {
+    let q = supabaseAdmin.from('leads')
+      .select('id, name, phone, email, created_at, source, status, artist_selected, tags, paid_at')
+      .eq('client_id', clientId)
+      .is('deleted_at', null)
+      .gte('created_at', thirtyDaysAgo.toISOString())
+      .order('created_at', { ascending: false });
+    let { data, error } = await q;
+    if (error && /column .*\b(deleted_at|paid_at|tags)\b.* does not exist/i.test(error.message)) {
+      const retry = await supabaseAdmin.from('leads')
+        .select('id, name, phone, email, created_at, source, status, artist_selected')
+        .eq('client_id', clientId)
+        .gte('created_at', thirtyDaysAgo.toISOString())
+        .order('created_at', { ascending: false });
+      data = retry.data; error = retry.error;
+    }
+    return { data: data || [], error };
+  };
+
   const [leadsR, bookingsR, salesR, callsR, messagesR, ledgerR] = await Promise.all([
-    supabaseAdmin.from('leads').select('id, created_at, source, status, artist_selected')
-      .eq('client_id', clientId).gte('created_at', thirtyDaysAgo.toISOString())
-      .order('created_at', { ascending: false }),
+    fetchLeads30(),
     supabaseAdmin.from('bookings').select('id, created_at, starts_at, status')
       .eq('client_id', clientId).gte('created_at', thirtyDaysAgo.toISOString()),
     supabaseAdmin.from('sales').select('id, amount, created_at, payment_status')
@@ -37,7 +57,10 @@ export default async function handler(req, res) {
       .lt('delta', 0)
   ]);
 
-  const leads = leadsR.data || [];
+  // Dedupe with the same family-share guard the leads list endpoint
+  // uses, so /api/portal/analytics and /api/portal/crm?action=leads
+  // never disagree on Leads Captured.
+  const leads = dedupeLeadRows(leadsR.data || []);
   const bookings = bookingsR.data || [];
   const sales = salesR.data || [];
   const calls = callsR.data || [];
@@ -51,15 +74,30 @@ export default async function handler(req, res) {
     return d >= lastMonthStart && d < monthStart;
   });
 
-  // For last month leads, we also need to fetch separately since our window is only 30 days
-  const { data: lastMonthLeads } = await supabaseAdmin
-    .from('leads').select('id')
-    .eq('client_id', clientId)
-    .gte('created_at', lastMonthStart.toISOString())
-    .lt('created_at', monthStart.toISOString());
+  // For last month leads, fetch separately and run through the same
+  // dedupe + soft-delete filter so the % change isn't skewed by dupes.
+  const fetchLastMonthLeads = async () => {
+    let q = supabaseAdmin.from('leads')
+      .select('id, name, phone, email, created_at, tags, paid_at')
+      .eq('client_id', clientId)
+      .is('deleted_at', null)
+      .gte('created_at', lastMonthStart.toISOString())
+      .lt('created_at', monthStart.toISOString());
+    let { data, error } = await q;
+    if (error && /column .*\b(deleted_at|paid_at|tags)\b.* does not exist/i.test(error.message)) {
+      const retry = await supabaseAdmin.from('leads')
+        .select('id, name, phone, email, created_at')
+        .eq('client_id', clientId)
+        .gte('created_at', lastMonthStart.toISOString())
+        .lt('created_at', monthStart.toISOString());
+      data = retry.data;
+    }
+    return data || [];
+  };
+  const lastMonthLeads = dedupeLeadRows(await fetchLastMonthLeads());
 
   const leadsThisMonthCount = leadsThisMonth.length;
-  const leadsLastMonthCount = (lastMonthLeads || []).length;
+  const leadsLastMonthCount = lastMonthLeads.length;
   const leadsChange = leadsLastMonthCount > 0
     ? ((leadsThisMonthCount - leadsLastMonthCount) / leadsLastMonthCount * 100).toFixed(1)
     : leadsThisMonthCount > 0 ? '100.0' : '0.0';

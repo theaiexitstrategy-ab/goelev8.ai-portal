@@ -50,13 +50,15 @@ async function runReport(propertyId, body) {
   return res.json();
 }
 
-// pagePath filter matching /r2s (exact + trailing slash tolerant)
+// pagePath filter matching ONLY /r2s and /r2s/ exactly. The previous
+// version included a BEGINS_WITH '/r2s' rule, which also caught
+// /r2s-thanks, /r2s-checkout, /r2s-promo etc. — inflating the page-view
+// count by counting downstream funnel pages as if they were /r2s itself.
 const PATH_FILTER = {
   orGroup: {
     expressions: [
-      { filter: { fieldName: 'pagePath', stringFilter: { value: '/r2s', matchType: 'EXACT' } } },
-      { filter: { fieldName: 'pagePath', stringFilter: { value: '/r2s/', matchType: 'EXACT' } } },
-      { filter: { fieldName: 'pagePath', stringFilter: { value: '/r2s', matchType: 'BEGINS_WITH' } } }
+      { filter: { fieldName: 'pagePath', stringFilter: { value: '/r2s',  matchType: 'EXACT' } } },
+      { filter: { fieldName: 'pagePath', stringFilter: { value: '/r2s/', matchType: 'EXACT' } } }
     ]
   }
 };

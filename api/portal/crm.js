@@ -6,6 +6,7 @@
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { toE164 } from '../../lib/phone.js';
+import { dedupeLeadRows } from '../../lib/lead-dedupe.js';
 
 // Cancel every queued-but-unsent nudge tied to a lead. Called on Mark
 // Paid + Do-Not-Contact / Current-Client / Paid tag transitions so the
@@ -171,64 +172,9 @@ async function handleLeads(req, res, ctx) {
     }
     if (error) return res.status(500).json({ error: error.message });
 
-    // Read-time dedupe with family-share guard: a household can share
-    // one phone (siblings, parent + kid) so we keyed-by phone+firstName
-    // not just phone. Different first names at the same phone stay as
-    // separate leads. Same first name (or one side missing a name) merge.
-    const normPhone = (p) => String(p || '').replace(/[^\d+]/g, '');
-    const firstName = (n) => String(n || '').trim().toLowerCase().split(/\s+/)[0] || '';
-    const ascending = (data || []).slice().sort((a, b) =>
-      new Date(a.created_at) - new Date(b.created_at));
-    const seen = new Map(); // groupKey -> canonical row
-    const out = [];
-    const lookupCanonical = (r) => {
-      const fn = firstName(r.name);
-      const phoneKey = normPhone(r.phone);
-      const emailKey = (r.email || '').trim().toLowerCase();
-      // 1) Strict match: same phone+firstName or same email+firstName
-      if (phoneKey && fn) {
-        const k = 'p:' + phoneKey + '|n:' + fn;
-        if (seen.has(k)) return seen.get(k);
-      }
-      if (emailKey && fn) {
-        const k = 'e:' + emailKey + '|n:' + fn;
-        if (seen.has(k)) return seen.get(k);
-      }
-      // 2) Name-blank fallback: if the incoming row has no name, allow
-      //    it to roll into a phone/email match regardless of the
-      //    canonical's name (it's almost certainly the same human, the
-      //    second submission just dropped the name).
-      if (!fn) {
-        if (phoneKey) for (const [k, v] of seen) if (k.startsWith('p:' + phoneKey + '|')) return v;
-        if (emailKey) for (const [k, v] of seen) if (k.startsWith('e:' + emailKey + '|')) return v;
-      }
-      return null;
-    };
-    for (const r of ascending) {
-      const canonical = lookupCanonical(r);
-      if (canonical) {
-        const existingTags = Array.isArray(canonical.tags) ? canonical.tags : [];
-        const newTags = Array.isArray(r.tags) ? r.tags : [];
-        if (newTags.length) canonical.tags = [...new Set([...existingTags, ...newTags])];
-        if (!canonical.paid_at && r.paid_at) canonical.paid_at = r.paid_at;
-        for (const f of ['name', 'phone', 'email']) {
-          if (!canonical[f] && r[f]) canonical[f] = r[f];
-        }
-        continue;
-      }
-      out.push(r);
-      const fn = firstName(r.name);
-      const phoneKey = normPhone(r.phone);
-      const emailKey = (r.email || '').trim().toLowerCase();
-      if (phoneKey && fn) seen.set('p:' + phoneKey + '|n:' + fn, r);
-      if (emailKey && fn) seen.set('e:' + emailKey + '|n:' + fn, r);
-      // Also stash a name-less placeholder so subsequent unnamed rows
-      // can still find this canonical via phone/email.
-      if (phoneKey && !fn) seen.set('p:' + phoneKey + '|n:', r);
-      if (emailKey && !fn) seen.set('e:' + emailKey + '|n:', r);
-    }
-    out.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    return res.status(200).json({ leads: out });
+    // Read-time dedupe via the shared helper so this endpoint and
+    // /api/portal/analytics always agree on the lead count.
+    return res.status(200).json({ leads: dedupeLeadRows(data || []) });
   }
   if (req.method === 'PATCH') {
     const body = await readJson(req);
