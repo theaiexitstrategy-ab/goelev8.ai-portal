@@ -723,12 +723,26 @@ async function onboardPendingTenants(req, res) {
       }
       r.steps.push({ step: 'auth_user', ok: true, id: userId, created: userCreated, password_reset: !userCreated });
 
-      // 4. Link user → client (role=owner)
-      const { error: linkErr } = await supabaseAdmin.from('client_users').upsert(
-        { user_id: userId, client_id: client.id, role: 'owner' },
-        { onConflict: 'user_id,client_id' }
-      );
-      r.steps.push({ step: 'link_user', ok: !linkErr, error: linkErr?.message });
+      // 4. Link user → client (role=owner). Manual select-then-insert
+      // pattern because client_users in some environments doesn't have
+      // a UNIQUE constraint on (user_id, client_id), which makes
+      // .upsert(..., { onConflict: '...' }) error out.
+      const { data: existingLink } = await supabaseAdmin
+        .from('client_users').select('user_id, client_id, role')
+        .eq('user_id', userId).eq('client_id', client.id).maybeSingle();
+      let linkErr = null;
+      if (!existingLink) {
+        const { error } = await supabaseAdmin.from('client_users').insert({
+          user_id: userId, client_id: client.id, role: 'owner'
+        });
+        linkErr = error;
+      } else if (existingLink.role !== 'owner') {
+        const { error } = await supabaseAdmin.from('client_users')
+          .update({ role: 'owner' })
+          .eq('user_id', userId).eq('client_id', client.id);
+        linkErr = error;
+      }
+      r.steps.push({ step: 'link_user', ok: !linkErr, existed: !!existingLink, error: linkErr?.message });
 
       r.email = t.user.email;
     } catch (e) {
@@ -1273,6 +1287,33 @@ async function applyPendingMigrations(req, res) {
     //       by the Data API. The Measurement ID is for client-side gtag
     //       embedding on the tenant's site. -----
     `ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS ga4_measurement_id text;`,
+
+    // ----- 0028: ensure client_users has a UNIQUE constraint on
+    //       (user_id, client_id) so upserts can use ON CONFLICT. Some
+    //       environments seeded this table without the constraint,
+    //       which broke the onboarding-tenants admin action.
+    `DO $migrate$
+     BEGIN
+       IF NOT EXISTS (
+         SELECT 1 FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND tablename  = 'client_users'
+            AND indexname  = 'client_users_user_client_uniq'
+       ) AND NOT EXISTS (
+         SELECT 1 FROM information_schema.table_constraints
+          WHERE table_schema = 'public'
+            AND table_name   = 'client_users'
+            AND constraint_type IN ('UNIQUE','PRIMARY KEY')
+            AND constraint_name LIKE '%user_id%client_id%'
+       ) THEN
+         BEGIN
+           ALTER TABLE public.client_users
+             ADD CONSTRAINT client_users_user_client_uniq UNIQUE (user_id, client_id);
+         EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL;
+         END;
+       END IF;
+     END
+     $migrate$;`,
 
     // ----- 0026: AFTER-INSERT trigger on bookings cancels pending nudges -----
     `CREATE OR REPLACE FUNCTION public.cancel_nudges_on_booking()
