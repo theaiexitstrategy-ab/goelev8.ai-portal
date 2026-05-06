@@ -1199,6 +1199,58 @@ async function applyPendingMigrations(req, res) {
     `ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';`,
     `ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS paid_at timestamptz;`,
     `ALTER TABLE public.leads    ADD COLUMN IF NOT EXISTS paid_at timestamptz;`,
+    // Coerce tags columns to text[] before indexing — older
+    // environments may have it as a single text column from a partial
+    // migration run, which can't take a GIN index. Idempotent: only
+    // ALTERs when the data_type is currently 'text'. Existing values
+    // are converted: NULL/empty → {}, '{a,b}' literal → array, plain
+    // 'a,b' string → split on commas.
+    `DO $migrate$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='leads'
+            AND column_name='tags' AND data_type='text'
+       ) THEN
+         ALTER TABLE public.leads ALTER COLUMN tags DROP DEFAULT;
+         ALTER TABLE public.leads ALTER COLUMN tags TYPE text[]
+           USING (CASE
+             WHEN tags IS NULL OR tags = '' THEN ARRAY[]::text[]
+             WHEN tags LIKE '{%}' THEN tags::text[]
+             ELSE string_to_array(tags, ',')
+           END);
+         ALTER TABLE public.leads ALTER COLUMN tags SET DEFAULT '{}'::text[];
+       END IF;
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='contacts'
+            AND column_name='tags' AND data_type='text'
+       ) THEN
+         ALTER TABLE public.contacts ALTER COLUMN tags DROP DEFAULT;
+         ALTER TABLE public.contacts ALTER COLUMN tags TYPE text[]
+           USING (CASE
+             WHEN tags IS NULL OR tags = '' THEN ARRAY[]::text[]
+             WHEN tags LIKE '{%}' THEN tags::text[]
+             ELSE string_to_array(tags, ',')
+           END);
+         ALTER TABLE public.contacts ALTER COLUMN tags SET DEFAULT '{}'::text[];
+       END IF;
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='bookings'
+            AND column_name='tags' AND data_type='text'
+       ) THEN
+         ALTER TABLE public.bookings ALTER COLUMN tags DROP DEFAULT;
+         ALTER TABLE public.bookings ALTER COLUMN tags TYPE text[]
+           USING (CASE
+             WHEN tags IS NULL OR tags = '' THEN ARRAY[]::text[]
+             WHEN tags LIKE '{%}' THEN tags::text[]
+             ELSE string_to_array(tags, ',')
+           END);
+         ALTER TABLE public.bookings ALTER COLUMN tags SET DEFAULT '{}'::text[];
+       END IF;
+     END
+     $migrate$;`,
     `CREATE INDEX IF NOT EXISTS bookings_tags_gin    ON public.bookings   USING gin(tags);`,
     `CREATE INDEX IF NOT EXISTS contacts_tags_gin    ON public.contacts   USING gin(tags);`,
     `CREATE INDEX IF NOT EXISTS leads_tags_gin_idx   ON public.leads      USING gin(tags);`,
