@@ -624,6 +624,126 @@ async function ensurePortalTabs(req, res) {
 // the platform's STRIPE_SECRET_KEY env var so the operator doesn't need
 // a local terminal. Idempotent — re-running returns the existing link
 // instead of creating a duplicate.
+// One-shot server-side onboarding for pending tenants. Mirrors
+// scripts/onboard-taes-atbhr.mjs but runs via supabaseAdmin (which
+// already uses SUPABASE_SERVICE_ROLE_KEY from Vercel env), so the
+// operator doesn't need a local terminal. Idempotent — re-running
+// is safe; finds existing auth users instead of creating duplicates.
+async function onboardPendingTenants(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+
+  const PORTAL_BASE = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
+  const TENANTS = [
+    {
+      slug: 'ai-exit-strategy',
+      business_name: 'The AI Exit Strategy',
+      ga4_measurement_id: 'G-HNX5T6DC0N',
+      logo_url: `${PORTAL_BASE}/taes-logo.png`,
+      user: { email: 'ab@taes.com', password: 'TAES!!!' }
+    },
+    {
+      slug: 'allthingzblackhair',
+      business_name: 'AllThingzBlackHair',
+      ga4_measurement_id: 'G-RGLQVQ5S3W',
+      logo_url: `${PORTAL_BASE}/atbhr-logo.png`,
+      user: { email: 'court@atbhr.com', password: 'BlackHair!!!' }
+    }
+  ];
+
+  // Probe whether ga4_measurement_id column exists. If migration
+  // hasn't been applied, skip that field gracefully.
+  let hasMeasurementCol = true;
+  {
+    const probe = await supabaseAdmin.from('clients').select('ga4_measurement_id').limit(1);
+    if (probe.error && /column .*ga4_measurement_id.* does not exist/i.test(probe.error.message)) {
+      hasMeasurementCol = false;
+    }
+  }
+
+  const results = [];
+
+  for (const t of TENANTS) {
+    const r = { slug: t.slug, steps: [] };
+    try {
+      // 1. Find seeded client row
+      const { data: client, error: cErr } = await supabaseAdmin.from('clients')
+        .select('id, slug, business_name, ga4_measurement_id, logo_url')
+        .eq('slug', t.slug).maybeSingle();
+      if (cErr) throw cErr;
+      if (!client) {
+        r.error = `No clients row for slug="${t.slug}". Did Master Admin auto-seed run? Refresh and try again.`;
+        results.push(r);
+        continue;
+      }
+      r.client_id = client.id;
+      r.steps.push({ step: 'find_client', ok: true, id: client.id });
+
+      // 2. Update client row (logo, business_name, GA4 measurement ID)
+      const patch = {};
+      if (client.business_name !== t.business_name) patch.business_name = t.business_name;
+      if (client.logo_url !== t.logo_url)           patch.logo_url      = t.logo_url;
+      if (hasMeasurementCol && client.ga4_measurement_id !== t.ga4_measurement_id) {
+        patch.ga4_measurement_id = t.ga4_measurement_id;
+      }
+      if (Object.keys(patch).length) {
+        const { error } = await supabaseAdmin.from('clients').update(patch).eq('id', client.id);
+        r.steps.push({ step: 'update_client', ok: !error, fields: Object.keys(patch), error: error?.message });
+      } else {
+        r.steps.push({ step: 'update_client', ok: true, fields: [], note: 'already current' });
+      }
+
+      // 3. Create or find auth user
+      let userId = null;
+      let userCreated = false;
+      const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+        email: t.user.email, password: t.user.password, email_confirm: true
+      });
+      if (created?.user?.id) {
+        userId = created.user.id;
+        userCreated = true;
+      } else if (createErr && /already|registered|exists/i.test(createErr.message)) {
+        // Find existing user by email and reset their password to the
+        // shared value so the credentials always work.
+        let page = 1;
+        while (page <= 5 && !userId) {
+          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+          const u = list?.users?.find(x => x.email === t.user.email);
+          if (u) {
+            userId = u.id;
+            await supabaseAdmin.auth.admin.updateUserById(u.id, { password: t.user.password });
+          }
+          if (!list?.users?.length || list.users.length < 1000) break;
+          page++;
+        }
+      }
+      if (!userId) {
+        r.steps.push({ step: 'auth_user', ok: false, error: createErr?.message || 'unknown' });
+        results.push(r);
+        continue;
+      }
+      r.steps.push({ step: 'auth_user', ok: true, id: userId, created: userCreated, password_reset: !userCreated });
+
+      // 4. Link user → client (role=owner)
+      const { error: linkErr } = await supabaseAdmin.from('client_users').upsert(
+        { user_id: userId, client_id: client.id, role: 'owner' },
+        { onConflict: 'user_id,client_id' }
+      );
+      r.steps.push({ step: 'link_user', ok: !linkErr, error: linkErr?.message });
+
+      r.email = t.user.email;
+    } catch (e) {
+      r.error = e.message;
+    }
+    results.push(r);
+  }
+
+  return res.status(200).json({
+    has_ga4_measurement_column: hasMeasurementCol,
+    results,
+    note: hasMeasurementCol ? null : 'ga4_measurement_id column missing — click Run Pending Migrations first to enable that field.'
+  });
+}
+
 async function createOnboardingPaymentLink(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -1337,6 +1457,7 @@ export default async function handler(req, res) {
       case 'twilio-cost':              return await twilioCostSetting(req, res);
       case 'twilio-reserve-diagnose':  return await twilioReserveDiagnose(req, res);
       case 'create-onboarding-link':   return await createOnboardingPaymentLink(req, res);
+      case 'onboard-pending-tenants':  return await onboardPendingTenants(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
