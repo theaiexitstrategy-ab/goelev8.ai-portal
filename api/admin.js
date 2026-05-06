@@ -1096,6 +1096,12 @@ async function applyPendingMigrations(req, res) {
     // ----- 0025: customer avatar URL on leads -----
     `ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS avatar_url text;`,
 
+    // ----- 0027: GA4 Measurement ID (gtag.js G-XXXX) per tenant. Distinct
+    //       from ga4_property_id, which is the numeric Property ID used
+    //       by the Data API. The Measurement ID is for client-side gtag
+    //       embedding on the tenant's site. -----
+    `ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS ga4_measurement_id text;`,
+
     // ----- 0026: AFTER-INSERT trigger on bookings cancels pending nudges -----
     `CREATE OR REPLACE FUNCTION public.cancel_nudges_on_booking()
      RETURNS trigger LANGUAGE plpgsql AS $func$
