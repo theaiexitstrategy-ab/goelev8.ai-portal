@@ -323,9 +323,11 @@ async function ensureDefaultClients(req, res) {
   await supabaseAdmin.from('clients').delete().ilike('name', 'dlp').then(() => {}, () => {});
 
   const required = [
-    { slug: 'goelev8',       name: 'GoElev8.ai',        business_name: 'GoElev8.ai' },
-    { slug: 'flex-facility', name: 'The Flex Facility', business_name: 'The Flex Facility LLC' },
-    { slug: 'islay-studios', name: 'iSlay Studios',     business_name: 'iSlay Studios LLC' }
+    { slug: 'goelev8',           name: 'GoElev8.ai',             business_name: 'GoElev8.ai' },
+    { slug: 'flex-facility',     name: 'The Flex Facility',      business_name: 'The Flex Facility LLC' },
+    { slug: 'islay-studios',     name: 'iSlay Studios',          business_name: 'iSlay Studios LLC' },
+    { slug: 'ai-exit-strategy',  name: 'The AI Exit Strategy',   business_name: 'The AI Exit Strategy' },
+    { slug: 'allthingzblackhair', name: 'AllThingzBlackHair',     business_name: 'AllThingzBlackHair' }
   ];
   const { data: existing } = await supabaseAdmin
     .from('clients').select('id, slug, name, business_name');
