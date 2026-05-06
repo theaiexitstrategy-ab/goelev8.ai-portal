@@ -40,12 +40,16 @@ const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_R
 });
 
 // Two tenants to provision in this run.
+// Logos live at the repo root and ship as static assets at
+// /taes-logo.png and /atbhr-logo.png on portal.goelev8.ai.
+const PORTAL_BASE = process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai';
 const TENANTS = [
   {
     slug: 'ai-exit-strategy',
     name: 'The AI Exit Strategy',
     business_name: 'The AI Exit Strategy',
     ga4_measurement_id: 'G-HNX5T6DC0N',
+    logo_url: `${PORTAL_BASE.replace(/\/$/, '')}/taes-logo.png`,
     user: { email: 'ab@taes.com', password: 'TAES!!!' }
   },
   {
@@ -53,6 +57,7 @@ const TENANTS = [
     name: 'AllThingzBlackHair',
     business_name: 'AllThingzBlackHair',
     ga4_measurement_id: 'G-RGLQVQ5S3W',
+    logo_url: `${PORTAL_BASE.replace(/\/$/, '')}/atbhr-logo.png`,
     user: { email: 'court@atbhr.com', password: 'BlackHair!!!' }
   }
 ];
@@ -117,18 +122,22 @@ async function provisionTenant(t, hasMeasurementCol) {
   }
   console.log('  ✓ Found seeded client row:', client.id);
 
-  // Update GA4 Measurement ID + business_name if missing.
-  if (hasMeasurementCol) {
-    const patch = {};
-    if (client.ga4_measurement_id !== t.ga4_measurement_id) patch.ga4_measurement_id = t.ga4_measurement_id;
-    if (!client.business_name)                              patch.business_name      = t.business_name;
-    if (Object.keys(patch).length) {
-      const { error } = await sb.from('clients').update(patch).eq('id', client.id);
-      if (error) console.warn('  ⚠️  GA4 update failed:', error.message);
-      else console.log('  ✓ Set GA4 Measurement ID:', t.ga4_measurement_id);
-    } else {
-      console.log('  ✓ GA4 Measurement ID already current');
+  // Update GA4 Measurement ID + business_name + logo_url if missing.
+  const patch = {};
+  if (hasMeasurementCol && client.ga4_measurement_id !== t.ga4_measurement_id) {
+    patch.ga4_measurement_id = t.ga4_measurement_id;
+  }
+  if (!client.business_name)         patch.business_name = t.business_name;
+  if (client.logo_url !== t.logo_url) patch.logo_url      = t.logo_url;
+  if (Object.keys(patch).length) {
+    const { error } = await sb.from('clients').update(patch).eq('id', client.id);
+    if (error) console.warn('  ⚠️  client row update failed:', error.message);
+    else {
+      const updated = Object.keys(patch).join(', ');
+      console.log('  ✓ Updated:', updated);
     }
+  } else {
+    console.log('  ✓ Client row already current');
   }
 
   // Create or find the auth user.
