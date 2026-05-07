@@ -849,6 +849,32 @@ async function createOnboardingPaymentLink(req, res) {
       });
     }
 
+    // Promotion code FOUNDING — what the customer types at checkout to
+    // apply the coupon. Stripe Payment Links don't accept a `discounts`
+    // parameter for auto-application (that's Checkout Sessions only),
+    // so we expose the coupon as a typeable code instead. The link
+    // also gets allow_promotion_codes:true and a custom_text hint
+    // pointing the customer at the code.
+    let promotionCode = null;
+    {
+      const existing = await stripe.promotionCodes.list({
+        code: 'FOUNDING', active: true, limit: 1
+      });
+      promotionCode = existing.data[0] || null;
+      if (promotionCode && promotionCode.coupon?.id !== coupon.id) {
+        // Code is bound to a different coupon — deactivate and recreate.
+        await stripe.promotionCodes.update(promotionCode.id, { active: false });
+        promotionCode = null;
+      }
+    }
+    if (!promotionCode) {
+      promotionCode = await stripe.promotionCodes.create({
+        coupon: coupon.id,
+        code: 'FOUNDING',
+        metadata: { flow: FLOW_TAG }
+      });
+    }
+
     // Reuse an existing payment link if we've already created one for
     // this flow (matched by metadata.flow). Stripe doesn't dedupe links
     // automatically — without this, every button click would mint a new
@@ -864,7 +890,10 @@ async function createOnboardingPaymentLink(req, res) {
           { price: onboardingPrice.id, quantity: 1 },
           { price: growthPrice.id,     quantity: 1 }
         ],
-        discounts: [{ coupon: coupon.id }],
+        allow_promotion_codes: true,
+        custom_text: {
+          submit: { message: 'Use code FOUNDING at checkout for 50% off the $400 setup fee (Founding Client Rate).' }
+        },
         after_completion: { type: 'redirect', redirect: { url: REDIRECT_URL } },
         metadata: { flow: FLOW_TAG }
       });

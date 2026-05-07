@@ -142,16 +142,44 @@ async function main() {
   //    discount the recurring subscription forever.
   const coupon = await ensureCoupon(onboardingProduct.id);
 
-  // 4. Payment link — both line items + auto-applied coupon.
-  //    Stripe Checkout will display the original $400 line item, the
-  //    -$200 Founding Client Rate discount line, and the $99/mo
-  //    subscription. Total due today: $299. Recurring: $99/mo.
+  // 4. Promotion code FOUNDING — Payment Links don't support an
+  //    auto-applied `discounts` param (that's Checkout Sessions only),
+  //    so we expose the coupon as a customer-typeable code.
+  let promotionCode = null;
+  {
+    const existing = await stripe.promotionCodes.list({
+      code: 'FOUNDING', active: true, limit: 1
+    });
+    promotionCode = existing.data[0] || null;
+    if (promotionCode && promotionCode.coupon?.id !== coupon.id) {
+      await stripe.promotionCodes.update(promotionCode.id, { active: false });
+      promotionCode = null;
+    }
+  }
+  if (!promotionCode) {
+    promotionCode = await stripe.promotionCodes.create({
+      coupon: coupon.id,
+      code: 'FOUNDING',
+      metadata: { flow: 'goelev8_onboarding_v1' }
+    });
+    console.log('+ Created promotion code FOUNDING:', promotionCode.id);
+  } else {
+    console.log('✓ Reusing existing promotion code FOUNDING:', promotionCode.id);
+  }
+
+  // 5. Payment link — both line items + a typeable FOUNDING code.
+  //    Customer enters FOUNDING at checkout to see the $400 strike-
+  //    through and -$200 discount line. Recurring stays at full
+  //    price because the coupon is scoped to the onboarding product.
   const paymentLink = await stripe.paymentLinks.create({
     line_items: [
       { price: onboardingPrice.id, quantity: 1 },
       { price: growthPrice.id,     quantity: 1 }
     ],
-    discounts: [{ coupon: coupon.id }],
+    allow_promotion_codes: true,
+    custom_text: {
+      submit: { message: 'Use code FOUNDING at checkout for 50% off the $400 setup fee (Founding Client Rate).' }
+    },
     after_completion: {
       type: 'redirect',
       redirect: { url: REDIRECT_URL }
@@ -171,11 +199,16 @@ async function main() {
   console.log('  Growth product:    ', growthProduct.id);
   console.log('  Growth price:      ', growthPrice.id, '($99/month)');
   console.log('  FOUNDING coupon:   ', coupon.id, '(50% off onboarding only)');
+  console.log('  FOUNDING promo:    ', promotionCode.id, '(typeable code at checkout)');
   console.log('  Payment link:      ', paymentLink.url);
   console.log('');
-  console.log('  Today\'s total:     $299.00 ($200 setup + $99 first month)');
+  console.log('  Without code:      $499.00 ($400 setup + $99 first month)');
+  console.log('  With FOUNDING:     $299.00 ($200 setup + $99 first month)');
   console.log('  Recurring:         $99.00/month after');
   console.log('  Redirect after:    ', REDIRECT_URL);
+  console.log('');
+  console.log('  Customer flow: open the link → click "Add promotion code"');
+  console.log('  → type FOUNDING → see -$200 discount applied → checkout.');
 }
 
 main().catch(err => {
