@@ -1,13 +1,10 @@
 // (c) 2026 GoElev8.ai | Aaron Bryant. All rights reserved.
 //
 // Cross-origin subscribe endpoint for external sites (e.g. theaiexitstrategy.com).
-// Auth is a per-funnel bearer token from funnel_api_keys — sha256(raw_key)
-// must match a non-revoked row.
+// Auth: per-funnel bearer token, sha256-hashed in funnel_api_keys.
+// Accepts email-only, phone-only, or both. At least one is required.
 //
-// Vanilla Vercel serverless function (matches goelev8-portal style).
-// Tables expected: funnel_api_keys, funnel_subscribers (created via migration
-// 20260505000000_funnel_subscribers_and_api_keys.sql in goelev8-funnels —
-// same Supabase project).
+// Vanilla Vercel serverless function.
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../../lib/supabase.js';
@@ -19,6 +16,26 @@ function hashKey(raw) {
 
 function strip(v) {
   return String(v).replace(/<[^>]*>/g, '').trim();
+}
+
+// Normalize a phone number to E.164 (e.g. +18885468895). Returns null if the
+// input can't be coerced to a valid 10-15 digit number. Assumes US country
+// code if no leading + is present.
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const cleaned = String(raw).replace(/[^\d+]/g, '');
+  if (!cleaned) return null;
+  if (cleaned.startsWith('+')) {
+    const digits = cleaned.slice(1);
+    if (digits.length >= 10 && digits.length <= 15 && /^\d+$/.test(digits)) {
+      return cleaned;
+    }
+    return null;
+  }
+  // No country code — assume US, drop a stray leading 1 if present
+  const us10 = cleaned.replace(/^1/, '');
+  if (us10.length !== 10) return null;
+  return `+1${us10}`;
 }
 
 export default async function handler(req, res) {
@@ -49,12 +66,30 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Invalid JSON body' });
   }
 
-  const email = String(body?.email || '').toLowerCase().trim();
-  if (!email || !email.includes('@') || email.length > 200) {
-    return res.status(400).json({ error: 'Invalid input' });
+  // Email is optional now. If provided, must be valid.
+  let email = null;
+  if (body?.email) {
+    const candidate = String(body.email).toLowerCase().trim();
+    if (candidate && (!candidate.includes('@') || candidate.length > 200)) {
+      return res.status(400).json({ error: 'Invalid email' });
+    }
+    email = candidate || null;
   }
 
-  const phone = body.phone ? String(body.phone).slice(0, 20) : null;
+  // Phone is optional. If provided, must normalize to E.164.
+  let phone = null;
+  if (body?.phone) {
+    phone = normalizePhone(body.phone);
+    if (!phone) {
+      return res.status(400).json({ error: 'Invalid phone' });
+    }
+  }
+
+  // At least one of email or phone is required.
+  if (!email && !phone) {
+    return res.status(400).json({ error: 'Email or phone required' });
+  }
+
   const sms_opt_in = !!body.sms_opt_in;
   const source = body.source ? strip(body.source).slice(0, 50) : 'website_popup';
   const utm_source = body.utm_source ? strip(body.utm_source).slice(0, 100) : null;
@@ -82,7 +117,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Internal server error' });
   }
 
-  // Fire-and-forget last_used_at update so revoked/dormant keys can be audited.
+  // Fire-and-forget last_used_at update.
   supabaseAdmin
     .from('funnel_api_keys')
     .update({ last_used_at: new Date().toISOString() })
