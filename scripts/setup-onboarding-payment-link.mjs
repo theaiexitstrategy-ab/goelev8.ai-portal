@@ -177,8 +177,16 @@ async function main() {
       { price: growthPrice.id,     quantity: 1 }
     ],
     allow_promotion_codes: true,
+    // 30-day free trial on the recurring plan: customer pays only the
+    // $200 setup today (after FOUNDING applied to $400). The $99/month
+    // subscription begins billing 30 days later.
+    subscription_data: {
+      trial_period_days: 30
+    },
     custom_text: {
-      submit: { message: 'Use code FOUNDING at checkout for 50% off the $400 setup fee (Founding Client Rate).' }
+      submit: {
+        message: 'Use code FOUNDING for 50% off the $400 setup. Total today: $200 — your $99/month plan starts after a 30-day free trial.'
+      }
     },
     after_completion: {
       type: 'redirect',
@@ -202,9 +210,9 @@ async function main() {
   console.log('  FOUNDING promo:    ', promotionCode.id, '(typeable code at checkout)');
   console.log('  Payment link:      ', paymentLink.url);
   console.log('');
-  console.log('  Without code:      $499.00 ($400 setup + $99 first month)');
-  console.log('  With FOUNDING:     $299.00 ($200 setup + $99 first month)');
-  console.log('  Recurring:         $99.00/month after');
+  console.log('  Without code:      $400.00 today (full setup; $99/mo starts after 30-day trial)');
+  console.log('  With FOUNDING:     $200.00 today (50% off setup; $99/mo starts after 30-day trial)');
+  console.log('  Recurring:         $99.00/month starts day 31');
   console.log('  Redirect after:    ', REDIRECT_URL);
   console.log('');
   console.log('  Customer flow: open the link → click "Add promotion code"');

@@ -875,14 +875,26 @@ async function createOnboardingPaymentLink(req, res) {
       });
     }
 
-    // Reuse an existing payment link if we've already created one for
-    // this flow (matched by metadata.flow). Stripe doesn't dedupe links
-    // automatically — without this, every button click would mint a new
-    // one and clutter the dashboard.
+    // Look up existing payment link by metadata.flow. Stripe doesn't
+    // allow updating subscription_data (or many other fields) on a
+    // Payment Link after creation — so if the existing link is missing
+    // the 30-day trial, we archive it (active:false) and create a
+    // fresh one. That keeps Stripe Dashboard clean and means re-
+    // clicking the button propagates schema changes correctly.
     let paymentLink = null;
     {
       const list = await stripe.paymentLinks.list({ active: true, limit: 100 });
-      paymentLink = list.data.find(p => p.metadata?.flow === FLOW_TAG) || null;
+      const existing = list.data.find(p => p.metadata?.flow === FLOW_TAG) || null;
+      if (existing) {
+        const trialDays = existing.subscription_data?.trial_period_days || 0;
+        if (trialDays === 30) {
+          paymentLink = existing;
+        } else {
+          // Stale shape — archive it so the next list query won't pick
+          // it up, then fall through to create a fresh one below.
+          await stripe.paymentLinks.update(existing.id, { active: false });
+        }
+      }
     }
     if (!paymentLink) {
       paymentLink = await stripe.paymentLinks.create({
@@ -891,8 +903,16 @@ async function createOnboardingPaymentLink(req, res) {
           { price: growthPrice.id,     quantity: 1 }
         ],
         allow_promotion_codes: true,
+        // 30-day free trial on the recurring plan: customer pays only
+        // the $200 setup today (after FOUNDING applied to $400). The
+        // $99/month subscription then begins billing 30 days later.
+        subscription_data: {
+          trial_period_days: 30
+        },
         custom_text: {
-          submit: { message: 'Use code FOUNDING at checkout for 50% off the $400 setup fee (Founding Client Rate).' }
+          submit: {
+            message: 'Use code FOUNDING for 50% off the $400 setup. Total today: $200 — your $99/month plan starts after a 30-day free trial.'
+          }
         },
         after_completion: { type: 'redirect', redirect: { url: REDIRECT_URL } },
         metadata: { flow: FLOW_TAG }
