@@ -8,6 +8,7 @@
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { twilio } from '../../lib/twilio.js';
 import { methodGuard, readJson } from '../../lib/auth.js';
 
 function hashKey(raw) {
@@ -18,9 +19,8 @@ function strip(v) {
   return String(v).replace(/<[^>]*>/g, '').trim();
 }
 
-// Normalize a phone number to E.164 (e.g. +18885468895). Returns null if the
-// input can't be coerced to a valid 10-15 digit number. Assumes US country
-// code if no leading + is present.
+// Normalize a phone number to E.164. Returns null if the input can't be
+// coerced. Assumes US country code if no leading + is present.
 function normalizePhone(raw) {
   if (!raw) return null;
   const cleaned = String(raw).replace(/[^\d+]/g, '');
@@ -32,10 +32,37 @@ function normalizePhone(raw) {
     }
     return null;
   }
-  // No country code — assume US, drop a stray leading 1 if present
   const us10 = cleaned.replace(/^1/, '');
   if (us10.length !== 10) return null;
   return `+1${us10}`;
+}
+
+// Per-funnel welcome SMS config. Add more entries as new funnels go live.
+// Keyed by funnel_id; AIES is the only one for now.
+const WELCOME_SMS_BY_FUNNEL = {
+  '2f0d4f4b-9cfc-4ca5-b9d7-ee54eaa7e26f': {
+    fromEnv: 'AIES_TWILIO_PHONE_NUMBER',
+    body:
+      "Welcome to The AI Exit Strategy. You'll get 3 drops a week — " +
+      "practical AI income tips, Claude prompts, and free tools. " +
+      "Reply STOP to opt out, HELP for help.",
+  },
+};
+
+async function sendWelcomeSms(funnelId, toPhone) {
+  const config = WELCOME_SMS_BY_FUNNEL[funnelId];
+  if (!config) return; // No welcome SMS configured for this funnel.
+  const from = process.env[config.fromEnv];
+  if (!from) {
+    console.warn(`[funnel-subscribe] welcome SMS skipped — ${config.fromEnv} not set`);
+    return;
+  }
+  try {
+    await twilio.messages.create({ from, to: toPhone, body: config.body });
+  } catch (err) {
+    // Best-effort — DB insert already succeeded, don't fail the request.
+    console.error('[funnel-subscribe] welcome SMS failed:', err?.message || err);
+  }
 }
 
 export default async function handler(req, res) {
@@ -66,7 +93,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Invalid JSON body' });
   }
 
-  // Email is optional now. If provided, must be valid.
   let email = null;
   if (body?.email) {
     const candidate = String(body.email).toLowerCase().trim();
@@ -76,7 +102,6 @@ export default async function handler(req, res) {
     email = candidate || null;
   }
 
-  // Phone is optional. If provided, must normalize to E.164.
   let phone = null;
   if (body?.phone) {
     phone = normalizePhone(body.phone);
@@ -85,7 +110,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // At least one of email or phone is required.
   if (!email && !phone) {
     return res.status(400).json({ error: 'Email or phone required' });
   }
@@ -124,6 +148,14 @@ export default async function handler(req, res) {
     .eq('id', keyRow.id)
     .then(() => {})
     .catch(() => {});
+
+  // Best-effort welcome SMS — gives the subscriber immediate confirmation
+  // and verifies the captured phone is real. Awaited so the function
+  // doesn't return before Twilio responds (Vercel serverless freezes
+  // post-response work), but errors are swallowed.
+  if (phone && sms_opt_in) {
+    await sendWelcomeSms(keyRow.funnel_id, phone);
+  }
 
   return res.status(201).json({ message: 'subscribed' });
 }
