@@ -1691,6 +1691,108 @@ const DAYS_OF_WEEK = [
   { dow: 0, label: 'Sunday'    }
 ];
 
+// Parse a free-text availability string into a set of HH:MM ranges.
+//   "9a-3p"            → [{ start: '09:00', end: '15:00' }]
+//   "9-12, 2-5"        → [{ 09:00, 12:00 }, { 14:00, 17:00 }]
+//   "8:30am - 12pm"    → [{ 08:30, 12:00 }]
+//   ""  / "closed"     → [] (treated as a day off — no error)
+//   "garbage"          → { ok: false, error: "..." }
+//
+// AM/PM disambiguation when one or both sides omit a meridiem:
+//   - If neither side has am/pm and end ≤ start in raw 24-hour form,
+//     end is bumped to PM ("9-5"   → 9 AM – 5 PM).
+//   - If neither has am/pm and 24-hour form is already valid, use it
+//     directly ("13-15" → 1 PM – 3 PM).
+//   - If only one side has am/pm, the other inherits — unless that
+//     creates an invalid range, in which case it flips ("9-5p" → 9 AM,
+//     "9a-5" → 5 PM).
+function parseTimeRanges(input) {
+  const trimmed = String(input || '').trim().toLowerCase();
+  if (!trimmed) return { ok: true, ranges: [] };
+  if (/^(closed|off|none|x|-|—|—)$/.test(trimmed)) {
+    return { ok: true, ranges: [] };
+  }
+
+  // Split on "," or ";" for multiple blocks.
+  const blocks = trimmed.split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+  const ranges = [];
+  for (const block of blocks) {
+    // Split start/end on hyphen-ish chars or " to " or " – ".
+    const parts = block.split(/\s*(?:to|–|—|-)\s*/i).filter(Boolean);
+    if (parts.length !== 2) {
+      return { ok: false, error: `Couldn't read "${block}" — try "9a-5p"` };
+    }
+    const startRaw = parseTimeFragment(parts[0]);
+    const endRaw   = parseTimeFragment(parts[1]);
+    if (!startRaw || !endRaw) {
+      return { ok: false, error: `Couldn't read "${block}" — try "9a-5p"` };
+    }
+    const resolved = disambiguate(startRaw, endRaw);
+    if (!resolved) {
+      return { ok: false, error: `End time must be after start in "${block}"` };
+    }
+    ranges.push(resolved);
+  }
+  return { ok: true, ranges };
+}
+
+// Parse one side of a range. Returns { h, m, mer } where mer is 'a' / 'p' / null.
+function parseTimeFragment(s) {
+  const m = String(s).trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(a|am|p|pm|noon|midnight)?$/i);
+  if (!m) {
+    if (/^noon$/i.test(s))     return { h: 12, m: 0,  mer: 'p' };
+    if (/^midnight$/i.test(s)) return { h: 0,  m: 0,  mer: 'a' };
+    return null;
+  }
+  let h = +m[1]; const min = m[2] ? +m[2] : 0;
+  if (h < 0 || h > 23 || min > 59) return null;
+  let mer = m[3] ? m[3][0].toLowerCase() : null;
+  if (m[3] && /^noon$/i.test(m[3]))     { h = 12; mer = 'p'; }
+  if (m[3] && /^midnight$/i.test(m[3])) { h = 0;  mer = 'a'; }
+  return { h, m: min, mer };
+}
+
+// Resolve start/end fragments into concrete 24-hour HH:MM strings.
+// Returns { start, end } or null if the range is unparseable / inverted.
+function disambiguate(s, e) {
+  const to24 = (frag) => {
+    let h = frag.h;
+    if (frag.mer === 'a') { if (h === 12) h = 0; }
+    else if (frag.mer === 'p') { if (h !== 12) h += 12; }
+    return h * 60 + frag.m;
+  };
+
+  const tryRange = (sFrag, eFrag) => {
+    const sm = to24(sFrag), em = to24(eFrag);
+    return em > sm ? { sm, em } : null;
+  };
+
+  let pick = null;
+  if (s.mer && e.mer) {
+    pick = tryRange(s, e);
+  } else if (s.mer && !e.mer) {
+    // Start is anchored. Try end with same meridiem, then with the other.
+    pick = tryRange(s, { ...e, mer: s.mer })
+        || tryRange(s, { ...e, mer: s.mer === 'a' ? 'p' : 'a' });
+  } else if (!s.mer && e.mer) {
+    pick = tryRange({ ...s, mer: e.mer }, e)
+        || tryRange({ ...s, mer: e.mer === 'a' ? 'p' : 'a' }, e);
+  } else {
+    // Neither side has am/pm. Prefer 24-hour interpretation if it's valid;
+    // otherwise treat as common-sense "9-5" → 9 AM to 5 PM.
+    if (s.h <= 23 && e.h <= 23 && (e.h * 60 + e.m) > (s.h * 60 + s.m)) {
+      pick = { sm: s.h * 60 + s.m, em: e.h * 60 + e.m };
+    } else {
+      pick = tryRange({ ...s, mer: 'a' }, { ...e, mer: 'p' })
+          || tryRange({ ...s, mer: 'p' }, { ...e, mer: 'p' })
+          || tryRange({ ...s, mer: 'a' }, { ...e, mer: 'a' });
+    }
+  }
+  if (!pick) return null;
+  const fmt = (mins) => `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  return { start: fmt(pick.sm), end: fmt(pick.em) };
+}
+
 // Status label → CSS class on the global .badge system.
 const STATUS_BADGE_CLASS = {
   pending:   'badge warn',
@@ -2073,12 +2175,16 @@ async function viewBookings() {
       return;
     }
 
-    // Local edit state — { dow: [{startInput, endInput, removeBtn, rowEl}, ...] }
     let activeServiceId = services[0].id;
-    let dayRows = {}; // dow → array of slot row refs
+    let dayInputs = {}; // dow → { input, statusEl, ranges }
     let dirty = false;
 
-    const serviceSelect = el('select', {
+    // Service picker only renders when there's more than one service.
+    // Single-service tenants (like Will Power Fitness Factory) skip the
+    // dropdown entirely so the availability editor is just "type your
+    // hours, hit save".
+    const showPicker = services.length > 1;
+    const serviceSelect = showPicker ? el('select', {
       class: 'cta-select',
       style: 'flex: 1; min-width: 200px',
       onchange: (e) => {
@@ -2090,103 +2196,109 @@ async function viewBookings() {
         dirty = false;
         renderForActiveService();
       }
+    }, ...services.map(s => el('option', { value: s.id }, s.name))) : null;
+
+    const headerRow = el('div', {
+      class: 'row',
+      style: 'gap: 12px; margin-bottom: 8px; flex-wrap: wrap; align-items: center'
     },
-      ...services.map(s => el('option', { value: s.id }, s.name))
+      showPicker
+        ? el('div', { style: 'font-size: 13px; font-weight: 600; min-width: 80px' }, 'Service:')
+        : null,
+      serviceSelect,
+      tz ? el('span', { class: 'muted', style: 'font-size: 12px; margin-left: auto' }, tz) : null
     );
 
-    const headerRow = el('div', { class: 'row', style: 'gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center' },
-      el('div', { style: 'font-size: 13px; font-weight: 600; min-width: 80px' }, 'Service:'),
-      serviceSelect,
-      tz ? el('span', { class: 'muted', style: 'font-size: 12px' }, tz) : null
+    const helpText = el('div', {
+      class: 'muted',
+      style: 'font-size: 12px; line-height: 1.5; margin-bottom: 16px; padding: 10px 12px; background: rgba(45,156,219,0.06); border-left: 2px solid rgba(45,156,219,0.4); border-radius: 4px;'
+    },
+      el('div', { style: 'color: #93c5fd; font-weight: 600; margin-bottom: 4px' }, 'How to set hours'),
+      el('div', { html: 'Type each day\'s hours like <strong>9a-3p</strong>, <strong>9-5</strong>, <strong>8:30am-12pm</strong>, or split blocks with a comma: <strong>9-12, 2-5</strong>. Leave blank or type <strong>closed</strong> for days off.' })
     );
 
     const dayContainer = el('div', {});
     const saveBtn = el('button', { class: 'btn', onclick: () => saveAvailability() }, 'Save changes');
     const footer = el('div', { class: 'row', style: 'justify-content: flex-end; margin-top: 16px' }, saveBtn);
 
-    panel.replaceChildren(headerRow, dayContainer, footer);
+    panel.replaceChildren(headerRow, helpText, dayContainer, footer);
 
     function renderForActiveService() {
       const svc = services.find(s => s.id === activeServiceId);
       if (!svc) return;
-      // Group existing templates by day_of_week
       const byDow = {};
       for (const t of (svc.templates || [])) {
         if (!byDow[t.day_of_week]) byDow[t.day_of_week] = [];
         byDow[t.day_of_week].push(t);
       }
-      dayRows = {};
+      dayInputs = {};
       const dayBlocks = DAYS_OF_WEEK.map(d => {
-        const slots = byDow[d.dow] || [];
-        const slotsContainer = el('div', { style: 'display: flex; flex-direction: column; gap: 6px; margin-top: 4px' });
-        dayRows[d.dow] = [];
-        slots.forEach(t => {
-          slotsContainer.appendChild(makeSlotRow(d.dow, t.start_time.slice(0, 5), t.end_time.slice(0, 5), slotsContainer));
+        const slots = (byDow[d.dow] || []).slice().sort((a, b) =>
+          (a.start_time || '').localeCompare(b.start_time || '')
+        );
+        const initial = slots.length
+          ? slots.map(s => formatRange(s.start_time, s.end_time)).join(', ')
+          : '';
+        const input = el('input', {
+          type: 'text',
+          value: initial,
+          placeholder: 'e.g. 9a-5p   (or leave blank for closed)',
+          style: 'flex: 1; min-width: 0; padding: 9px 12px; font-size: 14px;',
+          oninput: () => { dirty = true; updateStatus(d.dow); },
+          onblur: () => updateStatus(d.dow)
         });
-        const addBtn = el('button', {
-          class: 'btn sm ghost',
-          style: 'align-self: flex-start; margin-top: 4px',
-          onclick: () => {
-            slotsContainer.appendChild(makeSlotRow(d.dow, '09:00', '10:00', slotsContainer));
-            dirty = true;
-          }
-        }, '+ Add slot');
+        const statusEl = el('div', {
+          style: 'font-size: 12px; margin-top: 4px; min-height: 16px;'
+        });
+        dayInputs[d.dow] = { input, statusEl, ranges: [] };
+        // Initial parse to seed the status preview.
+        setTimeout(() => updateStatus(d.dow), 0);
         return el('div', {
-          style: 'padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.04)'
+          style: 'display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: start; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.04);'
         },
-          el('div', { class: 'row between', style: 'margin-bottom: 4px' },
-            el('div', { style: 'font-weight: 600; font-size: 14px; min-width: 110px' }, d.label),
-            addBtn
-          ),
-          slotsContainer
+          el('div', { style: 'font-weight: 600; font-size: 14px; padding-top: 9px;' }, d.label),
+          el('div', {}, input, statusEl)
         );
       });
       dayContainer.replaceChildren(...dayBlocks);
     }
 
-    function makeSlotRow(dow, startHHMM, endHHMM, container) {
-      const startInput = el('input', { type: 'time', value: startHHMM, onchange: () => { dirty = true; } });
-      const endInput   = el('input', { type: 'time', value: endHHMM,   onchange: () => { dirty = true; } });
-      const removeBtn  = el('button', {
-        class: 'btn sm ghost',
-        title: 'Remove slot',
-        onclick: () => {
-          container.removeChild(slotEl);
-          dayRows[dow] = dayRows[dow].filter(r => r.startInput !== startInput);
-          dirty = true;
-        }
-      }, '×');
-      const slotEl = el('div', {
-        class: 'row',
-        style: 'gap: 8px; align-items: center'
-      },
-        startInput,
-        el('span', { class: 'muted', style: 'font-size: 12px' }, 'to'),
-        endInput,
-        removeBtn
-      );
-      dayRows[dow].push({ startInput, endInput });
-      return slotEl;
+    function updateStatus(dow) {
+      const row = dayInputs[dow];
+      if (!row) return;
+      const parsed = parseTimeRanges(row.input.value);
+      if (!parsed.ok) {
+        row.ranges = null;
+        row.statusEl.style.color = '#fca5a5';
+        row.statusEl.textContent = '⚠️ ' + parsed.error;
+        return;
+      }
+      row.ranges = parsed.ranges;
+      if (!parsed.ranges.length) {
+        row.statusEl.style.color = 'var(--text-mute, #888)';
+        row.statusEl.textContent = 'Closed';
+      } else {
+        row.statusEl.style.color = '#86efac';
+        row.statusEl.textContent = '✓ ' +
+          parsed.ranges.map(r => formatRangeDisplay(r.start, r.end)).join(', ');
+      }
     }
 
     async function saveAvailability() {
-      // Collect all rows from the current edit state.
       const templates = [];
-      for (const dowStr of Object.keys(dayRows)) {
-        const dow = +dowStr;
-        for (const r of dayRows[dow]) {
-          const start = r.startInput.value;
-          const end   = r.endInput.value;
-          if (!start || !end) {
-            toast('Every slot needs a start and end time', true);
-            return;
-          }
-          if (end <= start) {
-            toast('Slot end times must be after start times', true);
-            return;
-          }
-          templates.push({ day_of_week: dow, start_time: start, end_time: end });
+      const errors = [];
+      for (const d of DAYS_OF_WEEK) {
+        const row = dayInputs[d.dow];
+        if (!row) continue;
+        const parsed = parseTimeRanges(row.input.value);
+        if (!parsed.ok) { errors.push(`${d.label}: ${parsed.error}`); continue; }
+        for (const r of parsed.ranges) {
+          templates.push({ day_of_week: d.dow, start_time: r.start, end_time: r.end });
         }
+      }
+      if (errors.length) {
+        toast(errors[0], true);
+        return;
       }
       saveBtn.disabled = true;
       try {
@@ -2194,7 +2306,6 @@ async function viewBookings() {
           method: 'PUT',
           body: { service_id: activeServiceId, templates }
         });
-        // Refresh local cache so subsequent service-switches see saved state
         const svc = services.find(s => s.id === activeServiceId);
         if (svc) svc.templates = r.templates || [];
         dirty = false;
@@ -2207,6 +2318,31 @@ async function viewBookings() {
     }
 
     renderForActiveService();
+  }
+
+  // Compact range string for the input value: "9:00-17:00" → "9a-5p".
+  function formatRange(startHHMMSS, endHHMMSS) {
+    const a = String(startHHMMSS || '').slice(0, 5);
+    const b = String(endHHMMSS   || '').slice(0, 5);
+    return formatHM(a) + '-' + formatHM(b);
+  }
+  function formatHM(hhmm) {
+    const [hStr, mStr] = hhmm.split(':');
+    let h = +hStr; const m = +mStr;
+    const mer = h >= 12 ? 'p' : 'a';
+    h = h % 12; if (h === 0) h = 12;
+    return m === 0 ? `${h}${mer}` : `${h}:${String(m).padStart(2, '0')}${mer}`;
+  }
+  // Friendlier "9:00 AM – 5:00 PM" preview shown under the input.
+  function formatRangeDisplay(startHHMM, endHHMM) {
+    return formatHMDisplay(startHHMM) + ' – ' + formatHMDisplay(endHHMM);
+  }
+  function formatHMDisplay(hhmm) {
+    const [hStr, mStr] = hhmm.split(':');
+    let h = +hStr; const m = +mStr;
+    const mer = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if (h === 0) h = 12;
+    return `${h}:${String(m).padStart(2, '0')} ${mer}`;
   }
 
   // ----- Services sub-view -----
