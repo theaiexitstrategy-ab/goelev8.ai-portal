@@ -648,6 +648,22 @@ async function onboardPendingTenants(req, res) {
       ga4_measurement_id: 'G-RGLQVQ5S3W',
       logo_url: `${PORTAL_BASE}/atbhr-logo.png`,
       user: { email: 'court@atbhr.com', password: 'BlackHair!!!' }
+    },
+    {
+      slug: 'willpower-fitness',
+      business_name: 'Will Power Fitness Factory',
+      // GA4 measurement ID can be set later via Settings — leave null to skip
+      // and avoid overwriting an existing value.
+      ga4_measurement_id: null,
+      logo_url: null,
+      user: {
+        email: 'willpowerfitnessfactory@gmail.com',
+        password: 'Will123!!!',
+        // Send branded recovery email so Will sets his own password on
+        // first login. Template + logo live in Supabase Auth → Email
+        // Templates → "Reset Password".
+        send_recovery_email: true
+      }
     }
   ];
 
@@ -679,11 +695,13 @@ async function onboardPendingTenants(req, res) {
       r.client_id = client.id;
       r.steps.push({ step: 'find_client', ok: true, id: client.id });
 
-      // 2. Update client row (logo, business_name, GA4 measurement ID)
+      // 2. Update client row (logo, business_name, GA4 measurement ID).
+      // Tenants can pass null to skip a field (e.g. willpower-fitness has
+      // no GA4 / logo yet — don't blow away existing values with null).
       const patch = {};
-      if (client.business_name !== t.business_name) patch.business_name = t.business_name;
-      if (client.logo_url !== t.logo_url)           patch.logo_url      = t.logo_url;
-      if (hasMeasurementCol && client.ga4_measurement_id !== t.ga4_measurement_id) {
+      if (t.business_name && client.business_name !== t.business_name) patch.business_name = t.business_name;
+      if (t.logo_url      && client.logo_url      !== t.logo_url)      patch.logo_url      = t.logo_url;
+      if (hasMeasurementCol && t.ga4_measurement_id && client.ga4_measurement_id !== t.ga4_measurement_id) {
         patch.ga4_measurement_id = t.ga4_measurement_id;
       }
       if (Object.keys(patch).length) {
@@ -723,6 +741,26 @@ async function onboardPendingTenants(req, res) {
         continue;
       }
       r.steps.push({ step: 'auth_user', ok: true, id: userId, created: userCreated, password_reset: !userCreated });
+
+      // 3b. Optional: send a branded password-recovery email so the new
+      // owner can pick their own password instead of using the shared
+      // temporary one. Uses the anon client + resetPasswordForEmail so
+      // Supabase fires the project's "Reset Password" email template
+      // (configurable in Supabase → Auth → Email Templates).
+      if (t.user.send_recovery_email) {
+        try {
+          const sbAnon = (await import('@supabase/supabase-js')).createClient(
+            process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY,
+            { auth: { persistSession: false, autoRefreshToken: false } }
+          );
+          const { error: rpErr } = await sbAnon.auth.resetPasswordForEmail(t.user.email, {
+            redirectTo: `${PORTAL_BASE}/?reset=1`
+          });
+          r.steps.push({ step: 'recovery_email', ok: !rpErr, error: rpErr?.message });
+        } catch (e) {
+          r.steps.push({ step: 'recovery_email', ok: false, error: e.message });
+        }
+      }
 
       // 4. Link user → client (role=owner). Manual select-then-insert
       // pattern because client_users in some environments doesn't have

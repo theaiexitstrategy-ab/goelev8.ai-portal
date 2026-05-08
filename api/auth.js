@@ -53,5 +53,46 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true });
   }
 
+  // Public — anyone can request a password reset for their own email.
+  // Always returns 200 so we don't leak which addresses are registered.
+  // The actual email goes out via Supabase Auth → Email Templates →
+  // "Reset Password" (configurable in the Supabase dashboard, where the
+  // GoElev8 logo + brand are applied).
+  if (action === 'forgot-password') {
+    if (!methodGuard(req, res, ['POST'])) return;
+    const { email } = await readJson(req);
+    if (!email) return res.status(400).json({ error: 'missing_email' });
+    const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+    const portal = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
+    try {
+      await sb.auth.resetPasswordForEmail(email, { redirectTo: `${portal}/?reset=1` });
+    } catch (e) { /* swallow — don't leak existence */ }
+    return res.status(200).json({ ok: true });
+  }
+
+  // Set a new password using a recovery session. The portal's reset page
+  // exchanges the recovery hash from the email link for an access token,
+  // then POSTs here with that token + the new password.
+  if (action === 'reset-password-with-token') {
+    if (!methodGuard(req, res, ['POST'])) return;
+    const { access_token, new_password } = await readJson(req);
+    if (!access_token) return res.status(400).json({ error: 'missing_token' });
+    if (!new_password || new_password.length < 8) {
+      return res.status(400).json({ error: 'password_too_short' });
+    }
+    // Verify the recovery JWT and pull the user id off it via the admin client.
+    const { data: userData, error: getErr } = await supabaseAdmin.auth.getUser(access_token);
+    if (getErr || !userData?.user?.id) {
+      return res.status(401).json({ error: 'invalid_or_expired_token' });
+    }
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(userData.user.id, {
+      password: new_password
+    });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(200).json({ ok: true });
+  }
+
   return res.status(400).json({ error: 'unknown_action' });
 }

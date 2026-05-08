@@ -861,6 +861,33 @@ tbody tr:last-child td { border-bottom: none; }
   margin-bottom: 16px;
 }
 .login .btn { width: 100%; padding: 12px; margin-top: 8px; font-size: 14px; }
+.login .ok {
+  background: rgba(34, 197, 94, 0.10);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #86efac;
+  padding: 11px 13px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.login .forgot-row {
+  margin-top: 14px;
+  text-align: center;
+}
+.login .forgot-link {
+  color: var(--text-mute);
+  font-size: 12px;
+  text-decoration: none;
+  border-bottom: 1px dashed transparent;
+  padding-bottom: 1px;
+  transition: color 120ms, border-color 120ms;
+}
+.login .forgot-link:hover,
+.login .forgot-link:focus-visible {
+  color: var(--brand-1, #fff);
+  border-bottom-color: currentColor;
+  outline: none;
+}
 .login .footer {
   margin-top: 24px;
   padding-top: 20px;

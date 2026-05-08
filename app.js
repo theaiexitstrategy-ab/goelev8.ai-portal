@@ -171,6 +171,103 @@ function renderLogin() {
     el('div', { class: 'field' }, el('label', {}, 'Email'), emailInput),
     el('div', { class: 'field' }, el('label', {}, 'Password'), pwInput),
     el('button', { class: 'btn', type: 'submit' }, 'Sign in →'),
+    el('div', { class: 'forgot-row' },
+      el('a', {
+        href: '#',
+        class: 'forgot-link',
+        onclick: async (e) => {
+          e.preventDefault();
+          errBox.innerHTML = '';
+          const addr = (emailInput.value || '').trim();
+          if (!addr) {
+            errBox.innerHTML = '<div class="err">Enter your email above first, then click Forgot.</div>';
+            emailInput.focus();
+            return;
+          }
+          try {
+            await api('/api/auth?action=forgot-password', {
+              method: 'POST',
+              body: { email: addr }
+            });
+            errBox.innerHTML = '<div class="ok">Check your inbox — if that email is registered, a password reset link is on its way.</div>';
+          } catch (err) {
+            errBox.innerHTML = `<div class="err">${err.message || 'Could not send reset email'}</div>`;
+          }
+        }
+      }, 'Forgot your password?')
+    ),
+    el('div', { class: 'footer' }, 'Powered by GoElev8 AI Infrastructure')
+  );
+  box.appendChild(form);
+  return el('div', { class: 'login' }, box);
+}
+
+// ============================================================
+// PASSWORD RESET VIEW
+// ============================================================
+// Rendered when the user lands on /?reset=1 from the recovery email.
+// Supabase puts the recovery JWT in the URL hash as #access_token=…&
+// type=recovery&… — we parse it, prompt for a new password, and POST to
+// /api/auth?action=reset-password-with-token. Once successful we drop
+// the hash + flag and let the regular login screen take over.
+function renderResetPassword() {
+  const box = el('div', { class: 'box' });
+  const errBox = el('div');
+  const np = el('input', { type: 'password', placeholder: 'At least 8 characters', required: true, minlength: 8 });
+  const np2 = el('input', { type: 'password', placeholder: 'Confirm new password', required: true, minlength: 8 });
+
+  // Parse the recovery hash. Supabase Auth uses hash params, not query params.
+  const hash = (window.location.hash || '').replace(/^#/, '');
+  const params = new URLSearchParams(hash);
+  const recoveryToken = params.get('access_token') || '';
+  const isRecovery = params.get('type') === 'recovery' || !!recoveryToken;
+
+  const form = el('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      errBox.innerHTML = '';
+      if (np.value !== np2.value) {
+        errBox.innerHTML = '<div class="err">Passwords don’t match.</div>';
+        return;
+      }
+      if (np.value.length < 8) {
+        errBox.innerHTML = '<div class="err">Password must be at least 8 characters.</div>';
+        return;
+      }
+      if (!recoveryToken) {
+        errBox.innerHTML = '<div class="err">Reset link expired or invalid. Click “Forgot your password?” from the login screen to get a fresh email.</div>';
+        return;
+      }
+      try {
+        await api('/api/auth?action=reset-password-with-token', {
+          method: 'POST',
+          body: { access_token: recoveryToken, new_password: np.value }
+        });
+        // Strip the hash + ?reset=1 so a refresh doesn't bring us back here.
+        history.replaceState({}, '', '/');
+        errBox.innerHTML = '<div class="ok">Password updated! Redirecting to sign-in…</div>';
+        setTimeout(() => { window.location.href = '/'; }, 1200);
+      } catch (err) {
+        errBox.innerHTML = `<div class="err">${err.message || 'Reset failed'}</div>`;
+      }
+    }
+  },
+    el('div', { class: 'login-brand' },
+      el('div', { class: 'logo' }, el('img', { src: '/logo.png', alt: '' })),
+      el('div', {},
+        el('h1', {}, 'Reset password'),
+        el('p', { style: 'margin:2px 0 0' }, isRecovery
+          ? 'Set a new password for your GoElev8.AI account.'
+          : 'Open the link in the password-reset email we sent.')
+      )
+    ),
+    errBox,
+    el('div', { class: 'field' }, el('label', {}, 'New password'), np),
+    el('div', { class: 'field' }, el('label', {}, 'Confirm password'), np2),
+    el('button', { class: 'btn', type: 'submit', disabled: !recoveryToken ? '' : false }, 'Update password →'),
+    el('div', { class: 'forgot-row' },
+      el('a', { href: '/', class: 'forgot-link' }, '← Back to sign in')
+    ),
     el('div', { class: 'footer' }, 'Powered by GoElev8 AI Infrastructure')
   );
   box.appendChild(form);
@@ -6188,6 +6285,18 @@ async function render() {
     state._messagesChannel = null;
   }
   root.innerHTML = '';
+  // Recovery-email landing: ?reset=1 from the email's redirectTo, or a
+  // bare #access_token=…&type=recovery hash from Supabase's redirect.
+  // Show the reset-password form before anything else, even when an
+  // expired session JWT is still in localStorage.
+  {
+    const qs = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    if (qs.get('reset') === '1' || hashParams.get('type') === 'recovery') {
+      root.appendChild(renderResetPassword());
+      return;
+    }
+  }
   if (!state.token) { root.appendChild(renderLogin()); return; }
   if (!state.user) {
     // Start the refresh timer on page load if we have a refresh token
