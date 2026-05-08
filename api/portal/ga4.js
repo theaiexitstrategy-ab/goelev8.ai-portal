@@ -95,26 +95,35 @@ export default async function handler(req, res) {
   const ctx = await requireUser(req, res); if (!ctx) return;
 
   // Resolve the GA4 property for this request:
-  //   - If impersonating / client context → use client.ga4_property_id
-  //   - Otherwise (admin platform view) → use env GA4_PROPERTY_ID
+  //   - If a tenant context is present → use *that* tenant's
+  //     ga4_property_id ONLY. Don't silently fall back to the
+  //     platform-wide GA4_PROPERTY_ID env var, otherwise tenants
+  //     without their own Property ID end up seeing whatever the
+  //     platform env points at (almost always Flex Facility), which
+  //     is misleading "their" analytics.
+  //   - When there's no tenant context (admin platform view) → use
+  //     env GA4_PROPERTY_ID as the fleet-wide fallback.
   let propertyId = null;
   let propertyLabel = 'Platform-wide';
+  let tenantMissingPropertyId = false;
   if (ctx.clientId) {
     const { data: client } = await supabaseAdmin
-      .from('clients').select('name, ga4_property_id').eq('id', ctx.clientId).maybeSingle();
+      .from('clients').select('name, business_name, ga4_property_id').eq('id', ctx.clientId).maybeSingle();
     propertyId = client?.ga4_property_id || null;
-    propertyLabel = client?.name || 'Client';
-  }
-  if (!propertyId) {
-    propertyId = process.env.GA4_PROPERTY_ID;
+    propertyLabel = client?.business_name || client?.name || 'Client';
+    tenantMissingPropertyId = !propertyId;
+  } else {
+    propertyId = process.env.GA4_PROPERTY_ID || null;
   }
 
   if (!propertyId || !process.env.GA4_SERVICE_ACCOUNT_JSON) {
     return res.status(200).json({
       configured: false,
-      error: ctx.clientId
-        ? `No GA4 property configured for ${propertyLabel}. Set clients.ga4_property_id in Supabase or GA4_PROPERTY_ID env var.`
-        : 'GA4 not configured. Set GA4_PROPERTY_ID and GA4_SERVICE_ACCOUNT_JSON env vars.',
+      error: tenantMissingPropertyId
+        ? `Google Analytics isn't connected for ${propertyLabel} yet. Find your numeric GA4 Property ID at Google Analytics → Admin → Property Settings, then have your portal admin set it on this tenant.`
+        : ctx.clientId
+          ? `No GA4 property configured for ${propertyLabel}. Set clients.ga4_property_id.`
+          : 'GA4 not configured. Set GA4_PROPERTY_ID and GA4_SERVICE_ACCOUNT_JSON env vars.',
       sessions: 0,
       page_views: 0,
       users: 0,
