@@ -660,12 +660,12 @@ async function onboardPendingTenants(req, res) {
       // and credit pool until they get their own. The lib resolver
       // follows parent_client_id at every SMS send / credit read site.
       parent_client_slug: 'flex-facility',
-      // Tab set Will sees in the sidebar. Excludes 'nudges' on purpose
-      // — Will isn't running automated nudge sequences from this portal
-      // (Flex's nudges still run from Flex's portal since they share
-      // the parent client + Twilio number). Includes Contacts / Blasts
-      // / Analytics so Will can manage his CRM + send SMS blasts.
-      portal_tabs: ['overview','leads','messages','contacts','blasts','bookings','analytics','settings'],
+      // Tab set Will sees in the sidebar. Excludes 'nudges' (no
+      // automated nudge sequences in this portal — Flex's parent
+      // handles them) and 'contacts' (Leads is the single source of
+      // truth for people Will is in conversation with; per-lead
+      // profile slide-over already lives in the Leads view).
+      portal_tabs: ['overview','leads','messages','blasts','bookings','analytics','settings'],
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
@@ -1727,12 +1727,12 @@ async function applyPendingMigrations(req, res) {
        FOR EACH ROW EXECUTE FUNCTION public.check_parent_client_no_chain();`,
 
     // ----- One-shot data fix: pin Will Power's portal_tabs -----
-    // Removes 'nudges' from Will's tab list and locks the rest. Slug-
+    // Locks Will's tab list. Excludes 'nudges' + 'contacts'. Slug-
     // scoped so no other tenant is touched. Idempotent — re-running
     // writes the same value. portal_tabs is jsonb (not text[]) so the
     // value is supplied as a JSON literal.
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","messages","contacts","blasts","bookings","analytics","settings"]'::jsonb
+       SET portal_tabs = '["overview","leads","messages","blasts","bookings","analytics","settings"]'::jsonb
      WHERE slug = 'willpower-fitness';`
   ];
 
