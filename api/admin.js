@@ -658,8 +658,10 @@ async function onboardPendingTenants(req, res) {
         // Templates → "Reset Password".
         send_recovery_email: true
       },
-      // Mirrors the Flex Facility booking seed (migration 0017), but
-      // intentionally only one service: a single Free Consultation.
+      // Mirrors the Flex Facility booking seed but intentionally only
+      // one service: a single Free Consultation. Schema follows the
+      // post-0018 unification — services key off client_id (not
+      // calendar_id) and weekly slots live in availability_templates.
       // The actual booking page lives at book.willpowerfitnessfactory.com
       // (Next.js, separate repo) and hits this portal's
       // /api/portal/bookings/* endpoints for slots + writes.
@@ -669,16 +671,26 @@ async function onboardPendingTenants(req, res) {
         title: 'Will Power Fitness Factory',
         timezone: 'America/Chicago',
         services: [
-          { name: 'Free Consultation', description: '30-minute introductory consultation to discuss your fitness goals.', duration_minutes: 30, price_cents: 0 }
+          {
+            key: 'consultation',
+            name: 'Free Consultation',
+            full_name: 'Free Fitness Consultation',
+            btn_text: 'CONFIRM CONSULTATION — IT\'S FREE',
+            max_per_slot: 1,
+            info_title: 'CONSULTATION SCHEDULE',
+            info_note: 'A 30-minute one-on-one consultation to discuss your fitness goals.',
+            sort_order: 1
+          }
         ],
-        // Mon–Fri 9:00–17:00 by default. Will can override per-day from
+        // Mon–Fri 9:00–17:00 in 30-minute slots, attached to the
+        // 'consultation' service above. Will can override per-day from
         // the portal Bookings → Availability tab.
         availability: [
-          { dow: 1, start: '09:00', end: '17:00' },
-          { dow: 2, start: '09:00', end: '17:00' },
-          { dow: 3, start: '09:00', end: '17:00' },
-          { dow: 4, start: '09:00', end: '17:00' },
-          { dow: 5, start: '09:00', end: '17:00' }
+          { service_key: 'consultation', dow: 1, start: '09:00', end: '17:00', slot_minutes: 30 },
+          { service_key: 'consultation', dow: 2, start: '09:00', end: '17:00', slot_minutes: 30 },
+          { service_key: 'consultation', dow: 3, start: '09:00', end: '17:00', slot_minutes: 30 },
+          { service_key: 'consultation', dow: 4, start: '09:00', end: '17:00', slot_minutes: 30 },
+          { service_key: 'consultation', dow: 5, start: '09:00', end: '17:00', slot_minutes: 30 }
         ]
       }
     }
@@ -845,40 +857,57 @@ async function onboardPendingTenants(req, res) {
             r.steps.push({ step: 'booking_calendar', ok: true, id: cal.id, created: false });
           }
 
-          // 5b. Services + availability — only seed when calendar has none
-          // yet. Idempotent: re-running won't duplicate.
-          if (cal) {
-            const { data: existingServices } = await supabaseAdmin
-              .from('booking_services').select('id').eq('calendar_id', cal.id).limit(1);
-            if (!existingServices?.length && b.services?.length) {
-              const rows = b.services.map(s => ({
-                calendar_id: cal.id,
-                name: s.name,
-                description: s.description || null,
-                duration_minutes: s.duration_minutes ?? 30,
-                price_cents: s.price_cents ?? 0,
-                is_active: true
-              }));
-              const { error: svcErr } = await supabaseAdmin.from('booking_services').insert(rows);
-              r.steps.push({ step: 'booking_services', ok: !svcErr, count: rows.length, error: svcErr?.message });
-            } else {
-              r.steps.push({ step: 'booking_services', ok: true, count: 0, note: 'already seeded' });
-            }
+          // 5b. Services + availability_templates — schema per migration
+          // 0018: booking_services keys off client_id, availability lives
+          // in availability_templates with a service_id FK. UPSERT on the
+          // unique (client_id, key) constraint so re-runs don't duplicate.
+          if (b.services?.length) {
+            const rows = b.services.map(s => ({
+              client_id:    client.id,
+              key:          s.key,
+              name:         s.name,
+              full_name:    s.full_name || s.name,
+              btn_text:     s.btn_text || null,
+              max_per_slot: s.max_per_slot ?? null,
+              info_title:   s.info_title || null,
+              info_note:    s.info_note || null,
+              sort_order:   s.sort_order ?? 0,
+              is_active:    true
+            }));
+            const { error: svcErr } = await supabaseAdmin.from('booking_services')
+              .upsert(rows, { onConflict: 'client_id,key' });
+            r.steps.push({ step: 'booking_services', ok: !svcErr, count: rows.length, error: svcErr?.message });
+          }
 
-            const { data: existingAvail } = await supabaseAdmin
-              .from('booking_availability').select('id').eq('calendar_id', cal.id).limit(1);
-            if (!existingAvail?.length && b.availability?.length) {
-              const rows = b.availability.map(a => ({
-                calendar_id: cal.id,
-                day_of_week: a.dow,
-                start_time: a.start,
-                end_time: a.end,
-                is_active: true
-              }));
-              const { error: avErr } = await supabaseAdmin.from('booking_availability').insert(rows);
-              r.steps.push({ step: 'booking_availability', ok: !avErr, count: rows.length, error: avErr?.message });
+          if (b.availability?.length) {
+            // Resolve each availability row to its service_id by looking
+            // up the service we just upserted on (client_id, key).
+            const { data: services } = await supabaseAdmin
+              .from('booking_services')
+              .select('id, key')
+              .eq('client_id', client.id);
+            const byKey = Object.fromEntries((services || []).map(s => [s.key, s.id]));
+            const rows = b.availability
+              .map(a => {
+                const sid = byKey[a.service_key];
+                if (!sid) return null;
+                return {
+                  client_id:             client.id,
+                  service_id:            sid,
+                  day_of_week:           a.dow,
+                  start_time:            a.start,
+                  end_time:              a.end,
+                  slot_duration_minutes: a.slot_minutes ?? 30,
+                  is_active:             true
+                };
+              })
+              .filter(Boolean);
+            if (rows.length) {
+              const { error: avErr } = await supabaseAdmin.from('availability_templates')
+                .upsert(rows, { onConflict: 'client_id,service_id,day_of_week,start_time' });
+              r.steps.push({ step: 'availability_templates', ok: !avErr, count: rows.length, error: avErr?.message });
             } else {
-              r.steps.push({ step: 'booking_availability', ok: true, count: 0, note: 'already seeded' });
+              r.steps.push({ step: 'availability_templates', ok: false, error: 'no services matched availability rows' });
             }
           }
         } catch (e) {
