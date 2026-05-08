@@ -660,12 +660,12 @@ async function onboardPendingTenants(req, res) {
       // and credit pool until they get their own. The lib resolver
       // follows parent_client_id at every SMS send / credit read site.
       parent_client_slug: 'flex-facility',
-      // Full tab set so Will sees Contacts / Blasts / Nudges / Analytics
-      // alongside the default Overview / Leads / Messages / Bookings /
-      // Settings. (Master Admin's "Sync Tabs to All Tenants" button does
-      // the same job for everyone — declaring it here makes the onboard
-      // click self-sufficient.)
-      portal_tabs: ['overview','leads','messages','contacts','blasts','nudges','bookings','analytics','settings'],
+      // Tab set Will sees in the sidebar. Excludes 'nudges' on purpose
+      // — Will isn't running automated nudge sequences from this portal
+      // (Flex's nudges still run from Flex's portal since they share
+      // the parent client + Twilio number). Includes Contacts / Blasts
+      // / Analytics so Will can manage his CRM + send SMS blasts.
+      portal_tabs: ['overview','leads','messages','contacts','blasts','bookings','analytics','settings'],
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
@@ -816,12 +816,16 @@ async function onboardPendingTenants(req, res) {
         patch.parent_client_id = parentClientId;
       }
       if (hasPortalTabsColumn && Array.isArray(t.portal_tabs) && t.portal_tabs.length) {
+        // Strict set: overwrite portal_tabs with the configured list so
+        // tabs can be REMOVED as well as added (e.g. dropping 'nudges'
+        // from Will Power's portal). Operators wanting per-tenant adds
+        // beyond the declared set should hit the global
+        // 'Sync Tabs to All Tenants' button instead.
         const current = Array.isArray(client.portal_tabs) ? client.portal_tabs : [];
-        // Only patch if the current tabs are missing one we want to add.
-        const missing = t.portal_tabs.filter(x => !current.includes(x));
-        if (missing.length) {
-          patch.portal_tabs = current.length ? [...current, ...missing] : t.portal_tabs.slice();
-        }
+        const sameSet =
+          current.length === t.portal_tabs.length &&
+          t.portal_tabs.every((x, i) => current[i] === x);
+        if (!sameSet) patch.portal_tabs = t.portal_tabs.slice();
       }
       if (Object.keys(patch).length) {
         const { error } = await supabaseAdmin.from('clients').update(patch).eq('id', client.id);
