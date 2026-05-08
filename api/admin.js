@@ -1724,7 +1724,16 @@ async function applyPendingMigrations(req, res) {
     `DROP TRIGGER IF EXISTS clients_parent_no_chain ON public.clients;`,
     `CREATE TRIGGER clients_parent_no_chain
        BEFORE INSERT OR UPDATE OF parent_client_id ON public.clients
-       FOR EACH ROW EXECUTE FUNCTION public.check_parent_client_no_chain();`
+       FOR EACH ROW EXECUTE FUNCTION public.check_parent_client_no_chain();`,
+
+    // ----- One-shot data fix: pin Will Power's portal_tabs -----
+    // Removes 'nudges' from Will's tab list and locks the rest. Slug-
+    // scoped so no other tenant is touched. Idempotent — re-running
+    // writes the same value. Lives here (not as a true migration)
+    // because it's tenant-specific operator config, not schema.
+    `UPDATE public.clients
+       SET portal_tabs = ARRAY['overview','leads','messages','contacts','blasts','bookings','analytics','settings']::text[]
+     WHERE slug = 'willpower-fitness';`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
