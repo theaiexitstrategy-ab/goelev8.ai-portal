@@ -634,28 +634,21 @@ async function onboardPendingTenants(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
 
   const PORTAL_BASE = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
+  // TAES + AllThingzBlackHair were onboarded in earlier sessions and the
+  // re-runs were idempotent no-ops, so they're retired from this list
+  // to keep the button focused on the next pending tenant (Will Power
+  // Fitness Factory). If a future re-onboard is needed, re-add them here.
   const TENANTS = [
-    {
-      slug: 'ai-exit-strategy',
-      business_name: 'The AI Exit Strategy',
-      ga4_measurement_id: 'G-HNX5T6DC0N',
-      logo_url: `${PORTAL_BASE}/taes-logo.png`,
-      user: { email: 'ab@taes.com', password: 'TAES!!!' }
-    },
-    {
-      slug: 'allthingzblackhair',
-      business_name: 'AllThingzBlackHair',
-      ga4_measurement_id: 'G-RGLQVQ5S3W',
-      logo_url: `${PORTAL_BASE}/atbhr-logo.png`,
-      user: { email: 'court@atbhr.com', password: 'BlackHair!!!' }
-    },
     {
       slug: 'willpower-fitness',
       business_name: 'Will Power Fitness Factory',
       // GA4 measurement ID can be set later via Settings — leave null to skip
       // and avoid overwriting an existing value.
       ga4_measurement_id: null,
-      logo_url: null,
+      // Color logo (logo1) — used as the primary in-portal mark. The
+      // white variant ships alongside in the repo for any future dark-
+      // background placement.
+      logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo1.png`,
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',

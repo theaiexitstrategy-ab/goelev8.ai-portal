@@ -5161,9 +5161,12 @@ async function viewAdmin() {
   const trashBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: () => openTrashView() }, '🗑 View Trash (30d)');
   migPanel.appendChild(trashBtn);
 
-  // Finish provisioning for TAES + AllThingzBlackHair (creates auth
-  // users, sets logos + GA4 Measurement IDs). Server-side equivalent
-  // of scripts/onboard-taes-atbhr.mjs.
+  // One-click finish for the next pending tenant (currently Will Power
+  // Fitness Factory): creates the auth user, sets the logo, sends a
+  // branded password-reset email, and seeds the booking calendar +
+  // Free Consultation service + default Mon–Fri availability.
+  // Idempotent — safe to re-click. TAES + ATBHR were retired from the
+  // server-side TENANTS list once they were live.
   const onboardOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:280px;margin-top:8px' });
   const onboardBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
     e.currentTarget.disabled = true;
@@ -5176,15 +5179,15 @@ async function viewAdmin() {
       if (failed.length) {
         toast(`${failed.length} tenant(s) had issues — check JSON below.`, true);
       } else {
-        toast('TAES + ATBHR onboarded · refreshing cards…');
+        toast('Will Power Fitness Factory onboarded · refreshing cards…');
         render();
       }
     } catch (err) { toast('Onboard failed: ' + err.message, true); }
     finally {
       e.currentTarget.disabled = false;
-      e.currentTarget.textContent = 'Onboard TAES + ATBHR';
+      e.currentTarget.textContent = 'Onboard Will Power Fitness Factory';
     }
-  } }, 'Onboard TAES + ATBHR');
+  } }, 'Onboard Will Power Fitness Factory');
   migPanel.appendChild(onboardBtn);
   migPanel.appendChild(onboardOut);
 
