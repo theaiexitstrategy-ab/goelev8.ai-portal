@@ -479,7 +479,12 @@ function shell(content) {
   const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
 
   const logoSrc = state.client?.logo_url || '/logo.png';
-  const brandName = state.client?.portal_tabs ? (state.client.name || 'Client Portal') : 'GoElev8.AI';
+  // When a tenant is signed in (or admin is impersonating one), show
+  // their business name in the sidebar. Admin without impersonation
+  // and the unauthed shell both fall back to 'GoElev8.AI'.
+  const brandName = state.client
+    ? (state.client.business_name || state.client.name || 'Client Portal')
+    : 'GoElev8.AI';
 
   // Bottom nav buttons for mobile
   const bottomNav = (state.client || state.isAdmin)
@@ -509,8 +514,9 @@ function shell(content) {
   const closeNav = () => document.body.classList.remove('nav-open');
 
   // If we're showing a client's custom logo (not the default GoElev8 mark),
-  // tag it with .client-logo so the CSS gives it a black background
-  // instead of the default brand gradient.
+  // tag it with .client-logo so the CSS gives it a white background
+  // — most tenant logos read better against white than against the
+  // default brand gradient.
   const isClientLogo = !!state.client?.logo_url;
   const logoClass = isClientLogo ? 'logo client-logo' : 'logo';
 
@@ -598,21 +604,10 @@ async function viewOverview() {
     cards.appendChild(card('Bookings', bk.bookings.length, 'Scheduled'));
   } catch (e) {}
 
-  // Road To The Stage /r2s analytics + ebook sales — only when the
-  // active tenant context is Flex Facility. Admin sees them via
-  // impersonation; never in any other tenant's view.
-  if (['flex-facility', 'willpower-fitness'].includes(state.client?.slug)) {
-    const r2sPanel = el('div', { class: 'panel' });
-    r2sPanel.appendChild(el('h2', {}, 'Road To The Stage — /r2s Page Analytics'));
-    r2sPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
-      'GA4 data scoped to the /r2s page on theflexfacility.com · last 30 days'));
-    wrap.appendChild(r2sPanel);
-    loadFlexR2sAnalytics(r2sPanel);
-
-    const ebookPanel = el('div', { class: 'panel r2s-ebook-panel' });
-    wrap.appendChild(ebookPanel);
-    loadR2sEbookSection(ebookPanel);
-  }
+  // The /r2s analytics + ebook sales panels used to live here on the
+  // Overview, but they're now consolidated into the Analytics tab
+  // (loadR2sAnalyticsSection in viewAnalytics) so the Overview stays
+  // a clean dashboard summary.
 
   // Quick top-up panel
   const tu = el('div', { class: 'panel' });

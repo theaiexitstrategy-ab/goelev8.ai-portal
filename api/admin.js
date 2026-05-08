@@ -646,7 +646,10 @@ async function onboardPendingTenants(req, res) {
       // GA4 measurement ID can be set later via Settings — leave null to skip
       // and avoid overwriting an existing value.
       ga4_measurement_id: null,
-      logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo2.jpg`,
+      // logo1 has a white background — pairs cleanly with the
+      // white-container .client-logo CSS so the brand mark sits flat
+      // in the sidebar.
+      logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo1.jpg`,
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
