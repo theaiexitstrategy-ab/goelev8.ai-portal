@@ -646,11 +646,7 @@ async function onboardPendingTenants(req, res) {
       // GA4 measurement ID can be set later via Settings — leave null to skip
       // and avoid overwriting an existing value.
       ga4_measurement_id: null,
-      // White variant — Will uploaded a smaller, dark-background-friendly
-      // version. Filename has parentheses so they're URL-encoded
-      // (%28 / %29) — Vercel serves the file fine either way but the
-      // encoded form keeps the URL valid in HTML attributes everywhere.
-      logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo2%28White%29.png`,
+      logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo2.jpg`,
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
