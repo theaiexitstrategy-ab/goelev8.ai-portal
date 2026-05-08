@@ -646,10 +646,11 @@ async function onboardPendingTenants(req, res) {
       // GA4 measurement ID can be set later via Settings — leave null to skip
       // and avoid overwriting an existing value.
       ga4_measurement_id: null,
-      // Color logo (logo1) — used as the primary in-portal mark. The
-      // white variant ships alongside in the repo for any future dark-
-      // background placement.
-      logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo1.png`,
+      // White variant — Will uploaded a smaller, dark-background-friendly
+      // version. Filename has parentheses so they're URL-encoded
+      // (%28 / %29) — Vercel serves the file fine either way but the
+      // encoded form keeps the URL valid in HTML attributes everywhere.
+      logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo2%28White%29.png`,
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
