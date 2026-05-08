@@ -323,11 +323,12 @@ async function ensureDefaultClients(req, res) {
   await supabaseAdmin.from('clients').delete().ilike('name', 'dlp').then(() => {}, () => {});
 
   const required = [
-    { slug: 'goelev8',           name: 'GoElev8.ai',             business_name: 'GoElev8.ai' },
-    { slug: 'flex-facility',     name: 'The Flex Facility',      business_name: 'The Flex Facility LLC' },
-    { slug: 'islay-studios',     name: 'iSlay Studios',          business_name: 'iSlay Studios LLC' },
-    { slug: 'ai-exit-strategy',  name: 'The AI Exit Strategy',   business_name: 'The AI Exit Strategy' },
-    { slug: 'allthingzblackhair', name: 'AllThingzBlackHair',     business_name: 'AllThingzBlackHair' }
+    { slug: 'goelev8',            name: 'GoElev8.ai',                business_name: 'GoElev8.ai' },
+    { slug: 'flex-facility',      name: 'The Flex Facility',         business_name: 'The Flex Facility LLC' },
+    { slug: 'islay-studios',      name: 'iSlay Studios',             business_name: 'iSlay Studios LLC' },
+    { slug: 'ai-exit-strategy',   name: 'The AI Exit Strategy',      business_name: 'The AI Exit Strategy' },
+    { slug: 'allthingzblackhair', name: 'AllThingzBlackHair',        business_name: 'AllThingzBlackHair' },
+    { slug: 'willpower-fitness',  name: 'Will Power Fitness Factory', business_name: 'Will Power Fitness Factory' }
   ];
   const { data: existing } = await supabaseAdmin
     .from('clients').select('id, slug, name, business_name');
@@ -909,9 +910,26 @@ async function createOnboardingPaymentLink(req, res) {
         subscription_data: {
           trial_period_days: 30
         },
+        // Custom fields collected at checkout — the Stripe webhook
+        // uses these to auto-provision the new tenant's portal
+        // (clients row, auth user via invite email, client_users link).
+        custom_fields: [
+          {
+            key: 'business_name',
+            label: { type: 'custom', custom: 'Business name' },
+            type: 'text',
+            text: { minimum_length: 2, maximum_length: 80 }
+          },
+          {
+            key: 'portal_slug',
+            label: { type: 'custom', custom: 'Portal slug (e.g. acme-fitness — lowercase, dashes only)' },
+            type: 'text',
+            text: { minimum_length: 2, maximum_length: 40 }
+          }
+        ],
         custom_text: {
           submit: {
-            message: 'Use code FOUNDING for 50% off the $400 setup. Total today: $200 — your $99/month plan starts after a 30-day free trial.'
+            message: 'Use code FOUNDING for 50% off the $400 setup. Total today: $200 — your $99/month plan starts after a 30-day free trial. Your portal at portal.goelev8.ai/<slug> goes live the moment payment clears.'
           }
         },
         after_completion: { type: 'redirect', redirect: { url: REDIRECT_URL } },

@@ -31,20 +31,29 @@ function isR2sSale(sale) {
   return R2S_MATCHERS.some(m => hay.includes(m));
 }
 
+// Tenants that resell the R2S ebook. Each tenant uses their OWN
+// sales table rows — the matcher below only considers a sale "R2S"
+// if the product/source/stripe_session_id mentions Road To The Stage.
+const R2S_TENANT_SLUGS = ['flex-facility', 'willpower-fitness'];
+
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
 
-  // Gate to Flex Facility client or platform admin
+  // Gate to any R2S-enabled tenant or platform admin. Variable was
+  // historically named flexClientId — kept generic now that multiple
+  // tenants share the feature.
   const isPlatformAdmin = ctx.user?.email === 'ab@goelev8.ai';
   let flexClientId = null;
   if (ctx.clientId) {
     const { data: c } = await supabaseAdmin
       .from('clients').select('id, slug, stripe_secret_key, stripe_connected_account_id')
       .eq('id', ctx.clientId).maybeSingle();
-    if (c?.slug === 'flex-facility') flexClientId = c.id;
+    if (c && R2S_TENANT_SLUGS.includes(c.slug)) flexClientId = c.id;
   }
   if (!flexClientId && isPlatformAdmin) {
+    // Admin hitting the endpoint without impersonating — default to
+    // Flex Facility for backwards compatibility with existing UI.
     const { data: flex } = await supabaseAdmin
       .from('clients').select('id').eq('slug', 'flex-facility').maybeSingle();
     flexClientId = flex?.id || null;

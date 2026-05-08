@@ -31,6 +31,105 @@ export default async function handler(req, res) {
         const packId = session.metadata?.pack;
         const pack = getPack(packId);
 
+        // ─── GoElev8 onboarding flow auto-provision ─────────────────
+        // When a FOUNDING-link checkout completes we read the
+        // business_name + portal_slug custom fields, create a clients
+        // row, invite the customer's email via Supabase auth (sends a
+        // magic-link password-set email), and link them. Idempotent
+        // by stripe_customer_id stored on the clients row.
+        if (session.metadata?.flow === 'goelev8_onboarding_v1') {
+          try {
+            const fields = {};
+            for (const f of (session.custom_fields || [])) {
+              fields[f.key] = (f.text?.value || '').trim();
+            }
+            const businessName = fields.business_name || session.customer_details?.name || 'New Tenant';
+            let slug = (fields.portal_slug || '').toLowerCase()
+              .replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+            if (!slug) {
+              slug = businessName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+            }
+            const customerEmail = session.customer_details?.email
+              || session.customer_email || null;
+
+            // Idempotency check: did we already create a tenant for
+            // this Stripe customer?
+            let { data: existing } = await supabaseAdmin
+              .from('clients').select('id, slug')
+              .eq('stripe_customer_id', session.customer || '').maybeSingle();
+
+            if (!existing) {
+              // Resolve a unique slug. If the requested one is taken,
+              // append -2, -3, etc. until something free.
+              let attempt = slug;
+              for (let i = 2; i < 50; i++) {
+                const { data: clash } = await supabaseAdmin
+                  .from('clients').select('id').eq('slug', attempt).maybeSingle();
+                if (!clash) break;
+                attempt = `${slug}-${i}`;
+              }
+              slug = attempt;
+
+              const { data: created, error: createErr } = await supabaseAdmin
+                .from('clients').insert({
+                  slug,
+                  name: businessName,
+                  business_name: businessName,
+                  stripe_customer_id: session.customer || null,
+                  credit_balance: 20,
+                  welcome_sms_enabled: false
+                })
+                .select('id, slug').single();
+              if (createErr) {
+                console.error('[onboarding] client insert failed:', createErr.message);
+              } else {
+                existing = created;
+                await supabaseAdmin.from('credit_ledger').insert({
+                  client_id: created.id, delta: 20,
+                  reason: 'trial_grant', ref_id: 'stripe_onboarding'
+                });
+              }
+            }
+
+            // Invite the customer by email — Supabase sends a magic
+            // link they click to set their own password. Skipped
+            // silently if email missing or auth API errors.
+            if (existing && customerEmail) {
+              const baseUrl = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
+              const { data: invite, error: inviteErr } = await supabaseAdmin.auth.admin
+                .inviteUserByEmail(customerEmail, {
+                  redirectTo: `${baseUrl}/?welcome=1`,
+                  data: { client_slug: existing.slug, business_name: businessName }
+                });
+              let userId = invite?.user?.id || null;
+              if (inviteErr && /already|registered|exists/i.test(inviteErr.message)) {
+                // User exists — find the id and just link them.
+                const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+                userId = list?.users?.find(u => u.email === customerEmail)?.id || null;
+              }
+              if (userId) {
+                const { data: link } = await supabaseAdmin.from('client_users')
+                  .select('user_id').eq('user_id', userId).eq('client_id', existing.id).maybeSingle();
+                if (!link) {
+                  await supabaseAdmin.from('client_users').insert({
+                    user_id: userId, client_id: existing.id, role: 'owner'
+                  });
+                }
+              }
+            }
+
+            // Notify platform admins so we have visibility into new
+            // signups in real time.
+            await sendPushToAdmins('🎉 New GoElev8 tenant',
+              `${businessName} just signed up at /${(existing?.slug || slug)}` +
+              (customerEmail ? ` · ${customerEmail}` : ''),
+              '/'
+            ).catch(() => {});
+          } catch (e) {
+            console.error('[onboarding] auto-provision failed:', e.message);
+          }
+        }
+
         // Credit pack purchase
         if (clientId && pack) {
           await supabaseAdmin.rpc('add_credits', { p_client_id: clientId, p_amount: pack.credits });

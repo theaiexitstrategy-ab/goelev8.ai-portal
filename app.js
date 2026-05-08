@@ -504,7 +504,7 @@ async function viewOverview() {
   // Road To The Stage /r2s analytics + ebook sales — only when the
   // active tenant context is Flex Facility. Admin sees them via
   // impersonation; never in any other tenant's view.
-  if (state.client?.slug === 'flex-facility') {
+  if (['flex-facility', 'willpower-fitness'].includes(state.client?.slug)) {
     const r2sPanel = el('div', { class: 'panel' });
     r2sPanel.appendChild(el('h2', {}, 'Road To The Stage — /r2s Page Analytics'));
     r2sPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
@@ -5886,10 +5886,10 @@ async function viewAnalytics() {
   }));
   restOfPage.appendChild(funnelPanel);
 
-  // Road To The Stage Ebook Sales — only when the active tenant context
-  // is Flex Facility. Admin still gets it via impersonation; never in
-  // any other tenant's view.
-  if (state.client?.slug === 'flex-facility') {
+  // Road To The Stage Ebook Sales — for tenants that resell the R2S
+  // ebook (Flex Facility, Will Power Fitness Factory). Admin sees it
+  // via impersonation; never in any other tenant's view.
+  if (['flex-facility', 'willpower-fitness'].includes(state.client?.slug)) {
     const r2sPanel = el('div', { class: 'panel' });
     r2sPanel.appendChild(el('h2', {}, '📕 The Road To The Stage Ebook Sales'));
     r2sPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
@@ -6235,7 +6235,7 @@ async function render() {
       case 'nudges':    view = await viewNudges(); break;
       case 'settings':  view = await viewSettings(); break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
-      case 'analytics': view = (state.user?.email === 'ab@goelev8.ai' || state.client?.slug === 'flex-facility') ? await viewAnalytics() : await viewOverview(); break;
+      case 'analytics': view = (state.user?.email === 'ab@goelev8.ai' || ['flex-facility', 'willpower-fitness'].includes(state.client?.slug)) ? await viewAnalytics() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
   } catch (e) {

@@ -80,29 +80,39 @@ const PATH_FILTER = {
   }
 };
 
+// Tenants that sell the R2S ebook. Add slugs here when new affiliates
+// pick up the same product line — each tenant uses their OWN GA4
+// property + their own /r2s page traffic.
+const R2S_TENANT_SLUGS = ['flex-facility', 'willpower-fitness'];
+
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
 
-  // Access gating — only Flex Facility client + platform admin
+  // Access gating: a tenant in the R2S list (impersonated or signed in
+  // directly) OR the platform admin even when not impersonating.
   const isPlatformAdmin = ctx.user?.email === 'ab@goelev8.ai';
-  let isFlexClient = false;
+  let propertyId = null;
+  let clientSlug = null;
   if (ctx.clientId) {
     const { data: client } = await supabaseAdmin
       .from('clients').select('slug, ga4_property_id').eq('id', ctx.clientId).maybeSingle();
-    isFlexClient = client?.slug === 'flex-facility';
-    var propertyId = client?.ga4_property_id || null;
-    var clientSlug = client?.slug;
+    clientSlug = client?.slug || null;
+    propertyId = client?.ga4_property_id || null;
   }
-  if (!isPlatformAdmin && !isFlexClient) {
+  const isR2sTenant = R2S_TENANT_SLUGS.includes(clientSlug);
+  if (!isPlatformAdmin && !isR2sTenant) {
     return res.status(403).json({ error: 'forbidden' });
   }
 
-  // Resolve Flex Facility property id — even if admin is not impersonating
-  if (!propertyId || clientSlug !== 'flex-facility') {
-    const { data: flex } = await supabaseAdmin
-      .from('clients').select('ga4_property_id').eq('slug', 'flex-facility').maybeSingle();
-    propertyId = flex?.ga4_property_id || propertyId || process.env.GA4_PROPERTY_ID;
+  // If the admin hits this endpoint without impersonating any tenant,
+  // we don't know which GA4 property to query. Fall back to Flex's so
+  // the platform-admin-direct path keeps working.
+  if (!propertyId) {
+    const fallbackSlug = isR2sTenant ? clientSlug : 'flex-facility';
+    const { data: fallbackRow } = await supabaseAdmin
+      .from('clients').select('ga4_property_id').eq('slug', fallbackSlug).maybeSingle();
+    propertyId = fallbackRow?.ga4_property_id || process.env.GA4_PROPERTY_ID;
   }
 
   if (!propertyId) {
