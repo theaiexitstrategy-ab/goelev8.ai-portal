@@ -647,6 +647,11 @@ async function onboardPendingTenants(req, res) {
       // book.willpowerfitnessfactory.com (G-XXXXX format used by
       // gtag in the browser).
       ga4_measurement_id: 'G-2EGV382R9C',
+      // GA4 numeric Property ID — what the portal uses to query the
+      // Data API and pull Will's actual analytics into the Analytics
+      // tab. (Different field from the Measurement ID above; both
+      // come from the same GA4 property but live in separate columns.)
+      ga4_property_id: '536786842',
       // logo1 has a white background — pairs cleanly with the
       // white-container .client-logo CSS so the brand mark sits flat
       // in the sidebar.
@@ -724,7 +729,7 @@ async function onboardPendingTenants(req, res) {
     try {
       // 1. Find seeded client row
       const { data: client, error: cErr } = await supabaseAdmin.from('clients')
-        .select('id, slug, business_name, ga4_measurement_id, logo_url, parent_client_id, portal_tabs')
+        .select('id, slug, business_name, ga4_measurement_id, ga4_property_id, logo_url, parent_client_id, portal_tabs')
         .eq('slug', t.slug).maybeSingle();
       if (cErr) throw cErr;
       if (!client) {
@@ -765,6 +770,9 @@ async function onboardPendingTenants(req, res) {
       if (t.logo_url      && client.logo_url      !== t.logo_url)      patch.logo_url      = t.logo_url;
       if (hasMeasurementCol && t.ga4_measurement_id && client.ga4_measurement_id !== t.ga4_measurement_id) {
         patch.ga4_measurement_id = t.ga4_measurement_id;
+      }
+      if (t.ga4_property_id && client.ga4_property_id !== t.ga4_property_id) {
+        patch.ga4_property_id = t.ga4_property_id;
       }
       if (parentClientId && client.parent_client_id !== parentClientId) {
         patch.parent_client_id = parentClientId;
