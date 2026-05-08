@@ -663,6 +663,29 @@ async function onboardPendingTenants(req, res) {
         // first login. Template + logo live in Supabase Auth → Email
         // Templates → "Reset Password".
         send_recovery_email: true
+      },
+      // Mirrors the Flex Facility booking seed (migration 0017), but
+      // intentionally only one service: a single Free Consultation.
+      // The actual booking page lives at book.willpowerfitnessfactory.com
+      // (Next.js, separate repo) and hits this portal's
+      // /api/portal/bookings/* endpoints for slots + writes.
+      booking: {
+        slug: 'will-power-fitness-factory',
+        custom_domain: 'book.willpowerfitnessfactory.com',
+        title: 'Will Power Fitness Factory',
+        timezone: 'America/Chicago',
+        services: [
+          { name: 'Free Consultation', description: '30-minute introductory consultation to discuss your fitness goals.', duration_minutes: 30, price_cents: 0 }
+        ],
+        // Mon–Fri 9:00–17:00 by default. Will can override per-day from
+        // the portal Bookings → Availability tab.
+        availability: [
+          { dow: 1, start: '09:00', end: '17:00' },
+          { dow: 2, start: '09:00', end: '17:00' },
+          { dow: 3, start: '09:00', end: '17:00' },
+          { dow: 4, start: '09:00', end: '17:00' },
+          { dow: 5, start: '09:00', end: '17:00' }
+        ]
       }
     }
   ];
@@ -782,6 +805,79 @@ async function onboardPendingTenants(req, res) {
         linkErr = error;
       }
       r.steps.push({ step: 'link_user', ok: !linkErr, existed: !!existingLink, error: linkErr?.message });
+
+      // 5. Optional: provision a booking calendar (mirrors the Flex seed
+      // in migration 0017 but driven from the tenant config above so each
+      // new tenant can ship their own booking page without a migration).
+      if (t.booking) {
+        const b = t.booking;
+        try {
+          // 5a. Calendar row — create if missing for this tenant.
+          let { data: cal } = await supabaseAdmin.from('booking_calendars')
+            .select('id, slug, custom_domain, title')
+            .eq('business_id', client.id).maybeSingle();
+          if (!cal) {
+            const { data: created, error: calErr } = await supabaseAdmin
+              .from('booking_calendars').insert({
+                business_id: client.id,
+                slug: b.slug,
+                custom_domain: b.custom_domain || null,
+                title: b.title,
+                timezone: b.timezone || 'America/Chicago',
+                booking_window_days: 30,
+                min_notice_hours: 2,
+                is_active: true
+              }).select('id').single();
+            if (calErr) {
+              r.steps.push({ step: 'booking_calendar', ok: false, error: calErr.message });
+            } else {
+              cal = created;
+              r.steps.push({ step: 'booking_calendar', ok: true, id: created.id, created: true });
+            }
+          } else {
+            r.steps.push({ step: 'booking_calendar', ok: true, id: cal.id, created: false });
+          }
+
+          // 5b. Services + availability — only seed when calendar has none
+          // yet. Idempotent: re-running won't duplicate.
+          if (cal) {
+            const { data: existingServices } = await supabaseAdmin
+              .from('booking_services').select('id').eq('calendar_id', cal.id).limit(1);
+            if (!existingServices?.length && b.services?.length) {
+              const rows = b.services.map(s => ({
+                calendar_id: cal.id,
+                name: s.name,
+                description: s.description || null,
+                duration_minutes: s.duration_minutes ?? 30,
+                price_cents: s.price_cents ?? 0,
+                is_active: true
+              }));
+              const { error: svcErr } = await supabaseAdmin.from('booking_services').insert(rows);
+              r.steps.push({ step: 'booking_services', ok: !svcErr, count: rows.length, error: svcErr?.message });
+            } else {
+              r.steps.push({ step: 'booking_services', ok: true, count: 0, note: 'already seeded' });
+            }
+
+            const { data: existingAvail } = await supabaseAdmin
+              .from('booking_availability').select('id').eq('calendar_id', cal.id).limit(1);
+            if (!existingAvail?.length && b.availability?.length) {
+              const rows = b.availability.map(a => ({
+                calendar_id: cal.id,
+                day_of_week: a.dow,
+                start_time: a.start,
+                end_time: a.end,
+                is_active: true
+              }));
+              const { error: avErr } = await supabaseAdmin.from('booking_availability').insert(rows);
+              r.steps.push({ step: 'booking_availability', ok: !avErr, count: rows.length, error: avErr?.message });
+            } else {
+              r.steps.push({ step: 'booking_availability', ok: true, count: 0, note: 'already seeded' });
+            }
+          }
+        } catch (e) {
+          r.steps.push({ step: 'booking_setup', ok: false, error: e.message });
+        }
+      }
 
       r.email = t.user.email;
     } catch (e) {
