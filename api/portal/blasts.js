@@ -7,6 +7,7 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
 import { renderTemplate, firstName } from '../../lib/merge-tags.js';
 import { toE164 } from '../../lib/phone.js';
+import { getBillingClient } from '../../lib/credits.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -82,8 +83,14 @@ export default async function handler(req, res) {
 
   // Credit gate: check balance BEFORE sending
   const { data: clientRow } = await supabaseAdmin
-    .from('clients').select('credit_balance, twilio_phone_number, twilio_subaccount_sid, twilio_auth_token').eq('id', clientId).single();
-  const balance = clientRow?.credit_balance ?? 0;
+    .from('clients').select('id, business_name, name, parent_client_id, credit_balance, twilio_phone_number, twilio_subaccount_sid, twilio_auth_token').eq('id', clientId).single();
+
+  // Resolve to the billing client (parent, if any) for the credit pool +
+  // Twilio config. Will Power Fitness Factory inherits both from Flex.
+  const billingClient = await getBillingClient(supabaseAdmin, clientRow);
+  const billingId = billingClient.id;
+
+  const balance = billingClient?.credit_balance ?? 0;
   if (balance < recipients.length) {
     return res.status(402).json({
       error: 'insufficient_credits',
@@ -92,16 +99,16 @@ export default async function handler(req, res) {
     });
   }
 
-  // Deduct credits BEFORE firing SMS
+  // Deduct credits BEFORE firing SMS — debit hits the billing client.
   const newBalance = balance - recipients.length;
   await supabaseAdmin.from('clients')
-    .update({ credit_balance: newBalance }).eq('id', clientId);
+    .update({ credit_balance: newBalance }).eq('id', billingId);
 
   let baseMessage = message;
   if (promoCode) baseMessage += `\n\nUse code: ${promoCode}`;
 
-  const tw = twilioForClient(clientRow);
-  const fromNumber = clientRow?.twilio_phone_number;
+  const tw = twilioForClient(billingClient);
+  const fromNumber = billingClient?.twilio_phone_number;
   const businessName = clientRow?.business_name || clientRow?.name || '';
   let sent = 0, failed = 0;
   for (const r of recipients) {
@@ -152,7 +159,7 @@ export default async function handler(req, res) {
         credits_charged: 1
       });
       await supabaseAdmin.from('credit_ledger').insert({
-        client_id: clientId, delta: -1, reason: 'sms_blast', ref_id: twilioMsg.sid
+        client_id: billingId, delta: -1, reason: 'sms_blast', ref_id: twilioMsg.sid
       });
     } catch {
       failed++;

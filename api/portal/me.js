@@ -47,6 +47,24 @@ export default async function handler(req, res) {
         clientError = error.message || String(error);
       }
       client = data;
+      // Parent-client resolution: when this tenant inherits Twilio +
+      // credits from another tenant (e.g. Will Power Fitness Factory →
+      // The Flex Facility), surface the parent's credit_balance and
+      // twilio_phone_number on the client object the SPA renders. The
+      // tenant's own id, name, slug, logo, etc. all stay the same so
+      // the rest of the UI is unaffected.
+      if (client?.parent_client_id) {
+        const { data: parent } = await supabaseAdmin
+          .from('clients')
+          .select('id, slug, name, twilio_phone_number, credit_balance')
+          .eq('id', client.parent_client_id)
+          .maybeSingle();
+        if (parent) {
+          client.credit_balance = parent.credit_balance;
+          client.twilio_phone_number = parent.twilio_phone_number;
+          client.shared_with = { id: parent.id, slug: parent.slug, name: parent.name };
+        }
+      }
     }
     return res.status(200).json({
       user: { id: ctx.user.id, email: ctx.user.email },

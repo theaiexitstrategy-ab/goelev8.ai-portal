@@ -2,6 +2,7 @@ import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
 import { toE164 } from '../../lib/phone.js';
+import { getBillingClient } from '../../lib/credits.js';
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -44,46 +45,55 @@ export default async function handler(req, res) {
     if (data.opted_out) return res.status(400).json({ error: 'contact_opted_out' });
   }
 
-  // Load client (for from-number + balance)
+  // Load client (for parent linkage + tenant scope), then resolve to
+  // the billing client (parent, if any). Tenants like Will Power Fitness
+  // Factory have no Twilio number / credit pool of their own — they
+  // share Flex Facility's via parent_client_id.
   const { data: client, error: cErr } = await supabaseAdmin
     .from('clients').select('*').eq('id', clientId).single();
   if (cErr || !client) return res.status(500).json({ error: 'client_not_found' });
-  if (!client.twilio_phone_number) return res.status(400).json({ error: 'no_twilio_number' });
+  const billingClient = await getBillingClient(supabaseAdmin, client);
+  if (!billingClient.twilio_phone_number) return res.status(400).json({ error: 'no_twilio_number' });
+  const billingId = billingClient.id;
 
   const e164 = toE164(destNumber);
   if (!e164) return res.status(400).json({ error: 'invalid_phone', detail: destNumber });
   destNumber = e164;
 
   const segments = estimateSegments(text);
-  if (client.credit_balance < segments) {
-    return res.status(402).json({ error: 'insufficient_credits', need: segments, have: client.credit_balance });
+  if (billingClient.credit_balance < segments) {
+    return res.status(402).json({ error: 'insufficient_credits', need: segments, have: billingClient.credit_balance });
   }
 
-  // Atomically deduct credits BEFORE sending (prevents oversend on race)
+  // Atomically deduct credits BEFORE sending (prevents oversend on race).
+  // The debit hits the BILLING client (parent), so the shared pool is
+  // the single source of truth for both portals.
   const { data: newBal, error: dErr } = await supabaseAdmin
-    .rpc('consume_credits', { p_client_id: clientId, p_amount: segments });
+    .rpc('consume_credits', { p_client_id: billingId, p_amount: segments });
   if (dErr) return res.status(402).json({ error: 'insufficient_credits' });
 
-  // Send via Twilio (per-tenant subaccount if configured)
-  const tw = twilioForClient(client);
+  // Send via Twilio (per-tenant subaccount if configured on the billing client).
+  const tw = twilioForClient(billingClient);
   let twilioMsg;
   try {
     twilioMsg = await tw.messages.create({
-      from: client.twilio_phone_number,
+      from: billingClient.twilio_phone_number,
       to: destNumber,
       body: text,
       statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
     });
   } catch (err) {
-    // Refund credits on hard failure
-    await supabaseAdmin.rpc('add_credits', { p_client_id: clientId, p_amount: segments });
+    // Refund credits on hard failure (back to the billing client).
+    await supabaseAdmin.rpc('add_credits', { p_client_id: billingId, p_amount: segments });
     await supabaseAdmin.from('credit_ledger').insert({
-      client_id: clientId, delta: segments, reason: 'refund', ref_id: 'twilio_send_failed'
+      client_id: billingId, delta: segments, reason: 'refund', ref_id: 'twilio_send_failed'
     });
     return res.status(502).json({ error: 'twilio_failed', detail: err.message });
   }
 
-  // Persist message + ledger
+  // Persist message + ledger. Message rows stay with the originating
+  // client (so Will sees his outbound texts in his Messages tab), but
+  // the credit_ledger row is billed to the parent.
   await supabaseAdmin.from('messages').insert({
     client_id: clientId,
     contact_id: contact?.id || null,
@@ -93,21 +103,21 @@ export default async function handler(req, res) {
     twilio_sid: twilioMsg.sid,
     status: twilioMsg.status,
     to_number: destNumber,
-    from_number: client.twilio_phone_number,
+    from_number: billingClient.twilio_phone_number,
     credits_charged: segments
   });
   await supabaseAdmin.from('credit_ledger').insert({
-    client_id: clientId, delta: -segments, reason: 'sms_send', ref_id: twilioMsg.sid
+    client_id: billingId, delta: -segments, reason: 'sms_send', ref_id: twilioMsg.sid
   });
 
-  // Auto-reload check
-  if (client.auto_reload_enabled && newBal < client.auto_reload_threshold) {
-    // Fire-and-forget — handled by stripe credits API
+  // Auto-reload check — runs against the billing client so the parent's
+  // top-up rules are what trigger when the shared pool drops.
+  if (billingClient.auto_reload_enabled && newBal < billingClient.auto_reload_threshold) {
     try {
       await fetch(`${process.env.PORTAL_BASE_URL}/api/portal/credits?action=auto-reload-trigger`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-internal': process.env.SUPABASE_SERVICE_ROLE_KEY },
-        body: JSON.stringify({ client_id: clientId })
+        body: JSON.stringify({ client_id: billingId })
       });
     } catch {}
   }

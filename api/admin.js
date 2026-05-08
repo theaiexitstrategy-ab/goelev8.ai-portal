@@ -643,13 +643,24 @@ async function onboardPendingTenants(req, res) {
     {
       slug: 'willpower-fitness',
       business_name: 'Will Power Fitness Factory',
-      // GA4 measurement ID can be set later via Settings — leave null to skip
-      // and avoid overwriting an existing value.
-      ga4_measurement_id: null,
+      // GA4 Measurement ID for the booking page tracking tag on
+      // book.willpowerfitnessfactory.com (G-XXXXX format used by
+      // gtag in the browser).
+      ga4_measurement_id: 'G-2EGV382R9C',
       // logo1 has a white background — pairs cleanly with the
       // white-container .client-logo CSS so the brand mark sits flat
       // in the sidebar.
       logo_url: `${PORTAL_BASE}/WillPowerFitnessFactory_logo1.jpg`,
+      // Will Power inherits Flex Facility's Twilio phone (+18775153539)
+      // and credit pool until they get their own. The lib resolver
+      // follows parent_client_id at every SMS send / credit read site.
+      parent_client_slug: 'flex-facility',
+      // Full tab set so Will sees Contacts / Blasts / Nudges / Analytics
+      // alongside the default Overview / Leads / Messages / Bookings /
+      // Settings. (Master Admin's "Sync Tabs to All Tenants" button does
+      // the same job for everyone — declaring it here makes the onboard
+      // click self-sufficient.)
+      portal_tabs: ['overview','leads','messages','contacts','blasts','nudges','bookings','analytics','settings'],
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
@@ -713,7 +724,7 @@ async function onboardPendingTenants(req, res) {
     try {
       // 1. Find seeded client row
       const { data: client, error: cErr } = await supabaseAdmin.from('clients')
-        .select('id, slug, business_name, ga4_measurement_id, logo_url')
+        .select('id, slug, business_name, ga4_measurement_id, logo_url, parent_client_id, portal_tabs')
         .eq('slug', t.slug).maybeSingle();
       if (cErr) throw cErr;
       if (!client) {
@@ -724,14 +735,47 @@ async function onboardPendingTenants(req, res) {
       r.client_id = client.id;
       r.steps.push({ step: 'find_client', ok: true, id: client.id });
 
-      // 2. Update client row (logo, business_name, GA4 measurement ID).
-      // Tenants can pass null to skip a field (e.g. willpower-fitness has
-      // no GA4 / logo yet — don't blow away existing values with null).
+      // 1b. Resolve parent client by slug if requested. Tolerant if the
+      // parent_client_id column hasn't been migrated yet (0027).
+      let parentClientId = null;
+      let parentLookupSkipped = false;
+      if (t.parent_client_slug) {
+        const probe = await supabaseAdmin.from('clients').select('parent_client_id').limit(1);
+        if (probe.error && /column .*parent_client_id.* does not exist/i.test(probe.error.message)) {
+          parentLookupSkipped = true;
+          r.steps.push({ step: 'resolve_parent', ok: false, skipped: true,
+            note: 'parent_client_id column missing — run migrations first.' });
+        } else {
+          const { data: parent } = await supabaseAdmin
+            .from('clients').select('id, slug').eq('slug', t.parent_client_slug).maybeSingle();
+          if (parent) {
+            parentClientId = parent.id;
+            r.steps.push({ step: 'resolve_parent', ok: true, parent_id: parent.id, parent_slug: parent.slug });
+          } else {
+            r.steps.push({ step: 'resolve_parent', ok: false, error: `parent slug "${t.parent_client_slug}" not found` });
+          }
+        }
+      }
+
+      // 2. Update client row (logo, business_name, GA4 measurement ID,
+      // parent linkage, portal_tabs). Tenants can pass null to skip a
+      // field — don't blow away existing values with null.
       const patch = {};
       if (t.business_name && client.business_name !== t.business_name) patch.business_name = t.business_name;
       if (t.logo_url      && client.logo_url      !== t.logo_url)      patch.logo_url      = t.logo_url;
       if (hasMeasurementCol && t.ga4_measurement_id && client.ga4_measurement_id !== t.ga4_measurement_id) {
         patch.ga4_measurement_id = t.ga4_measurement_id;
+      }
+      if (parentClientId && client.parent_client_id !== parentClientId) {
+        patch.parent_client_id = parentClientId;
+      }
+      if (Array.isArray(t.portal_tabs) && t.portal_tabs.length) {
+        const current = Array.isArray(client.portal_tabs) ? client.portal_tabs : [];
+        // Only patch if the current tabs are missing one we want to add.
+        const missing = t.portal_tabs.filter(x => !current.includes(x));
+        if (missing.length) {
+          patch.portal_tabs = current.length ? [...current, ...missing] : t.portal_tabs.slice();
+        }
       }
       if (Object.keys(patch).length) {
         const { error } = await supabaseAdmin.from('clients').update(patch).eq('id', client.id);
@@ -1598,7 +1642,39 @@ async function applyPendingMigrations(req, res) {
     `DROP TRIGGER IF EXISTS bookings_cancel_nudges ON public.bookings;`,
     `CREATE TRIGGER bookings_cancel_nudges
        AFTER INSERT ON public.bookings
-       FOR EACH ROW EXECUTE FUNCTION public.cancel_nudges_on_booking();`
+       FOR EACH ROW EXECUTE FUNCTION public.cancel_nudges_on_booking();`,
+
+    // ----- 0027: parent_client_id for shared Twilio + credit pools -----
+    // Will Power Fitness Factory points at The Flex Facility so both
+    // tenants share Flex's phone number and SMS credit pool while
+    // keeping independent leads/contacts/bookings/messages.
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS parent_client_id uuid
+         REFERENCES public.clients(id) ON DELETE SET NULL;`,
+    `CREATE INDEX IF NOT EXISTS clients_parent_client_idx
+       ON public.clients(parent_client_id)
+       WHERE parent_client_id IS NOT NULL;`,
+    `CREATE OR REPLACE FUNCTION public.check_parent_client_no_chain()
+     RETURNS trigger LANGUAGE plpgsql AS $func$
+     DECLARE
+       v_parent_of_parent uuid;
+     BEGIN
+       IF NEW.parent_client_id IS NULL THEN RETURN NEW; END IF;
+       IF NEW.parent_client_id = NEW.id THEN
+         RAISE EXCEPTION 'A client cannot be its own parent';
+       END IF;
+       SELECT parent_client_id INTO v_parent_of_parent
+         FROM public.clients WHERE id = NEW.parent_client_id;
+       IF v_parent_of_parent IS NOT NULL THEN
+         RAISE EXCEPTION 'parent_client_id must point at a top-level client (no chains)';
+       END IF;
+       RETURN NEW;
+     END;
+     $func$;`,
+    `DROP TRIGGER IF EXISTS clients_parent_no_chain ON public.clients;`,
+    `CREATE TRIGGER clients_parent_no_chain
+       BEFORE INSERT OR UPDATE OF parent_client_id ON public.clients
+       FOR EACH ROW EXECUTE FUNCTION public.check_parent_client_no_chain();`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
