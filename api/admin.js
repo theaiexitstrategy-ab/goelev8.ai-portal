@@ -1729,10 +1729,10 @@ async function applyPendingMigrations(req, res) {
     // ----- One-shot data fix: pin Will Power's portal_tabs -----
     // Removes 'nudges' from Will's tab list and locks the rest. Slug-
     // scoped so no other tenant is touched. Idempotent — re-running
-    // writes the same value. Lives here (not as a true migration)
-    // because it's tenant-specific operator config, not schema.
+    // writes the same value. portal_tabs is jsonb (not text[]) so the
+    // value is supplied as a JSON literal.
     `UPDATE public.clients
-       SET portal_tabs = ARRAY['overview','leads','messages','contacts','blasts','bookings','analytics','settings']::text[]
+       SET portal_tabs = '["overview","leads","messages","contacts","blasts","bookings","analytics","settings"]'::jsonb
      WHERE slug = 'willpower-fitness';`
   ];
 
