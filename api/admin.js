@@ -727,9 +727,13 @@ async function onboardPendingTenants(req, res) {
   for (const t of TENANTS) {
     const r = { slug: t.slug, steps: [] };
     try {
-      // 1. Find seeded client row
+      // 1. Find seeded client row.
+      // Keep the column list minimal so this query works on every
+      // schema version. Anything optional (parent_client_id, ga4_property_id,
+      // portal_tabs) is loaded by feature-specific probes below so a
+      // missing column never aborts the whole flow.
       const { data: client, error: cErr } = await supabaseAdmin.from('clients')
-        .select('id, slug, business_name, ga4_measurement_id, ga4_property_id, logo_url, parent_client_id, portal_tabs')
+        .select('id, slug, business_name, ga4_measurement_id, logo_url')
         .eq('slug', t.slug).maybeSingle();
       if (cErr) throw cErr;
       if (!client) {
@@ -740,16 +744,50 @@ async function onboardPendingTenants(req, res) {
       r.client_id = client.id;
       r.steps.push({ step: 'find_client', ok: true, id: client.id });
 
+      // 1a. Try to read the optional columns — silent fallback when a
+      // column doesn't exist yet (e.g. brand-new project that hasn't
+      // applied migration 0027).
+      let hasParentColumn = false;
+      let hasPropertyIdColumn = false;
+      let hasPortalTabsColumn = false;
+      {
+        const probe = await supabaseAdmin
+          .from('clients')
+          .select('parent_client_id, ga4_property_id, portal_tabs')
+          .eq('id', client.id).maybeSingle();
+        if (!probe.error && probe.data) {
+          client.parent_client_id = probe.data.parent_client_id ?? null;
+          client.ga4_property_id  = probe.data.ga4_property_id  ?? null;
+          client.portal_tabs      = probe.data.portal_tabs      ?? null;
+          hasParentColumn     = true;
+          hasPropertyIdColumn = true;
+          hasPortalTabsColumn = true;
+        } else if (probe.error) {
+          // One or more columns missing — narrow down which.
+          const m = probe.error.message || '';
+          hasParentColumn     = !/column .*parent_client_id.* does not exist/i.test(m);
+          hasPropertyIdColumn = !/column .*ga4_property_id.* does not exist/i.test(m);
+          hasPortalTabsColumn = !/column .*portal_tabs.* does not exist/i.test(m);
+          // Re-probe with whatever subset survives.
+          const cols = ['id'];
+          if (hasParentColumn)     cols.push('parent_client_id');
+          if (hasPropertyIdColumn) cols.push('ga4_property_id');
+          if (hasPortalTabsColumn) cols.push('portal_tabs');
+          if (cols.length > 1) {
+            const r2 = await supabaseAdmin.from('clients')
+              .select(cols.join(', ')).eq('id', client.id).maybeSingle();
+            if (r2.data) Object.assign(client, r2.data);
+          }
+        }
+      }
+
       // 1b. Resolve parent client by slug if requested. Tolerant if the
       // parent_client_id column hasn't been migrated yet (0027).
       let parentClientId = null;
-      let parentLookupSkipped = false;
       if (t.parent_client_slug) {
-        const probe = await supabaseAdmin.from('clients').select('parent_client_id').limit(1);
-        if (probe.error && /column .*parent_client_id.* does not exist/i.test(probe.error.message)) {
-          parentLookupSkipped = true;
+        if (!hasParentColumn) {
           r.steps.push({ step: 'resolve_parent', ok: false, skipped: true,
-            note: 'parent_client_id column missing — run migrations first.' });
+            note: 'parent_client_id column missing — click Run Pending Migrations first.' });
         } else {
           const { data: parent } = await supabaseAdmin
             .from('clients').select('id, slug').eq('slug', t.parent_client_slug).maybeSingle();
@@ -771,13 +809,13 @@ async function onboardPendingTenants(req, res) {
       if (hasMeasurementCol && t.ga4_measurement_id && client.ga4_measurement_id !== t.ga4_measurement_id) {
         patch.ga4_measurement_id = t.ga4_measurement_id;
       }
-      if (t.ga4_property_id && client.ga4_property_id !== t.ga4_property_id) {
+      if (hasPropertyIdColumn && t.ga4_property_id && client.ga4_property_id !== t.ga4_property_id) {
         patch.ga4_property_id = t.ga4_property_id;
       }
-      if (parentClientId && client.parent_client_id !== parentClientId) {
+      if (hasParentColumn && parentClientId && client.parent_client_id !== parentClientId) {
         patch.parent_client_id = parentClientId;
       }
-      if (Array.isArray(t.portal_tabs) && t.portal_tabs.length) {
+      if (hasPortalTabsColumn && Array.isArray(t.portal_tabs) && t.portal_tabs.length) {
         const current = Array.isArray(client.portal_tabs) ? client.portal_tabs : [];
         // Only patch if the current tabs are missing one we want to add.
         const missing = t.portal_tabs.filter(x => !current.includes(x));
