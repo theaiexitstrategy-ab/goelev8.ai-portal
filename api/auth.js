@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireUser, methodGuard, readJson } from '../lib/auth.js';
+import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 
 export default async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -55,20 +56,34 @@ export default async function handler(req, res) {
 
   // Public — anyone can request a password reset for their own email.
   // Always returns 200 so we don't leak which addresses are registered.
-  // The actual email goes out via Supabase Auth → Email Templates →
-  // "Reset Password" (configurable in the Supabase dashboard, where the
-  // GoElev8 logo + brand are applied).
+  //
+  // We bypass Supabase Auth's built-in mailer (no BCC support) and
+  // instead mint a recovery URL via admin.generateLink, then send the
+  // branded email through lib/mailer.js which BCCs the operator on
+  // every outbound message. If the email isn't registered, generateLink
+  // errors silently and we still 200 to the caller.
   if (action === 'forgot-password') {
     if (!methodGuard(req, res, ['POST'])) return;
     const { email } = await readJson(req);
     if (!email) return res.status(400).json({ error: 'missing_email' });
-    const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false }
-    });
     const portal = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
     try {
-      await sb.auth.resetPasswordForEmail(email, { redirectTo: `${portal}/?reset=1` });
-    } catch (e) { /* swallow — don't leak existence */ }
+      const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'recovery',
+        email,
+        options: { redirectTo: `${portal}/?reset=1` }
+      });
+      if (linkErr) throw new Error(linkErr.message);
+      const recoveryUrl = linkData?.properties?.action_link || linkData?.action_link;
+      if (recoveryUrl) {
+        const { html, text } = passwordResetEmail({ recovery_url: recoveryUrl });
+        await sendMail({
+          to: email,
+          subject: 'Reset your GoElev8.ai password',
+          html, text
+        });
+      }
+    } catch (e) { /* swallow — don't leak existence or transport errors */ }
     return res.status(200).json({ ok: true });
   }
 

@@ -19,6 +19,7 @@
 import { requireAdmin, methodGuard, readJson } from '../lib/auth.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../lib/twilio.js';
+import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
@@ -760,19 +761,32 @@ async function onboardPendingTenants(req, res) {
 
       // 3b. Optional: send a branded password-recovery email so the new
       // owner can pick their own password instead of using the shared
-      // temporary one. Uses the anon client + resetPasswordForEmail so
-      // Supabase fires the project's "Reset Password" email template
-      // (configurable in Supabase → Auth → Email Templates).
+      // temporary one. We bypass Supabase Auth's built-in mailer because
+      // it doesn't expose a BCC field — instead we mint the recovery URL
+      // via admin.generateLink and ship it through lib/mailer.js (which
+      // bakes in the BCC to the operator on every send).
       if (t.user.send_recovery_email) {
         try {
-          const sbAnon = (await import('@supabase/supabase-js')).createClient(
-            process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY,
-            { auth: { persistSession: false, autoRefreshToken: false } }
-          );
-          const { error: rpErr } = await sbAnon.auth.resetPasswordForEmail(t.user.email, {
-            redirectTo: `${PORTAL_BASE}/?reset=1`
+          const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+            type: 'recovery',
+            email: t.user.email,
+            options: { redirectTo: `${PORTAL_BASE}/?reset=1` }
           });
-          r.steps.push({ step: 'recovery_email', ok: !rpErr, error: rpErr?.message });
+          if (linkErr) throw new Error(linkErr.message);
+          const recoveryUrl = linkData?.properties?.action_link || linkData?.action_link;
+          if (!recoveryUrl) throw new Error('No action_link returned from Supabase');
+          const { html, text } = passwordResetEmail({
+            recovery_url: recoveryUrl,
+            headline: 'Set your GoElev8.ai portal password',
+            intro: `Welcome to GoElev8.ai — your portal is ready. Click below to set your password and sign in to start managing ${t.business_name}.`,
+            button_label: 'Set your password →'
+          });
+          await sendMail({
+            to: t.user.email,
+            subject: 'Set your GoElev8.ai portal password',
+            html, text
+          });
+          r.steps.push({ step: 'recovery_email', ok: true, via: 'resend+bcc' });
         } catch (e) {
           r.steps.push({ step: 'recovery_email', ok: false, error: e.message });
         }
