@@ -1737,7 +1737,17 @@ async function applyPendingMigrations(req, res) {
     `UPDATE public.clients
        SET portal_tabs = '["overview","leads","messaging","bookings","analytics","settings"]'::jsonb
      WHERE portal_tabs IS DISTINCT FROM
-           '["overview","leads","messaging","bookings","analytics","settings"]'::jsonb;`
+           '["overview","leads","messaging","bookings","analytics","settings"]'::jsonb;`,
+
+    // ----- One-shot data fix: GA4 Property IDs -----
+    // Wires each tenant's numeric Property ID so the Analytics tab can
+    // query the GA4 Data API. Slug-scoped UPDATEs — idempotent.
+    `UPDATE public.clients SET ga4_property_id = '536338826'
+       WHERE slug = 'ai-exit-strategy'
+         AND ga4_property_id IS DISTINCT FROM '536338826';`,
+    `UPDATE public.clients SET ga4_property_id = '536419721'
+       WHERE slug = 'allthingzblackhair'
+         AND ga4_property_id IS DISTINCT FROM '536419721';`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
