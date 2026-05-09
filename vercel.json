@@ -24,6 +24,11 @@
     { "source": "/islaystudios/shell.js", "destination": "/clients/islaystudios/shell.js" },
     { "source": "/islaystudios/portal.css", "destination": "/clients/islaystudios/portal.css" },
     { "source": "/islaystudios", "destination": "/clients/islaystudios/leads.html" },
+    { "source": "/willpowerfitnessfactory/login", "destination": "/clients/willpowerfitnessfactory/login.html" },
+    { "source": "/willpowerfitnessfactory/analytics", "destination": "/clients/willpowerfitnessfactory/analytics.html" },
+    { "source": "/willpowerfitnessfactory/shell.js", "destination": "/clients/willpowerfitnessfactory/shell.js" },
+    { "source": "/willpowerfitnessfactory/portal.css", "destination": "/clients/willpowerfitnessfactory/portal.css" },
+    { "source": "/willpowerfitnessfactory", "destination": "/clients/willpowerfitnessfactory/analytics.html" },
     { "source": "/((?!api/|clients/).*)", "destination": "/index.html" }
   ],
   "headers": [

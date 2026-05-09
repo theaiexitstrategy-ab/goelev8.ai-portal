@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Will Power Fitness Factory — Analytics</title>
+<link rel="icon" href="/icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./portal.css?v=1" />
+<style>
+.section-head { display:flex; align-items:baseline; gap:10px; margin:32px 0 12px; }
+.section-head h2 { font-family:var(--font-heading); font-size:1.25rem; letter-spacing:1px; font-weight:400; }
+.section-head .sub { color:var(--muted); font-size:0.78rem; }
+.chart-panel { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:20px; }
+.chart-panel h2 { font-size:1.1rem; font-weight:600; margin-bottom:16px; }
+.bar-row { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+.bar-label { width:120px; font-size:0.8rem; color:var(--muted); text-align:right; flex-shrink:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bar-track { flex:1; background:rgba(255,255,255,0.04); border-radius:4px; height:24px; position:relative; }
+.bar-fill { height:100%; border-radius:4px; min-width:2px; transition:width 0.4s ease; }
+.bar-value { font-size:0.75rem; font-weight:600; padding-left:8px; width:40px; flex-shrink:0; }
+.timeline { display:flex; align-items:flex-end; gap:3px; height:140px; padding-top:12px; }
+.timeline-bar { flex:1; border-radius:3px 3px 0 0; min-width:4px; transition:height 0.4s ease; cursor:default; position:relative; }
+.timeline-bar:hover::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 4px); left:50%; transform:translateX(-50%); background:var(--card); border:1px solid var(--border); padding:3px 8px; border-radius:4px; font-size:0.65rem; white-space:nowrap; color:var(--text); z-index:10; }
+.timeline-labels { display:flex; gap:3px; margin-top:4px; }
+.timeline-labels span { flex:1; text-align:center; font-size:0.55rem; color:var(--muted); min-width:4px; }
+.stat-delta { font-size:0.7rem; margin-top:2px; }
+.stat-delta.up { color:var(--success); }
+.stat-delta.down { color:var(--error); }
+.ga-note { font-size:0.7rem; color:var(--muted); margin-top:-4px; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<button id="menu-toggle">&#9776;</button>
+<div class="portal">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>Analytics</h1>
+        <div class="sub">Performance overview for the past 30 days</div>
+      </div>
+    </div>
+
+    <!-- Booking-page traffic (Google Analytics, property 536786842) -->
+    <div class="section-head">
+      <h2>Booking Page Traffic</h2>
+      <span class="sub">Source: Google Analytics · book + www subdomains</span>
+    </div>
+    <div class="cards" id="ga-cards">
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+    </div>
+
+    <!-- Lead/booking activity (Supabase) -->
+    <div class="section-head">
+      <h2>Lead &amp; Booking Activity</h2>
+      <span class="sub">Source: portal database · last 30 days</span>
+    </div>
+    <div class="cards" id="stat-cards">
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+      <div class="stat-card skeleton" style="height:110px"></div>
+    </div>
+
+    <div class="chart-panel" id="chart-source">
+      <h2>Leads by Source</h2>
+      <div class="skeleton" style="height:160px"></div>
+    </div>
+
+    <div class="chart-panel" id="chart-timeline">
+      <h2>Leads Over Time (30 days)</h2>
+      <div class="skeleton" style="height:160px"></div>
+    </div>
+  </div>
+</div>
+
+<script src="./shell.js?v=1"></script>
+<script>
+initShell('analytics');
+
+var BAR_COLORS = ['#f2f2f2','#00CFFF','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#6366f1'];
+
+function buildBarChart(containerId, items, title) {
+  var el = document.getElementById(containerId);
+  if (!items || !items.length) {
+    el.innerHTML = '<h2>' + title + '</h2><div class="empty">No data</div>';
+    return;
+  }
+  var max = Math.max.apply(null, items.map(function(i) { return i.count; }));
+  if (max === 0) max = 1;
+  var rows = items.map(function(item, idx) {
+    var pct = (item.count / max) * 100;
+    var color = BAR_COLORS[idx % BAR_COLORS.length];
+    return '<div class="bar-row">' +
+      '<div class="bar-label" title="' + item.name + '">' + item.name + '</div>' +
+      '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+      '<div class="bar-value">' + item.count + '</div>' +
+    '</div>';
+  }).join('');
+  el.innerHTML = '<h2>' + title + '</h2>' + rows;
+}
+
+function buildTimeline(containerId, points) {
+  var el = document.getElementById(containerId);
+  if (!points || !points.length) {
+    el.innerHTML = '<h2>Leads Over Time (30 days)</h2><div class="empty">No data</div>';
+    return;
+  }
+  var max = Math.max.apply(null, points.map(function(p) { return p.count; }));
+  if (max === 0) max = 1;
+  var bars = points.map(function(p) {
+    var h = Math.max((p.count / max) * 120, 2);
+    var label = p.date || '';
+    var shortLabel = label.slice(5);
+    return { h: h, count: p.count, label: shortLabel, full: label };
+  });
+  var barHtml = bars.map(function(b) {
+    return '<div class="timeline-bar" style="height:' + b.h + 'px;background:#f2f2f2;" data-tip="' + b.full + ': ' + b.count + '"></div>';
+  }).join('');
+  var labelHtml = bars.map(function(b, i) {
+    return '<span>' + (i % 5 === 0 ? b.label : '') + '</span>';
+  }).join('');
+  el.innerHTML =
+    '<h2>Leads Over Time (30 days)</h2>' +
+    '<div class="timeline">' + barHtml + '</div>' +
+    '<div class="timeline-labels">' + labelHtml + '</div>';
+}
+
+function fmtSeconds(s) {
+  if (s === 'N/A' || s == null) return '—';
+  var n = Number(s);
+  if (!isFinite(n) || n <= 0) return '0s';
+  if (n < 60) return Math.round(n) + 's';
+  var m = Math.floor(n / 60);
+  var sec = Math.round(n - m * 60);
+  return m + 'm ' + sec + 's';
+}
+
+function fmtNum(v) {
+  if (v === 'N/A' || v == null) return '—';
+  var n = Number(v);
+  if (!isFinite(n)) return '—';
+  return n.toLocaleString();
+}
+
+(async function loadGA() {
+  try {
+    // Canonical multi-tenant GA endpoint — reads ga4_property_id from the
+    // authed tenant's clients row. Returns { configured, sessions, page_views,
+    // users, engaged_sessions, by_day, top_sources, top_pages, events }.
+    var ga = await api('/api/portal/ga4');
+    if (!ga.configured) {
+      document.getElementById('ga-cards').innerHTML =
+        '<div class="empty" style="grid-column:1/-1">' +
+          (ga.error || 'Google Analytics is not connected for this tenant yet.') +
+        '</div>';
+      return;
+    }
+    var engagedRate = ga.sessions ? Math.round((ga.engaged_sessions / ga.sessions) * 100) : 0;
+    document.getElementById('ga-cards').innerHTML =
+      '<div class="stat-card">' +
+        '<div class="icon">👁️</div>' +
+        '<div class="value">' + fmtNum(ga.page_views) + '</div>' +
+        '<div class="label">Pageviews · 30d</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">🌐</div>' +
+        '<div class="value">' + fmtNum(ga.sessions) + '</div>' +
+        '<div class="label">Sessions · 30d</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">👥</div>' +
+        '<div class="value">' + fmtNum(ga.users) + '</div>' +
+        '<div class="label">Users · 30d</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">⚡</div>' +
+        '<div class="value">' + engagedRate + '%</div>' +
+        '<div class="label">Engaged sessions</div>' +
+      '</div>';
+
+    // Top pages — surfaces /manage and / (booking landing) so Will sees
+    // what pages drive his traffic.
+    var topPages = (ga.top_pages || []).slice(0, 6).map(function(p) {
+      return { name: p.path || '/', count: p.views || 0 };
+    });
+    if (topPages.length) {
+      var pagesHtml = topPages.map(function(item, idx) {
+        var max = topPages[0].count || 1;
+        var pct = (item.count / max) * 100;
+        return '<div class="bar-row">' +
+          '<div class="bar-label" title="' + item.name + '">' + item.name + '</div>' +
+          '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:#f2f2f2"></div></div>' +
+          '<div class="bar-value">' + item.count + '</div>' +
+        '</div>';
+      }).join('');
+      var existing = document.getElementById('chart-pages');
+      if (!existing) {
+        var panel = document.createElement('div');
+        panel.id = 'chart-pages';
+        panel.className = 'chart-panel';
+        panel.innerHTML = '<h2>Top Booking Pages</h2>' + pagesHtml;
+        document.getElementById('ga-cards').after(panel);
+      }
+    }
+  } catch (err) {
+    document.getElementById('ga-cards').innerHTML =
+      '<div class="empty" style="grid-column:1/-1">GA data could not be loaded.</div>';
+  }
+})();
+
+(async function loadAnalytics() {
+  try {
+    var data = await api('/api/portal/analytics');
+    var leadsThis = data.leadsThisMonth || 0;
+    var leadsLast = data.leadsLastMonth || 0;
+    var diff = leadsThis - leadsLast;
+    var deltaClass = diff >= 0 ? 'up' : 'down';
+    var deltaText = diff >= 0 ? '+' + diff + ' vs last month' : diff + ' vs last month';
+
+    document.getElementById('stat-cards').innerHTML =
+      '<div class="stat-card">' +
+        '<div class="icon">👥</div>' +
+        '<div class="value">' + leadsThis + '</div>' +
+        '<div class="label">Leads This Month</div>' +
+        '<div class="stat-delta ' + deltaClass + '">' + deltaText + '</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">📅</div>' +
+        '<div class="value">' + (data.overview && data.overview.bookings_30d || 0) + '</div>' +
+        '<div class="label">Bookings · 30d</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">📱</div>' +
+        '<div class="value">' + (data.smsSent || 0) + '</div>' +
+        '<div class="label">SMS Sent</div>' +
+      '</div>' +
+      '<div class="stat-card">' +
+        '<div class="icon">💳</div>' +
+        '<div class="value">' + (data.creditsSpent || 0) + '</div>' +
+        '<div class="label">Credits Spent</div>' +
+      '</div>';
+
+    var bySource = (data.bySource || []).map(function(s) {
+      return { name: s.source || s.name, count: s.count || 0 };
+    });
+    buildBarChart('chart-source', bySource, 'Leads by Source');
+
+    buildTimeline('chart-timeline', data.leadsOverTime || []);
+  } catch (err) {
+    document.getElementById('stat-cards').innerHTML =
+      '<div class="empty">Failed to load analytics.</div>';
+  }
+})();
+</script>
+</body>
+</html>
