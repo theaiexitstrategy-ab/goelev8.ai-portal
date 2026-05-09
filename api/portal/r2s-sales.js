@@ -47,9 +47,16 @@ export default async function handler(req, res) {
   let flexClientId = null;
   if (ctx.clientId) {
     const { data: c } = await supabaseAdmin
-      .from('clients').select('id, slug, stripe_secret_key, stripe_connected_account_id')
+      .from('clients').select('id, slug, stripe_secret_key, stripe_connected_account_id, parent_client_id')
       .eq('id', ctx.clientId).maybeSingle();
-    if (c && R2S_TENANT_SLUGS.includes(c.slug)) flexClientId = c.id;
+    if (c && R2S_TENANT_SLUGS.includes(c.slug)) {
+      // Reseller model: when this tenant inherits Twilio + credits +
+      // Stripe from a parent (e.g. Will Power Fitness Factory →
+      // The Flex Facility), the R2S sales also live on the parent's
+      // ledger. Reading from the parent surfaces the same numbers
+      // both portals are entitled to see.
+      flexClientId = c.parent_client_id || c.id;
+    }
   }
   if (!flexClientId && isPlatformAdmin) {
     // Admin hitting the endpoint without impersonating — default to

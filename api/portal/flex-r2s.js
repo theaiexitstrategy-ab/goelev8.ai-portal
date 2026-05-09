@@ -94,15 +94,28 @@ export default async function handler(req, res) {
   const isPlatformAdmin = ctx.user?.email === 'ab@goelev8.ai';
   let propertyId = null;
   let clientSlug = null;
+  let parentClientId = null;
   if (ctx.clientId) {
     const { data: client } = await supabaseAdmin
-      .from('clients').select('slug, ga4_property_id').eq('id', ctx.clientId).maybeSingle();
+      .from('clients').select('slug, ga4_property_id, parent_client_id').eq('id', ctx.clientId).maybeSingle();
     clientSlug = client?.slug || null;
     propertyId = client?.ga4_property_id || null;
+    parentClientId = client?.parent_client_id || null;
   }
   const isR2sTenant = R2S_TENANT_SLUGS.includes(clientSlug);
   if (!isPlatformAdmin && !isR2sTenant) {
     return res.status(403).json({ error: 'forbidden' });
+  }
+
+  // Reseller model: child tenants (e.g. Will Power Fitness Factory)
+  // sell the R2S ebook through their parent's storefront, so the /r2s
+  // page they care about lives on the parent's domain — query the
+  // parent's GA4 property regardless of the child's own property.
+  // This keeps Will's R2S panel mirroring exactly what Flex sees.
+  if (parentClientId) {
+    const { data: parent } = await supabaseAdmin
+      .from('clients').select('ga4_property_id').eq('id', parentClientId).maybeSingle();
+    if (parent?.ga4_property_id) propertyId = parent.ga4_property_id;
   }
 
   // If the admin hits this endpoint without impersonating any tenant,
