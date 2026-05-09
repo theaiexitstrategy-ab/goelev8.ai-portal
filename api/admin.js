@@ -578,9 +578,12 @@ async function restoreTrashRecord(req, res) {
 }
 
 async function ensurePortalTabs(req, res) {
+  // Unified 6-tab nav: messages/blasts/nudges fold under 'messaging',
+  // 'contacts' is dropped (Leads is the single CRM view). Overview
+  // first, Settings last; the SPA's collapseToCleanNav helper enforces
+  // the order client-side too.
   const STANDARD_TABS = [
-    'overview', 'leads', 'messages', 'contacts', 'blasts',
-    'nudges', 'bookings', 'analytics', 'settings'
+    'overview', 'leads', 'messaging', 'bookings', 'analytics', 'settings'
   ];
   const { data: clients } = await supabaseAdmin
     .from('clients').select('id, slug, name, portal_tabs');
@@ -660,12 +663,10 @@ async function onboardPendingTenants(req, res) {
       // and credit pool until they get their own. The lib resolver
       // follows parent_client_id at every SMS send / credit read site.
       parent_client_slug: 'flex-facility',
-      // Tab set Will sees in the sidebar. Excludes 'nudges' (no
-      // automated nudge sequences in this portal — Flex's parent
-      // handles them) and 'contacts' (Leads is the single source of
-      // truth for people Will is in conversation with; per-lead
-      // profile slide-over already lives in the Leads view).
-      portal_tabs: ['overview','leads','messages','blasts','bookings','analytics','settings'],
+      // Unified 6-tab nav. 'messaging' wraps Inbox/Blasts/Nudges as
+      // sub-tabs in the SPA so the sidebar stays focused. 'contacts'
+      // is dropped (Leads is the single CRM view).
+      portal_tabs: ['overview','leads','messaging','bookings','analytics','settings'],
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
@@ -1726,14 +1727,17 @@ async function applyPendingMigrations(req, res) {
        BEFORE INSERT OR UPDATE OF parent_client_id ON public.clients
        FOR EACH ROW EXECUTE FUNCTION public.check_parent_client_no_chain();`,
 
-    // ----- One-shot data fix: pin Will Power's portal_tabs -----
-    // Locks Will's tab list. Excludes 'nudges' + 'contacts'. Slug-
-    // scoped so no other tenant is touched. Idempotent — re-running
-    // writes the same value. portal_tabs is jsonb (not text[]) so the
-    // value is supplied as a JSON literal.
+    // ----- One-shot data fix: rewrite portal_tabs for all tenants -----
+    // Every tenant gets the unified 6-tab nav (overview, leads,
+    // messaging, bookings, analytics, settings). The SPA's
+    // collapseToCleanNav helper handles tenants whose row hasn't been
+    // updated yet, but applying it at the DB level keeps /api/portal/me
+    // responses honest. portal_tabs is jsonb so the value is a JSON
+    // literal. Idempotent.
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","messages","blasts","bookings","analytics","settings"]'::jsonb
-     WHERE slug = 'willpower-fitness';`
+       SET portal_tabs = '["overview","leads","messaging","bookings","analytics","settings"]'::jsonb
+     WHERE portal_tabs IS DISTINCT FROM
+           '["overview","leads","messaging","bookings","analytics","settings"]'::jsonb;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;

@@ -381,6 +381,7 @@ const TAB_LABELS = {
   settings:  'Settings',
   blasts:    'SMS Blasts',
   nudges:    'Nudges',
+  messaging: 'Messaging',
   analytics: 'Analytics',
   admin:     'Master Admin',
   booking_admin: 'book.goelev8.ai'
@@ -399,13 +400,50 @@ const TAB_ICONS = {
   settings:  '⚙️',
   blasts:    '📣',
   nudges:    '⚡',
+  messaging: '💬',
   analytics: '📈',
   admin:     '🛡️',
   booking_admin: '🗓️'
 };
 
-const DEFAULT_TABS = ['overview','leads','messages','settings'];
+const DEFAULT_TABS = ['overview','leads','messaging','settings'];
 const ADMIN_TABS = ['admin','booking_admin','activity','analytics'];
+
+// Final pass over the resolved tab list to:
+//   - Drop the deprecated 'contacts' tab (Leads is the unified CRM view)
+//   - Replace any standalone 'messages'/'blasts'/'nudges' with the
+//     unified 'messaging' tab so legacy portal_tabs rows don't show
+//     duplicate buttons
+//   - Force 'overview' to be first and 'settings' last; everything
+//     else keeps its declared order
+function collapseToCleanNav(input) {
+  const out = [];
+  let messagingInserted = false;
+  for (const id of input) {
+    if (id === 'contacts') continue;
+    if (id === 'messages' || id === 'blasts' || id === 'nudges') {
+      if (!messagingInserted) { out.push('messaging'); messagingInserted = true; }
+      continue;
+    }
+    if (id === 'messaging') {
+      if (messagingInserted) continue;
+      messagingInserted = true;
+    }
+    if (!out.includes(id)) out.push(id);
+  }
+  // Pin overview to the front, settings to the back.
+  const pinFront = (arr, id) => {
+    const i = arr.indexOf(id);
+    if (i < 0) return arr;
+    return [id, ...arr.slice(0, i), ...arr.slice(i + 1)];
+  };
+  const pinBack = (arr, id) => {
+    const i = arr.indexOf(id);
+    if (i < 0) return arr;
+    return [...arr.slice(0, i), ...arr.slice(i + 1), id];
+  };
+  return pinBack(pinFront(out, 'overview'), 'settings');
+}
 
 function shell(content) {
   const navBtn = (id, label) =>
@@ -476,6 +514,13 @@ function shell(content) {
     tabs = (isGlobalAdmin || isFlexSlug) ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
     tabs = withBookings(tabs);
   }
+  // Final pass: collapse legacy tab ids onto the new consolidated set
+  // and enforce sidebar ordering. The standalone 'messages', 'blasts',
+  // and 'nudges' tabs are folded into the unified 'messaging' tab so
+  // we don't leak duplicate buttons after the migration. 'contacts'
+  // is dropped (Leads is the single CRM view). Final order: Overview
+  // first, Settings last, everything else preserves declared order.
+  tabs = collapseToCleanNav(tabs);
   const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
 
   const logoSrc = state.client?.logo_url || '/logo.png';
@@ -2794,6 +2839,65 @@ async function openMessagesRealtime(onInsert) {
       })
     .subscribe();
   return channel;
+}
+
+// Unified Messaging tab. Wraps the existing Messages / Blasts / Nudges
+// views under a single sidebar entry with sub-tab chips at the top so
+// the sidebar stays focused on the 6 primary destinations. Each
+// sub-tab simply delegates to the underlying view function — no
+// behavior changes — and remembers the last selection so coming back
+// to the tab puts the operator back where they were.
+async function viewMessaging() {
+  const wrap = el('div', { class: 'messaging-tab' });
+  wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Messaging')));
+
+  // Persist the active sub-tab on the SPA's state object so router
+  // re-renders (e.g. after sending a blast) keep the same sub-view.
+  state._messagingSub = state._messagingSub || 'inbox';
+  let active = state._messagingSub;
+
+  const subTabBar = el('div', { class: 'filter-bar', style: 'margin-bottom:14px' });
+  const content = el('div', {});
+
+  const SUBTABS = [
+    { id: 'inbox',  label: 'Inbox',  loader: viewMessages },
+    { id: 'blasts', label: 'Blasts', loader: viewBlasts },
+    { id: 'nudges', label: 'Nudges', loader: viewNudges }
+  ];
+
+  function renderSubTabBar() {
+    subTabBar.replaceChildren(...SUBTABS.map(t => el('button', {
+      class: 'chip' + (active === t.id ? ' active' : ''),
+      onclick: async () => {
+        if (active === t.id) return;
+        active = t.id;
+        state._messagingSub = active;
+        renderSubTabBar();
+        await renderActive();
+      }
+    }, t.label)));
+  }
+
+  async function renderActive() {
+    content.replaceChildren(el('p', { class: 'muted', style: 'padding:24px' }, 'Loading…'));
+    const def = SUBTABS.find(t => t.id === active) || SUBTABS[0];
+    try {
+      const inner = await def.loader();
+      // Each sub-view renders its own topbar with its own H1; strip
+      // those when nested so we don't show two stacked headings.
+      const innerTopbar = inner.querySelector('.topbar');
+      if (innerTopbar) innerTopbar.remove();
+      content.replaceChildren(inner);
+    } catch (e) {
+      content.replaceChildren(el('p', { class: 'err', style: 'padding:24px' }, 'Failed to load: ' + e.message));
+    }
+  }
+
+  renderSubTabBar();
+  await renderActive();
+  wrap.appendChild(subTabBar);
+  wrap.appendChild(content);
+  return wrap;
 }
 
 async function viewMessages() {
@@ -6129,6 +6233,22 @@ async function viewAnalytics() {
     loadR2sAnalyticsSection(r2sPanel);
   }
 
+  // Booking Page Analytics — scoped to the tenant's booking subdomain
+  // (e.g. book.theflexfacility.com, book.willpowerfitnessfactory.com)
+  // via a hostName filter on the same GA4 property. Only renders when
+  // the tenant has a booking_calendars row with a custom_domain set.
+  const bookingHost = state.bookingCalendar?.custom_domain
+    ? state.bookingCalendar.custom_domain.replace(/^https?:\/\//, '').replace(/\/$/, '')
+    : null;
+  if (bookingHost) {
+    const bkPanel = el('div', { class: 'panel' });
+    bkPanel.appendChild(el('h2', {}, '📅 Booking Page Analytics'));
+    bkPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+      `GA4 data scoped to ${bookingHost} · last 30 days. Same property, host-filtered.`));
+    restOfPage.appendChild(bkPanel);
+    loadBookingPageAnalytics(bkPanel, bookingHost);
+  }
+
   // Sales tracking section
   const salesPanel = el('div', { class: 'panel' });
   salesPanel.appendChild(el('h2', {}, '💰 Sales'));
@@ -6247,6 +6367,59 @@ async function loadSalesSection(container) {
 
 // Road To The Stage ebook sales + /r2s GA4 analytics section
 // rendered inside the Analytics view for Flex Facility only.
+// Booking Page Analytics — scoped GA4 view of the tenant's booking
+// subdomain. Renders headline metrics + a per-day chart + a
+// host-filtered Top Pages list so the operator can see exactly how
+// the booking flow is performing without the noise of the main site.
+async function loadBookingPageAnalytics(container, host) {
+  const placeholder = el('p', { class: 'muted' }, 'Loading booking page analytics…');
+  container.appendChild(placeholder);
+  try {
+    const r = await api('/api/portal/ga4?host=' + encodeURIComponent(host));
+    placeholder.remove();
+    if (r.configured === false) {
+      container.appendChild(el('p', { class: 'muted' }, r.error || 'GA4 not configured.'));
+      return;
+    }
+    if (r.error) {
+      container.appendChild(el('p', { class: 'err' }, 'GA4 error: ' + r.error));
+      return;
+    }
+
+    // Summary cards
+    const cards = el('div', { class: 'cards' });
+    const card = (icon, label, value, sub) => el('div', { class: 'card' },
+      el('div', { class: 'label' }, icon + ' ' + label),
+      el('div', { class: 'value' }, String(value)),
+      sub ? el('div', { class: 'sub muted' }, sub) : null
+    );
+    cards.appendChild(card('👁️', 'Sessions', r.sessions || 0, 'last 30 days'));
+    cards.appendChild(card('📄', 'Page Views', r.page_views || 0, 'last 30 days'));
+    cards.appendChild(card('👤', 'Visitors', r.users || 0, 'unique users'));
+    container.appendChild(cards);
+
+    // Top pages on this host only
+    const pagePanel = el('div', { style: 'margin-top:16px' });
+    pagePanel.appendChild(el('h3', { style: 'font-size:0.95rem;margin:0 0 8px' }, 'Top Pages on ' + host));
+    pagePanel.appendChild(renderPageList(r.top_pages || [], {
+      limit: 10,
+      emptyText: 'No page views recorded for ' + host + ' in the last 30 days. Confirm the data stream for this subdomain is set up in GA4 → Admin → Data Streams.'
+    }));
+    container.appendChild(pagePanel);
+
+    // Top sources to this host only
+    if ((r.top_sources || []).length) {
+      const srcPanel = el('div', { style: 'margin-top:16px' });
+      srcPanel.appendChild(el('h3', { style: 'font-size:0.95rem;margin:0 0 8px' }, 'Top Sources Driving Traffic to ' + host));
+      srcPanel.appendChild(renderTrafficChannels(r.top_sources));
+      container.appendChild(srcPanel);
+    }
+  } catch (e) {
+    placeholder.remove();
+    container.appendChild(el('p', { class: 'err' }, 'Failed to load booking page analytics: ' + e.message));
+  }
+}
+
 async function loadR2sAnalyticsSection(container) {
   const placeholder = el('p', { class: 'muted' }, 'Loading ebook sales + /r2s analytics…');
   container.appendChild(placeholder);
@@ -6472,6 +6645,7 @@ async function render() {
       case 'calls':     view = await viewCalls(); break;
       case 'bookings':  view = await viewBookings(); break;
       case 'messages':  view = await viewMessages(); break;
+      case 'messaging': view = await viewMessaging(); break;
       case 'billing':   view = await viewBilling(); break;
       case 'connect':   view = await viewConnect(); break;
       case 'blasts':    view = await viewBlasts(); break;

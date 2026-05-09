@@ -94,6 +94,16 @@ export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
 
+  // Optional ?host= filter — when supplied, every report is scoped to
+  // events from that hostname only. Used by the Booking Page Analytics
+  // panel to surface the booking subdomain (e.g. book.theflexfacility.com)
+  // separately from the main site without needing a second property.
+  const url = new URL(req.url, 'http://x');
+  const hostFilter = (url.searchParams.get('host') || '').trim();
+  const dimensionFilter = hostFilter
+    ? { filter: { fieldName: 'hostName', stringFilter: { value: hostFilter, matchType: 'EXACT' } } }
+    : undefined;
+
   // Resolve the GA4 property for this request:
   //   - If a tenant context is present → use *that* tenant's
   //     ga4_property_id ONLY. Don't silently fall back to the
@@ -135,6 +145,16 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Helper that merges the optional hostName scope into a per-report
+    // dimensionFilter. Reports that already declare their own filter
+    // (the events query) AND-combine with the host filter so we don't
+    // lose either constraint.
+    const withHost = (extra) => {
+      if (!dimensionFilter) return extra;
+      if (!extra) return dimensionFilter;
+      return { andGroup: { expressions: [dimensionFilter, extra] } };
+    };
+
     // Run multiple reports in parallel
     const [overview, byDay, sources, pages, events] = await Promise.all([
       // 1. Overview totals (last 30 days)
@@ -145,14 +165,16 @@ export default async function handler(req, res) {
           { name: 'screenPageViews' },
           { name: 'totalUsers' },
           { name: 'engagedSessions' }
-        ]
+        ],
+        dimensionFilter
       }),
       // 2. Sessions by day (last 30 days)
       runReport(propertyId, {
         dateRanges: [{ startDate: '30daysAgo', endDate: 'today' }],
         dimensions: [{ name: 'date' }],
         metrics: [{ name: 'sessions' }, { name: 'screenPageViews' }],
-        orderBys: [{ dimension: { dimensionName: 'date' } }]
+        orderBys: [{ dimension: { dimensionName: 'date' } }],
+        dimensionFilter
       }),
       // 3. Top sources / referrers
       runReport(propertyId, {
@@ -160,7 +182,8 @@ export default async function handler(req, res) {
         dimensions: [{ name: 'sessionSource' }],
         metrics: [{ name: 'sessions' }, { name: 'totalUsers' }],
         orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
-        limit: 10
+        limit: 10,
+        dimensionFilter
       }),
       // 4. Top pages (raised limit so funnel pages like /r2s appear even if lower traffic)
       runReport(propertyId, {
@@ -168,21 +191,22 @@ export default async function handler(req, res) {
         dimensions: [{ name: 'pagePath' }],
         metrics: [{ name: 'screenPageViews' }, { name: 'sessions' }],
         orderBys: [{ metric: { metricName: 'screenPageViews' }, desc: true }],
-        limit: 50
+        limit: 50,
+        dimensionFilter
       }),
       // 5. Custom event totals
       runReport(propertyId, {
         dateRanges: [{ startDate: '30daysAgo', endDate: 'today' }],
         dimensions: [{ name: 'eventName' }],
         metrics: [{ name: 'eventCount' }],
-        dimensionFilter: {
+        dimensionFilter: withHost({
           filter: {
             fieldName: 'eventName',
             inListFilter: {
               values: ['lead_viewed', 'booking_viewed', 'call_log_viewed', 'client_login']
             }
           }
-        }
+        })
       })
     ]);
 
