@@ -383,6 +383,7 @@ const TAB_LABELS = {
   nudges:    'Nudges',
   messaging: 'Messaging',
   applications: 'Applications',
+  trainer_applications: 'Trainer Applications',
   analytics: 'Analytics',
   admin:     'Master Admin',
   booking_admin: 'book.goelev8.ai'
@@ -403,6 +404,7 @@ const TAB_ICONS = {
   nudges:    '⚡',
   messaging: '💬',
   applications: '📋',
+  trainer_applications: '🏋️',
   analytics: '📈',
   admin:     '🛡️',
   booking_admin: '🗓️'
@@ -454,6 +456,20 @@ function collapseToCleanNav(input) {
     ordered = ordered.filter((x) => x !== 'applications');
     const li = ordered.indexOf('leads');
     ordered.splice(li + 1, 0, 'applications');
+  }
+  // 'trainer_applications' lands right after 'applications' (or after
+  // 'leads' if applications isn't enabled for this tenant), keeping all
+  // intake-style tabs grouped together.
+  const tIdx = ordered.indexOf('trainer_applications');
+  if (tIdx >= 0) {
+    const anchor = ordered.indexOf('applications');
+    const fallback = ordered.indexOf('leads');
+    const target = anchor >= 0 ? anchor : fallback;
+    if (target >= 0 && tIdx !== target + 1) {
+      ordered = ordered.filter((x) => x !== 'trainer_applications');
+      const a = ordered.indexOf(anchor >= 0 ? 'applications' : 'leads');
+      ordered.splice(a + 1, 0, 'trainer_applications');
+    }
   }
   return ordered;
 }
@@ -3219,6 +3235,231 @@ function openApplicationDrawer(app, onSaved) {
     el('h3', {}, 'Internal notes'),
     notesInput
   ));
+
+  drawer.appendChild(errBox);
+  drawer.appendChild(el('div', { class: 'application-drawer-actions' },
+    el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+    saveBtn
+  ));
+
+  overlay.appendChild(drawer);
+  document.body.appendChild(overlay);
+}
+
+// ============================================================
+// TRAINER APPLICATIONS (coach intake submitted via theflexfacility.com/
+// trainers → /api/trainer-apply → public.trainer_applications). Lives
+// in its own tab, separate from the Applications (artist) and Leads
+// tabs by design — see the trainer_applications migration for context.
+// ============================================================
+async function viewTrainerApplications() {
+  const wrap = el('div', { class: 'applications-tab' });
+  const topbar = el('div', { class: 'topbar' },
+    el('h1', {}, 'Trainer Applications'),
+    el('div', { class: 'muted', id: 'trainer-apps-subtitle' }, 'Loading…')
+  );
+  wrap.appendChild(topbar);
+
+  let activeStatus = state._trainerApplicationsFilter || 'all';
+  let data = { trainer_applications: [], counts: {} };
+
+  const filterBar = el('div', { class: 'filter-bar', style: 'margin-bottom:14px' });
+  const list = el('div', {});
+
+  async function load() {
+    list.replaceChildren(el('div', { class: 'panel' },
+      el('p', { class: 'muted' }, 'Loading trainer applications…')));
+    try {
+      const q = activeStatus === 'all' ? '' : `?status=${encodeURIComponent(activeStatus)}`;
+      data = await api('/api/portal/trainer-applications' + q);
+      const sub = topbar.querySelector('#trainer-apps-subtitle');
+      const total = data.counts?.all || 0;
+      const news  = data.counts?.new || 0;
+      if (sub) {
+        sub.textContent = total
+          ? `${total} total · ${news} new${news ? ' to review' : ''}`
+          : 'No trainer applications yet';
+      }
+      renderFilters();
+      renderList();
+    } catch (e) {
+      list.replaceChildren(el('div', { class: 'panel' },
+        el('p', { class: 'err' }, 'Failed to load: ' + e.message)));
+    }
+  }
+
+  function renderFilters() {
+    const c = data.counts || {};
+    const STATUSES = [
+      { id: 'all',       label: 'All' },
+      { id: 'new',       label: 'New' },
+      { id: 'reviewed',  label: 'Reviewed' },
+      { id: 'interview', label: 'Interview' },
+      { id: 'hired',     label: 'Hired' },
+      { id: 'declined',  label: 'Declined' }
+    ];
+    filterBar.replaceChildren(...STATUSES.map(s => {
+      const n = c[s.id] || 0;
+      const btn = el('button', {
+        class: 'chip' + (activeStatus === s.id ? ' active' : ''),
+        onclick: () => {
+          if (activeStatus === s.id) return;
+          activeStatus = s.id;
+          state._trainerApplicationsFilter = activeStatus;
+          load();
+        }
+      },
+        s.label,
+        n ? el('span', { class: 'chip-count' }, ' ' + n) : null
+      );
+      return btn;
+    }));
+  }
+
+  function renderList() {
+    const apps = data.trainer_applications || [];
+    if (!apps.length) {
+      const isEmpty = (data.counts?.all || 0) === 0;
+      list.replaceChildren(el('div', {
+        class: 'panel',
+        style: 'text-align:center;padding:48px 24px'
+      },
+        el('div', { style: 'font-size:42px;margin-bottom:8px' }, '🏋️'),
+        el('h3', { style: 'margin:0 0 6px' },
+          isEmpty ? 'No trainer applications yet' : 'No applications match this filter'),
+        el('p', { class: 'muted', style: 'margin:0;max-width:380px;margin-left:auto;margin-right:auto' },
+          isEmpty
+            ? 'Share theflexfacility.com/trainers to get coaches in the door. Submissions land here in real time.'
+            : 'Try the “All” filter to see other applications.'
+        )
+      ));
+      return;
+    }
+    list.replaceChildren(...apps.map(a => renderTrainerApplicationCard(a, load)));
+  }
+
+  wrap.appendChild(filterBar);
+  wrap.appendChild(list);
+  await load();
+  return wrap;
+}
+
+function renderTrainerApplicationCard(a, onChange) {
+  const summaryBits = [
+    a.years_experience ? `${a.years_experience} years` : null,
+    a.certifications
+  ].filter(Boolean);
+  return el('div', {
+    class: 'application-card panel',
+    role: 'button',
+    tabindex: '0',
+    onclick: () => openTrainerApplicationDrawer(a, onChange),
+    onkeydown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTrainerApplicationDrawer(a, onChange); }
+    }
+  },
+    el('div', { class: 'row between', style: 'align-items:flex-start;flex-wrap:wrap;gap:10px' },
+      el('div', { style: 'flex:1;min-width:0' },
+        el('div', { class: 'application-name' }, a.full_name || a.email || 'Anonymous trainer'),
+        a.specialty
+          ? el('div', { class: 'application-chips' },
+              el('span', { class: 'application-spec-chip' }, a.specialty)
+            )
+          : null
+      ),
+      el('div', { style: 'text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:6px' },
+        renderApplicationStatusBadge(a.status),
+        el('div', { class: 'muted', style: 'font-size:11px' }, relativeFromNow(a.created_at))
+      )
+    ),
+    summaryBits.length
+      ? el('div', { class: 'application-summary muted' }, summaryBits.join(' · '))
+      : null
+  );
+}
+
+function openTrainerApplicationDrawer(app, onSaved) {
+  const existing = document.querySelector('.application-drawer-overlay');
+  if (existing) existing.remove();
+
+  const overlay = el('div', { class: 'application-drawer-overlay' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  const drawer = el('div', { class: 'application-drawer' });
+
+  const statusSelect = el('select', { class: 'cta-select' },
+    ...['new','reviewed','interview','hired','declined'].map(s =>
+      el('option', { value: s, selected: app.status === s ? '' : false },
+        s.charAt(0).toUpperCase() + s.slice(1)))
+  );
+
+  const fieldRow = (label, value) =>
+    value
+      ? el('div', { class: 'application-field' },
+          el('div', { class: 'application-field-label' }, label),
+          el('div', { class: 'application-field-value' }, value)
+        )
+      : null;
+
+  const errBox = el('div');
+  const saveBtn = el('button', { class: 'btn primary', onclick: async () => {
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    errBox.innerHTML = '';
+    try {
+      const r = await api('/api/portal/trainer-applications', {
+        method: 'PATCH',
+        body: { id: app.id, status: statusSelect.value }
+      });
+      Object.assign(app, r.trainer_application || {});
+      toast('Trainer application updated');
+      close();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) {
+      errBox.innerHTML = `<div class="err">${e.message}</div>`;
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = 'Save changes';
+    }
+  } }, 'Save changes');
+
+  drawer.appendChild(el('div', { class: 'application-drawer-header' },
+    el('div', { style: 'flex:1;min-width:0' },
+      el('h2', {}, app.full_name || app.email || 'Trainer application'),
+      el('div', { class: 'muted', style: 'font-size:12px;margin-top:2px' },
+        `Submitted ${relativeFromNow(app.created_at)} · ${new Date(app.created_at).toLocaleString()}`)
+    ),
+    el('button', { class: 'btn ghost sm', onclick: close, title: 'Close' }, '×')
+  ));
+
+  drawer.appendChild(el('div', { class: 'application-status-row' },
+    el('div', { class: 'application-field-label' }, 'Status'),
+    statusSelect
+  ));
+
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Contact'),
+    el('div', { class: 'application-grid' },
+      fieldRow('Full name', app.full_name),
+      fieldRow('Email', app.email),
+      fieldRow('Phone', app.phone)
+    )
+  ));
+
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Experience'),
+    el('div', { class: 'application-grid' },
+      fieldRow('Specialty', app.specialty),
+      fieldRow('Years', app.years_experience),
+      fieldRow('Certifications', app.certifications)
+    )
+  ));
+
+  if (app.why_flex) {
+    drawer.appendChild(el('div', { class: 'application-section' },
+      el('h3', {}, 'Why The Flex Facility?'),
+      el('div', { class: 'application-bio' }, app.why_flex)
+    ));
+  }
 
   drawer.appendChild(errBox);
   drawer.appendChild(el('div', { class: 'application-drawer-actions' },
@@ -6977,6 +7218,7 @@ async function render() {
       case 'messages':  view = await viewMessages(); break;
       case 'messaging': view = await viewMessaging(); break;
       case 'applications': view = await viewApplications(); break;
+      case 'trainer_applications': view = await viewTrainerApplications(); break;
       case 'billing':   view = await viewBilling(); break;
       case 'connect':   view = await viewConnect(); break;
       case 'blasts':    view = await viewBlasts(); break;
