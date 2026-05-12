@@ -1792,14 +1792,16 @@ async function applyPendingMigrations(req, res) {
     `CREATE POLICY "allow_auth_update" ON public.applications
        FOR UPDATE TO authenticated USING (true);`,
 
-    // iSlay Studios is the first tenant to get the Applications tab.
-    // Slug-scoped UPDATE runs AFTER the all-tenants portal_tabs
-    // standardize so iSlay ends up with the 7-tab variant. Idempotent.
+    // iSlay Studios gets Applications in place of Bookings — they
+    // don't surface a booking sidebar tab, just the applications
+    // pipeline. Slug-scoped UPDATE runs AFTER the all-tenants
+    // standardize so iSlay ends up with this exact 6-tab variant.
+    // Idempotent.
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","applications","messaging","bookings","analytics","settings"]'::jsonb
+       SET portal_tabs = '["overview","leads","applications","messaging","analytics","settings"]'::jsonb
      WHERE slug = 'islay-studios'
        AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","applications","messaging","bookings","analytics","settings"]'::jsonb;`
+           '["overview","leads","applications","messaging","analytics","settings"]'::jsonb;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;

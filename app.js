@@ -500,12 +500,14 @@ function shell(content) {
     return t;
   };
   // Insert Bookings when the current client has an active booking_calendars
-  // row. Placed right before Settings/Analytics so it sits next to the other
-  // tail tabs. No-op (returns input) if the client has no calendar, or if
-  // bookings is already in the list.
-  const withBookings = (baseTabs) => {
+  // row AND the tenant hasn't explicitly opted out by setting portal_tabs
+  // without 'bookings'. iSlay Studios uses this opt-out to swap Bookings
+  // for Applications while still keeping a booking_calendars row around
+  // for booking-link infrastructure that doesn't need its own sidebar tab.
+  const withBookings = (baseTabs, explicitTabs) => {
     if (!state.bookingCalendar) return baseTabs;
     if (baseTabs.includes('bookings')) return baseTabs;
+    if (explicitTabs) return baseTabs;
     const t = [...baseTabs];
     const anchorIdx = t.indexOf('settings');
     const insertAt = anchorIdx >= 0 ? anchorIdx : t.length;
@@ -517,15 +519,15 @@ function shell(content) {
     // Admin view — no client selected
     tabs = ADMIN_TABS;
   } else if (state.client?.portal_tabs) {
-    // Client has custom tabs
+    // Client has custom tabs — treat that list as authoritative.
     const isFlexSlug = state.client?.slug === 'flex-facility';
     tabs = (isGlobalAdmin || isFlexSlug) ? withAnalytics(state.client.portal_tabs) : state.client.portal_tabs;
-    tabs = withBookings(tabs);
+    tabs = withBookings(tabs, /* explicitTabs */ true);
   } else {
     // Default client tabs
     const isFlexSlug = state.client?.slug === 'flex-facility';
     tabs = (isGlobalAdmin || isFlexSlug) ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
-    tabs = withBookings(tabs);
+    tabs = withBookings(tabs, /* explicitTabs */ false);
   }
   // Final pass: collapse legacy tab ids onto the new consolidated set
   // and enforce sidebar ordering. The standalone 'messages', 'blasts',
@@ -578,12 +580,17 @@ function shell(content) {
   const isClientLogo = !!state.client?.logo_url;
   const logoClass = isClientLogo ? 'logo client-logo' : 'logo';
 
+  // Tag the brand wrapper with the active client's slug so CSS can
+  // apply per-tenant overrides (e.g. iSlay Studios prefers a black
+  // logo container, while most other tenants read better on white).
+  const brandSlug = state.client?.slug || '';
+
   // Mobile header (hamburger + brand)
   const mobileHeader = el('div', { class: 'mobile-header' },
     el('button', { class: 'nav-toggle', onclick: toggleNav },
       el('span'), el('span'), el('span')
     ),
-    el('div', { class: 'mobile-brand' },
+    el('div', { class: 'mobile-brand', 'data-client-slug': brandSlug },
       el('div', { class: logoClass }, el('img', { src: logoSrc, alt: '' })),
       brandName
     )
@@ -600,7 +607,7 @@ function shell(content) {
 
   return el('div', { class: 'app has-bottom-nav' + (state.isAdmin ? ' is-admin' : '') },
     el('aside', { class: 'sidebar' },
-      el('div', { class: 'brand' },
+      el('div', { class: 'brand', 'data-client-slug': brandSlug },
         el('div', { class: logoClass }, el('img', { src: logoSrc, alt: '' })),
         el('div', { class: 'name' }, brandName,
           el('small', {}, state.isAdmin ? 'Master Admin' : 'Client Portal'))

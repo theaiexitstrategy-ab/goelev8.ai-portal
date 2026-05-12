@@ -3062,6 +3062,20 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
 .mobile-header .mobile-brand .logo.client-logo {
   background: #fff !important;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+}
+
+/* iSlay Studios renders better against a black surround — their mark
+   is light-toned, so the default white container washes it out.
+   Slug-scoped override keeps every other tenant on white. */
+.brand[data-client-slug="islay-studios"] .logo.client-logo,
+.mobile-header .mobile-brand[data-client-slug="islay-studios"] .logo.client-logo {
+  background: #000 !important;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+}
+/* Restore the closing brace + remaining .client-logo declarations
+   below; this override block is purely additive. */
+.brand .logo.client-logo,
+.mobile-header .mobile-brand .logo.client-logo {
   /* Make sure a zero-width image child can't collapse the parent before
      the cross-origin client logo finishes loading on a cold PWA start. */
   min-width: 48px;
