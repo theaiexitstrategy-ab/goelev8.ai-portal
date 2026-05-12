@@ -1754,6 +1754,26 @@ async function applyPendingMigrations(req, res) {
     // Edge Function and the portal Applications tab. Receives artist
     // applications from each tenant's marketing site keyed on a text
     // client_id slug (e.g. 'islay_studios'). Idempotent.
+    //
+    // Defensive ALTER: an earlier installation of this table existed in
+    // some projects with client_id typed as uuid, which is the wrong
+    // type — the portal queries with slug-like text values ('islay_studios'
+    // etc.). Cast to text in place; existing rows are preserved as their
+    // string form. Skipped silently when the column is already text.
+    `DO $migrate$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name   = 'applications'
+            AND column_name  = 'client_id'
+            AND data_type    = 'uuid'
+       ) THEN
+         ALTER TABLE public.applications
+           ALTER COLUMN client_id TYPE text USING client_id::text;
+       END IF;
+     END
+     $migrate$;`,
     `CREATE TABLE IF NOT EXISTS public.applications (
        id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
        client_id text NOT NULL,
