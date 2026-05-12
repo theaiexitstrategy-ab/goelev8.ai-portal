@@ -382,6 +382,7 @@ const TAB_LABELS = {
   blasts:    'SMS Blasts',
   nudges:    'Nudges',
   messaging: 'Messaging',
+  applications: 'Applications',
   analytics: 'Analytics',
   admin:     'Master Admin',
   booking_admin: 'book.goelev8.ai'
@@ -401,6 +402,7 @@ const TAB_ICONS = {
   blasts:    '📣',
   nudges:    '⚡',
   messaging: '💬',
+  applications: '📋',
   analytics: '📈',
   admin:     '🛡️',
   booking_admin: '🗓️'
@@ -442,7 +444,18 @@ function collapseToCleanNav(input) {
     if (i < 0) return arr;
     return [...arr.slice(0, i), ...arr.slice(i + 1), id];
   };
-  return pinBack(pinFront(out, 'overview'), 'settings');
+  let ordered = pinBack(pinFront(out, 'overview'), 'settings');
+  // If 'applications' is in the list, slot it right after 'leads' so
+  // tenant-specific tabs sit alongside the CRM rather than wherever
+  // they were declared in the portal_tabs array.
+  const aIdx = ordered.indexOf('applications');
+  const lIdx = ordered.indexOf('leads');
+  if (aIdx >= 0 && lIdx >= 0 && aIdx !== lIdx + 1) {
+    ordered = ordered.filter((x) => x !== 'applications');
+    const li = ordered.indexOf('leads');
+    ordered.splice(li + 1, 0, 'applications');
+  }
+  return ordered;
 }
 
 function shell(content) {
@@ -2898,6 +2911,316 @@ async function viewMessaging() {
   wrap.appendChild(subTabBar);
   wrap.appendChild(content);
   return wrap;
+}
+
+// ============================================================
+// APPLICATIONS (artist applications submitted via the tenant's public
+// site → routed through the Supabase /submit-application Edge Function
+// into public.applications, then surfaced here for review + workflow).
+// ============================================================
+async function viewApplications() {
+  const wrap = el('div', { class: 'applications-tab' });
+  const topbar = el('div', { class: 'topbar' },
+    el('h1', {}, 'Applications'),
+    el('div', { class: 'muted', id: 'apps-subtitle' }, 'Loading…')
+  );
+  wrap.appendChild(topbar);
+
+  let activeStatus = state._applicationsFilter || 'all';
+  let data = { applications: [], counts: {} };
+
+  const filterBar = el('div', { class: 'filter-bar', style: 'margin-bottom:14px' });
+  const list = el('div', {});
+
+  async function load() {
+    list.replaceChildren(el('div', { class: 'panel' },
+      el('p', { class: 'muted' }, 'Loading applications…')));
+    try {
+      const q = activeStatus === 'all' ? '' : `?status=${encodeURIComponent(activeStatus)}`;
+      data = await api('/api/portal/applications' + q);
+      const sub = topbar.querySelector('#apps-subtitle');
+      const total = data.counts?.all || 0;
+      const news  = data.counts?.new || 0;
+      if (sub) {
+        sub.textContent = total
+          ? `${total} total · ${news} new${news ? ' to review' : ''}`
+          : 'No applications yet';
+      }
+      renderFilters();
+      renderList();
+    } catch (e) {
+      list.replaceChildren(el('div', { class: 'panel' },
+        el('p', { class: 'err' }, 'Failed to load: ' + e.message)));
+    }
+  }
+
+  function renderFilters() {
+    const c = data.counts || {};
+    const STATUSES = [
+      { id: 'all',       label: 'All' },
+      { id: 'new',       label: 'New' },
+      { id: 'reviewed',  label: 'Reviewed' },
+      { id: 'interview', label: 'Interview' },
+      { id: 'hired',     label: 'Hired' },
+      { id: 'declined',  label: 'Declined' }
+    ];
+    filterBar.replaceChildren(...STATUSES.map(s => {
+      const n = c[s.id] || 0;
+      const btn = el('button', {
+        class: 'chip' + (activeStatus === s.id ? ' active' : ''),
+        onclick: () => {
+          if (activeStatus === s.id) return;
+          activeStatus = s.id;
+          state._applicationsFilter = activeStatus;
+          load();
+        }
+      },
+        s.label,
+        n ? el('span', { class: 'chip-count' }, ' ' + n) : null
+      );
+      return btn;
+    }));
+  }
+
+  function renderList() {
+    const apps = data.applications || [];
+    if (!apps.length) {
+      const isEmpty = (data.counts?.all || 0) === 0;
+      list.replaceChildren(el('div', {
+        class: 'panel',
+        style: 'text-align:center;padding:48px 24px'
+      },
+        el('div', { style: 'font-size:42px;margin-bottom:8px' }, '📋'),
+        el('h3', { style: 'margin:0 0 6px' },
+          isEmpty ? 'No applications yet' : 'No applications match this filter'),
+        el('p', { class: 'muted', style: 'margin:0;max-width:380px;margin-left:auto;margin-right:auto' },
+          isEmpty
+            ? 'Share your Apply link to get started. Submissions from your public site land here in real time.'
+            : 'Try the “All” filter to see other applications, or wait for new submissions to roll in.'
+        )
+      ));
+      return;
+    }
+    list.replaceChildren(...apps.map(a => renderApplicationCard(a, load)));
+  }
+
+  wrap.appendChild(filterBar);
+  wrap.appendChild(list);
+  await load();
+  return wrap;
+}
+
+function renderApplicationCard(a, onChange) {
+  const specialties = Array.isArray(a.specialty) ? a.specialty.filter(Boolean) : [];
+  const summaryBits = [
+    a.city_state,
+    a.years_experience ? `${a.years_experience} years` : null,
+    a.schedule,
+    a.employment_status
+  ].filter(Boolean);
+  return el('div', {
+    class: 'application-card panel',
+    role: 'button',
+    tabindex: '0',
+    onclick: () => openApplicationDrawer(a, onChange),
+    onkeydown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openApplicationDrawer(a, onChange); }
+    }
+  },
+    el('div', { class: 'row between', style: 'align-items:flex-start;flex-wrap:wrap;gap:10px' },
+      el('div', { style: 'flex:1;min-width:0' },
+        el('div', { class: 'application-name' }, a.full_name || a.email || 'Anonymous applicant'),
+        specialties.length
+          ? el('div', { class: 'application-chips' },
+              ...specialties.slice(0, 4).map(s => el('span', { class: 'application-spec-chip' }, s)),
+              specialties.length > 4 ? el('span', { class: 'application-spec-chip more' }, `+${specialties.length - 4}`) : null
+            )
+          : null
+      ),
+      el('div', { style: 'text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:6px' },
+        renderApplicationStatusBadge(a.status),
+        el('div', { class: 'muted', style: 'font-size:11px' }, relativeFromNow(a.created_at))
+      )
+    ),
+    summaryBits.length
+      ? el('div', { class: 'application-summary muted' }, summaryBits.join(' · '))
+      : null
+  );
+}
+
+function renderApplicationStatusBadge(status) {
+  const s = status || 'new';
+  return el('span', { class: `application-status application-status-${s}` },
+    s.charAt(0).toUpperCase() + s.slice(1)
+  );
+}
+
+function relativeFromNow(iso) {
+  if (!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms) || ms < 0) return new Date(iso).toLocaleDateString();
+  const m = Math.floor(ms / 60000);
+  const h = Math.floor(ms / 3600000);
+  const d = Math.floor(ms / 86400000);
+  if (d > 30) return new Date(iso).toLocaleDateString();
+  if (d > 0)  return `${d} day${d === 1 ? '' : 's'} ago`;
+  if (h > 0)  return `${h} hour${h === 1 ? '' : 's'} ago`;
+  if (m > 0)  return `${m} min${m === 1 ? '' : 's'} ago`;
+  return 'just now';
+}
+
+// Detail drawer for an application — readable layout for all submitted
+// fields plus operator-editable status + internal notes. Patches via
+// /api/portal/applications and re-runs the list loader on save.
+function openApplicationDrawer(app, onSaved) {
+  // Close any previously open drawer.
+  const existing = document.querySelector('.application-drawer-overlay');
+  if (existing) existing.remove();
+
+  const overlay = el('div', { class: 'application-drawer-overlay' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  const drawer = el('div', { class: 'application-drawer' });
+
+  const specialties = Array.isArray(app.specialty) ? app.specialty.filter(Boolean) : [];
+  const statusSelect = el('select', { class: 'cta-select' },
+    ...['new','reviewed','interview','hired','declined'].map(s =>
+      el('option', { value: s, selected: app.status === s ? '' : false },
+        s.charAt(0).toUpperCase() + s.slice(1)))
+  );
+  const notesInput = el('textarea', {
+    rows: 4,
+    placeholder: 'Internal notes (visible to your team only)…',
+    style: 'width:100%;resize:vertical'
+  });
+  if (app.notes) notesInput.value = app.notes;
+
+  const fieldRow = (label, value) =>
+    value
+      ? el('div', { class: 'application-field' },
+          el('div', { class: 'application-field-label' }, label),
+          el('div', { class: 'application-field-value' }, value)
+        )
+      : null;
+
+  const linkRow = (label, url) =>
+    url
+      ? el('div', { class: 'application-field' },
+          el('div', { class: 'application-field-label' }, label),
+          el('div', { class: 'application-field-value' },
+            el('a', { href: url.startsWith('http') ? url : 'https://' + url, target: '_blank', rel: 'noopener' }, url)
+          )
+        )
+      : null;
+
+  const errBox = el('div');
+  const saveBtn = el('button', { class: 'btn primary', onclick: async () => {
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    errBox.innerHTML = '';
+    try {
+      const r = await api('/api/portal/applications', {
+        method: 'PATCH',
+        body: { id: app.id, status: statusSelect.value, notes: notesInput.value }
+      });
+      Object.assign(app, r.application || {});
+      toast('Application updated');
+      close();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) {
+      errBox.innerHTML = `<div class="err">${e.message}</div>`;
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = 'Save changes';
+    }
+  } }, 'Save changes');
+
+  drawer.appendChild(el('div', { class: 'application-drawer-header' },
+    el('div', { style: 'flex:1;min-width:0' },
+      el('h2', {}, app.full_name || app.email || 'Application'),
+      el('div', { class: 'muted', style: 'font-size:12px;margin-top:2px' },
+        `Submitted ${relativeFromNow(app.created_at)} · ${new Date(app.created_at).toLocaleString()}`)
+    ),
+    el('button', { class: 'btn ghost sm', onclick: close, title: 'Close' }, '×')
+  ));
+
+  // Status + quick actions
+  drawer.appendChild(el('div', { class: 'application-status-row' },
+    el('div', { class: 'application-field-label' }, 'Status'),
+    statusSelect
+  ));
+
+  // Contact section
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Contact'),
+    el('div', { class: 'application-grid' },
+      fieldRow('Full name', app.full_name),
+      fieldRow('Email', app.email),
+      fieldRow('Phone', app.phone),
+      linkRow('Instagram', app.instagram),
+      fieldRow('City / State', app.city_state)
+    )
+  ));
+
+  // Specialties
+  if (specialties.length) {
+    drawer.appendChild(el('div', { class: 'application-section' },
+      el('h3', {}, 'Specialties'),
+      el('div', { class: 'application-chips' },
+        ...specialties.map(s => el('span', { class: 'application-spec-chip' }, s))
+      )
+    ));
+  }
+
+  // Experience
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Experience'),
+    el('div', { class: 'application-grid' },
+      fieldRow('Years', app.years_experience),
+      fieldRow('Currently', app.employment_status),
+      fieldRow('Has existing clientele', app.has_clientele === true ? 'Yes' : app.has_clientele === false ? 'No' : null),
+      fieldRow('Clientele size', app.clientele_count)
+    )
+  ));
+
+  // Logistics
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Logistics'),
+    el('div', { class: 'application-grid' },
+      fieldRow('Desired start', app.desired_start),
+      fieldRow('Booth preference', app.booth_preference),
+      fieldRow('Schedule', app.schedule),
+      fieldRow('Heard about us via', app.referral_source)
+    )
+  ));
+
+  // Bio + portfolio
+  if (app.bio || app.portfolio_url) {
+    drawer.appendChild(el('div', { class: 'application-section' },
+      el('h3', {}, 'About'),
+      app.bio
+        ? el('div', { class: 'application-field' },
+            el('div', { class: 'application-field-label' }, 'Bio'),
+            el('div', { class: 'application-bio' }, app.bio)
+          )
+        : null,
+      linkRow('Portfolio', app.portfolio_url)
+    ));
+  }
+
+  // Internal notes
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Internal notes'),
+    notesInput
+  ));
+
+  drawer.appendChild(errBox);
+  drawer.appendChild(el('div', { class: 'application-drawer-actions' },
+    el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+    saveBtn
+  ));
+
+  overlay.appendChild(drawer);
+  document.body.appendChild(overlay);
 }
 
 async function viewMessages() {
@@ -6646,6 +6969,7 @@ async function render() {
       case 'bookings':  view = await viewBookings(); break;
       case 'messages':  view = await viewMessages(); break;
       case 'messaging': view = await viewMessaging(); break;
+      case 'applications': view = await viewApplications(); break;
       case 'billing':   view = await viewBilling(); break;
       case 'connect':   view = await viewConnect(); break;
       case 'blasts':    view = await viewBlasts(); break;

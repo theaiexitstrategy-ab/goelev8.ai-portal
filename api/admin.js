@@ -1747,7 +1747,59 @@ async function applyPendingMigrations(req, res) {
          AND ga4_property_id IS DISTINCT FROM '536338826';`,
     `UPDATE public.clients SET ga4_property_id = '536419721'
        WHERE slug = 'allthingzblackhair'
-         AND ga4_property_id IS DISTINCT FROM '536419721';`
+         AND ga4_property_id IS DISTINCT FROM '536419721';`,
+
+    // ----- Applications feature (additive) -----
+    // Creates public.applications + RLS for the public submit-application
+    // Edge Function and the portal Applications tab. Receives artist
+    // applications from each tenant's marketing site keyed on a text
+    // client_id slug (e.g. 'islay_studios'). Idempotent.
+    `CREATE TABLE IF NOT EXISTS public.applications (
+       id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+       client_id text NOT NULL,
+       created_at timestamptz DEFAULT now() NOT NULL,
+       status text DEFAULT 'new' NOT NULL,
+       full_name text,
+       phone text,
+       email text,
+       instagram text,
+       city_state text,
+       specialty text[],
+       years_experience text,
+       employment_status text,
+       has_clientele boolean,
+       clientele_count text,
+       bio text,
+       portfolio_url text,
+       desired_start date,
+       booth_preference text,
+       schedule text,
+       referral_source text,
+       notes text
+     );`,
+    `CREATE INDEX IF NOT EXISTS applications_client_created_idx
+       ON public.applications(client_id, created_at DESC);`,
+    `CREATE INDEX IF NOT EXISTS applications_client_status_idx
+       ON public.applications(client_id, status);`,
+    `ALTER TABLE public.applications ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS "allow_anon_insert" ON public.applications;`,
+    `CREATE POLICY "allow_anon_insert" ON public.applications
+       FOR INSERT TO anon WITH CHECK (true);`,
+    `DROP POLICY IF EXISTS "allow_auth_read" ON public.applications;`,
+    `CREATE POLICY "allow_auth_read" ON public.applications
+       FOR SELECT TO authenticated USING (true);`,
+    `DROP POLICY IF EXISTS "allow_auth_update" ON public.applications;`,
+    `CREATE POLICY "allow_auth_update" ON public.applications
+       FOR UPDATE TO authenticated USING (true);`,
+
+    // iSlay Studios is the first tenant to get the Applications tab.
+    // Slug-scoped UPDATE runs AFTER the all-tenants portal_tabs
+    // standardize so iSlay ends up with the 7-tab variant. Idempotent.
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","applications","messaging","bookings","analytics","settings"]'::jsonb
+     WHERE slug = 'islay-studios'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","applications","messaging","bookings","analytics","settings"]'::jsonb;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
