@@ -1032,7 +1032,14 @@ async function openCustomerProfile(leadId) {
 
   const lead = r.lead || {};
   const summary = r.summary || {};
-  const fmt = (ts) => ts ? new Date(ts).toLocaleString() : '—';
+  // Format booking timestamps in the calendar's tz so the operator
+  // always sees the local Central time the customer actually booked,
+  // not whatever tz their browser is in. Falls back to America/Chicago
+  // for tenants without a booking_calendars row.
+  const profileTz = state.bookingCalendar?.timezone || 'America/Chicago';
+  const fmt = (ts) => ts
+    ? new Date(ts).toLocaleString(undefined, { timeZone: profileTz, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+    : '—';
   const fmtAgo = (ts) => {
     if (!ts) return '—';
     const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
@@ -2089,9 +2096,13 @@ async function viewBookings() {
     const when = new Date(a.appointment_start);
     // Format in the calendar's timezone — not the operator's browser tz —
     // so 9 AM Central reads 9 AM regardless of where the admin is sitting.
+    // Hard-fallback to America/Chicago when calendarTz isn't provided
+    // (e.g. legacy booking_calendars row with NULL tz) so we never
+    // silently fall through to the operator's browser tz.
+    const tz = calendarTz || cal.timezone || 'America/Chicago';
     const fmtOpts = {
       month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
-      ...(calendarTz ? { timeZone: calendarTz, timeZoneName: 'short' } : {})
+      timeZone: tz, timeZoneName: 'short'
     };
     let whenStr;
     try { whenStr = when.toLocaleString(undefined, fmtOpts); }
@@ -3510,8 +3521,12 @@ async function viewMessages() {
   for (const b of bookings) {
     const phone = b.lead_phone || b.phone || null;
     if (!phone) continue;
+    // Same calendar-tz formatting as the Bookings tab so the synthetic
+    // booking event in the messages thread reads the same time the
+    // operator sees on the Bookings list.
+    const msgTz = state.bookingCalendar?.timezone || 'America/Chicago';
     const when = b.starts_at
-      ? new Date(b.starts_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      ? new Date(b.starts_at).toLocaleString(undefined, { timeZone: msgTz, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
       : 'Pending time';
     const statusEmoji = b.status === 'confirmed' ? '✅'
       : b.status === 'cancelled' ? '❌'
