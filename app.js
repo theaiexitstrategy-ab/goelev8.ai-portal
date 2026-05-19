@@ -7058,7 +7058,18 @@ async function viewAdminSales() {
     data = await api('/api/admin?action=sales-dashboard');
   } catch (e) {
     headerStrip.innerHTML = '';
-    headerStrip.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'Failed: ' + e.message)));
+    const errPanel = el('div', { class: 'panel' },
+      el('h3', { style: 'margin:0 0 8px' }, '⚠️ Sales dashboard failed to load'),
+      el('p', { class: 'err', style: 'margin:0 0 12px' }, e.message || String(e)),
+      el('p', { class: 'muted', style: 'font-size:12px;margin:0 0 6px' },
+        'Common causes:'),
+      el('ul', { class: 'muted', style: 'font-size:12px;margin:0;padding-left:18px;line-height:1.6' },
+        el('li', {}, 'Vercel hasn\'t finished deploying the latest commit yet — wait 60s and refresh.'),
+        el('li', {}, 'Merch tables not yet migrated — Master Admin → Run Pending Migrations.'),
+        el('li', {}, 'Open DevTools → Network → /api/admin?action=sales-dashboard for the full response.')
+      )
+    );
+    wrap.appendChild(errPanel);
     return wrap;
   }
   tenantsCache.byId = data.tenants || {};

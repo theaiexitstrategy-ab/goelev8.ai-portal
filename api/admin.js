@@ -374,7 +374,6 @@ async function salesDashboard(req, res) {
   try {
     const { data: clients } = await supabaseAdmin
       .from('clients').select('id, slug').in('slug', PLATFORM_REVENUE.HIRE_FEE_SLUGS);
-    const hireClientIds = (clients || []).map(c => c.id);
     // applications.client_id is a TEXT slug (not uuid FK) — match
     // all known slug variants for each tenant: hyphen, underscore,
     // and uuid (legacy rows from before the column was cast).
@@ -384,61 +383,82 @@ async function salesDashboard(req, res) {
       slugSet.add(c.slug.replace(/-/g, '_'));
       slugSet.add(c.id);
     }
-    const { data: rows, error } = await supabaseAdmin
-      .from('applications')
-      .select('client_id, status, created_at')
-      .in('client_id', [...slugSet]);
-    if (error && tableMissing(error, 'applications')) {
-      out.sources.hires = { last_30d_cents: 0, lifetime_cents: 0, setup_required: true };
-    } else if (error) {
-      out.sources.hires = { error: error.message };
+    if (!slugSet.size) {
+      out.sources.hires = { last_30d_cents: 0, lifetime_cents: 0 };
     } else {
-      let life = 0, last30 = 0;
-      const perClient = {};
-      for (const r of (rows || [])) {
-        if (r.status !== 'hired') continue;
-        life += PLATFORM_REVENUE.HIRE_FEE_CENTS;
-        if (r.created_at && r.created_at >= since30d) last30 += PLATFORM_REVENUE.HIRE_FEE_CENTS;
-        // Map back to clients.id so the breakdown is keyed consistently.
-        const c = (clients || []).find(c =>
-          c.slug === r.client_id ||
-          c.slug.replace(/-/g, '_') === r.client_id ||
-          c.id === r.client_id
-        );
-        const key = c?.id || r.client_id;
-        perClient[key] = (perClient[key] || 0) + PLATFORM_REVENUE.HIRE_FEE_CENTS;
+      const { data: rows, error } = await supabaseAdmin
+        .from('applications')
+        .select('client_id, status, created_at')
+        .in('client_id', [...slugSet]);
+      if (error && tableMissing(error, 'applications')) {
+        out.sources.hires = { last_30d_cents: 0, lifetime_cents: 0, setup_required: true };
+      } else if (error) {
+        out.sources.hires = { error: error.message };
+      } else {
+        let life = 0, last30 = 0;
+        const perClient = {};
+        for (const r of (rows || [])) {
+          if (r.status !== 'hired') continue;
+          life += PLATFORM_REVENUE.HIRE_FEE_CENTS;
+          if (r.created_at && r.created_at >= since30d) last30 += PLATFORM_REVENUE.HIRE_FEE_CENTS;
+          // Map back to clients.id so the breakdown is keyed consistently.
+          const c = (clients || []).find(c =>
+            c.slug === r.client_id ||
+            c.slug.replace(/-/g, '_') === r.client_id ||
+            c.id === r.client_id
+          );
+          const key = c?.id || r.client_id;
+          perClient[key] = (perClient[key] || 0) + PLATFORM_REVENUE.HIRE_FEE_CENTS;
+        }
+        out.sources.hires = {
+          last_30d_cents: last30,
+          lifetime_cents: life,
+          per_hire_cents: PLATFORM_REVENUE.HIRE_FEE_CENTS
+        };
+        out.breakdowns.hires = perClient;
       }
-      out.sources.hires = {
-        last_30d_cents: last30,
-        lifetime_cents: life,
-        per_hire_cents: PLATFORM_REVENUE.HIRE_FEE_CENTS
-      };
-      out.breakdowns.hires = perClient;
     }
   } catch (e) { out.sources.hires = { error: e.message }; }
 
   // ─── Totals ───────────────────────────────────────────────
+  // Defensive: every accumulator clamps to a finite integer so a
+  // single bad row in one source never NaN-poisons the headline KPI.
   for (const src of Object.values(out.sources)) {
-    out.totals.last_30d_cents += src.last_30d_cents || 0;
-    out.totals.lifetime_cents += src.lifetime_cents || 0;
+    if (!src || typeof src !== 'object') continue;
+    const last30 = Number(src.last_30d_cents);
+    const life   = Number(src.lifetime_cents);
+    if (Number.isFinite(last30)) out.totals.last_30d_cents += last30;
+    if (Number.isFinite(life))   out.totals.lifetime_cents += life;
   }
-  out.totals.mrr_cents = out.sources.subscriptions.mrr_cents || 0;
+  out.totals.mrr_cents = Number(out.sources.subscriptions?.mrr_cents) || 0;
 
   // Tenant names for the breakdown UI.
   try {
     const allClientIds = new Set();
     for (const breakdown of Object.values(out.breakdowns)) {
-      for (const k of Object.keys(breakdown)) allClientIds.add(k);
-    }
-    if (allClientIds.size) {
-      const { data: cs } = await supabaseAdmin.from('clients')
-        .select('id, slug, name, business_name').in('id', [...allClientIds]);
-      out.tenants = {};
-      for (const c of (cs || [])) {
-        out.tenants[c.id] = { slug: c.slug, name: c.business_name || c.name };
+      if (breakdown && typeof breakdown === 'object') {
+        for (const k of Object.keys(breakdown)) allClientIds.add(k);
       }
     }
-  } catch { /* non-fatal */ }
+    out.tenants = {};
+    if (allClientIds.size) {
+      // Only uuid-shaped keys are real client ids; legacy string slug
+      // keys (from applications.client_id text values) get filtered
+      // here so .in() doesn't fail on a uuid-typed column.
+      const ids = [...allClientIds].filter(k =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(k)
+      );
+      if (ids.length) {
+        const { data: cs } = await supabaseAdmin.from('clients')
+          .select('id, slug, name, business_name').in('id', ids);
+        for (const c of (cs || [])) {
+          out.tenants[c.id] = { slug: c.slug, name: c.business_name || c.name };
+        }
+      }
+    }
+  } catch (e) {
+    out._tenant_lookup_warning = e.message;
+  }
 
   return res.status(200).json(out);
 }
