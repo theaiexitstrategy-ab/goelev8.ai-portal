@@ -384,6 +384,7 @@ const TAB_LABELS = {
   messaging: 'Messaging',
   applications: 'Applications',
   trainer_applications: 'Trainer Applications',
+  merch:     'Merch',
   analytics: 'Analytics',
   admin:     'Master Admin',
   booking_admin: 'book.goelev8.ai'
@@ -405,6 +406,7 @@ const TAB_ICONS = {
   messaging: '💬',
   applications: '📋',
   trainer_applications: '🏋️',
+  merch:     '🛍️',
   analytics: '📈',
   admin:     '🛡️',
   booking_admin: '🗓️'
@@ -3476,6 +3478,584 @@ function openTrainerApplicationDrawer(app, onSaved) {
   drawer.appendChild(el('div', { class: 'application-drawer-actions' },
     el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
     saveBtn
+  ));
+
+  overlay.appendChild(drawer);
+  document.body.appendChild(overlay);
+}
+
+// ============================================================
+// MERCH — products, coupons, orders for the storefront on each
+// tenant's marketing site (e.g. willpowerfitnessfactory.com/merch).
+// Storefront fetches /api/external/products to render prices, calls
+// /api/external/coupons/validate at checkout, then POSTs the finished
+// order to /api/external/orders. The operator manages all three
+// surfaces here.
+// ============================================================
+async function viewMerch() {
+  const wrap = el('div', { class: 'merch-tab' });
+  const topbar = el('div', { class: 'topbar' },
+    el('h1', {}, 'Merch'),
+    el('div', { class: 'muted', id: 'merch-subtitle' }, 'Loading…')
+  );
+  wrap.appendChild(topbar);
+
+  state._merchSub = state._merchSub || 'products';
+  let active = state._merchSub;
+
+  const subTabBar = el('div', { class: 'filter-bar', style: 'margin-bottom:14px' });
+  const content = el('div', {});
+
+  const SUBTABS = [
+    { id: 'products', label: 'Products' },
+    { id: 'coupons',  label: 'Promos'   },
+    { id: 'orders',   label: 'Orders'   }
+  ];
+
+  function renderSubTabBar() {
+    subTabBar.replaceChildren(...SUBTABS.map(t => el('button', {
+      class: 'chip' + (active === t.id ? ' active' : ''),
+      onclick: async () => {
+        if (active === t.id) return;
+        active = t.id;
+        state._merchSub = active;
+        renderSubTabBar();
+        await renderActive();
+      }
+    }, t.label)));
+  }
+
+  async function renderActive() {
+    content.replaceChildren(el('div', { class: 'panel' },
+      el('p', { class: 'muted' }, 'Loading…')));
+    try {
+      if (active === 'products') await renderMerchProducts(content);
+      else if (active === 'coupons') await renderMerchCoupons(content);
+      else await renderMerchOrders(content);
+    } catch (e) {
+      content.replaceChildren(el('div', { class: 'panel' },
+        el('p', { class: 'err' }, 'Failed to load: ' + e.message)));
+    }
+  }
+
+  // Header summary — pulls a quick count + revenue for context.
+  (async () => {
+    try {
+      const r = await api('/api/portal/merch?action=summary');
+      const sub = topbar.querySelector('#merch-subtitle');
+      if (sub) {
+        if (r.setup_required) {
+          sub.textContent = 'Run Pending Migrations to enable the merch storefront.';
+        } else {
+          const c = r.counts || {};
+          const rev = '$' + ((r.revenue_cents || 0) / 100).toFixed(2);
+          sub.textContent = `${c.products || 0} product${c.products === 1 ? '' : 's'} · ${c.active_coupons || 0} active promo${c.active_coupons === 1 ? '' : 's'} · ${c.orders || 0} order${c.orders === 1 ? '' : 's'} · ${rev} total`;
+        }
+      }
+    } catch { /* non-fatal */ }
+  })();
+
+  renderSubTabBar();
+  await renderActive();
+  wrap.appendChild(subTabBar);
+  wrap.appendChild(content);
+  return wrap;
+}
+
+async function renderMerchProducts(container) {
+  const r = await api('/api/portal/merch?action=list-products');
+  const products = r.products || [];
+  const setupRequired = !!r.setup_required;
+  container.replaceChildren();
+
+  const header = el('div', { class: 'row between', style: 'margin-bottom:12px' },
+    el('div', { class: 'muted' }, 'Prices Will sees on willpowerfitnessfactory.com/merch'),
+    el('button', { class: 'btn primary',
+      disabled: setupRequired ? '' : false,
+      onclick: () => openMerchProductModal(null, () => renderMerchProducts(container))
+    }, '+ Add Product')
+  );
+  container.appendChild(header);
+
+  if (setupRequired) {
+    container.appendChild(el('div', { class: 'panel' },
+      el('p', { class: 'muted' }, 'Merch tables not yet installed. Master Admin → Run Pending Migrations.')
+    ));
+    return;
+  }
+
+  if (!products.length) {
+    container.appendChild(el('div', { class: 'panel', style: 'text-align:center;padding:48px 24px' },
+      el('div', { style: 'font-size:42px;margin-bottom:8px' }, '🛍️'),
+      el('h3', { style: 'margin:0 0 6px' }, 'No products yet'),
+      el('p', { class: 'muted', style: 'margin:0 0 16px' },
+        'Add the first product so prices show up on your storefront.'),
+      el('button', { class: 'btn primary',
+        onclick: () => openMerchProductModal(null, () => renderMerchProducts(container))
+      }, '+ Add Product')
+    ));
+    return;
+  }
+
+  const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px' });
+  for (const p of products) {
+    grid.appendChild(renderMerchProductCard(p, () => renderMerchProducts(container)));
+  }
+  container.appendChild(grid);
+}
+
+function renderMerchProductCard(p, reload) {
+  const price = '$' + ((p.base_price_cents || 0) / 100).toFixed(2);
+  const compare = p.compare_at_price_cents
+    ? ' (was $' + (p.compare_at_price_cents / 100).toFixed(2) + ')'
+    : '';
+  return el('div', {
+    class: 'panel',
+    style: 'padding:14px 16px;cursor:pointer;display:flex;flex-direction:column;gap:8px' +
+      (p.is_active ? '' : ';opacity:0.55'),
+    onclick: () => openMerchProductModal(p, reload)
+  },
+    el('div', { class: 'row between', style: 'align-items:flex-start;gap:10px' },
+      el('div', { style: 'flex:1;min-width:0' },
+        el('div', { style: 'font-weight:600;font-size:15px;margin-bottom:2px' }, p.name),
+        el('div', { class: 'muted mono', style: 'font-size:11px' }, p.product_key)
+      ),
+      el('span', {
+        style: 'display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600;' +
+          (p.is_active
+            ? 'background:rgba(34,197,94,0.18);color:#86efac'
+            : 'background:rgba(148,163,184,0.18);color:#cbd5e1')
+      }, p.is_active ? 'Live' : 'Hidden')
+    ),
+    el('div', { style: 'font-size:20px;font-weight:600' }, price,
+      compare ? el('span', { class: 'muted', style: 'font-size:12px;font-weight:400;margin-left:6px;text-decoration:line-through' }, compare) : null
+    ),
+    p.description
+      ? el('div', { class: 'muted', style: 'font-size:12px;line-height:1.45' },
+          p.description.length > 90 ? p.description.slice(0, 87) + '…' : p.description)
+      : null
+  );
+}
+
+function openMerchProductModal(product, onSaved) {
+  const isEdit = !!product;
+  const existing = document.querySelector('.application-drawer-overlay');
+  if (existing) existing.remove();
+
+  const overlay = el('div', { class: 'application-drawer-overlay' });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  const drawer = el('div', { class: 'application-drawer' });
+
+  const keyInput   = el('input', { type: 'text', value: product?.product_key || '', placeholder: 'e.g. tee, tank, hoodie' });
+  const nameInput  = el('input', { type: 'text', value: product?.name || '',        placeholder: 'WPFF Logo Tee' });
+  const descInput  = el('textarea', { rows: 3, placeholder: 'Short description shown on the storefront card' });
+  if (product?.description) descInput.value = product.description;
+  const priceInput   = el('input', { type: 'number', min: '0', step: '0.01', value: product ? ((product.base_price_cents || 0) / 100).toFixed(2) : '' });
+  const compareInput = el('input', { type: 'number', min: '0', step: '0.01', value: product?.compare_at_price_cents != null ? (product.compare_at_price_cents / 100).toFixed(2) : '' });
+  const imageInput   = el('input', { type: 'url', value: product?.image_url || '', placeholder: 'https://…/tee.jpg' });
+  const activeInput  = el('input', { type: 'checkbox' });
+  if (!product || product.is_active) activeInput.checked = true;
+  const sortInput    = el('input', { type: 'number', value: product?.sort_order ?? 0 });
+
+  const errBox = el('div');
+  const saveBtn = el('button', { class: 'btn primary' }, isEdit ? 'Save changes' : 'Create product');
+  saveBtn.onclick = async () => {
+    errBox.innerHTML = '';
+    if (!nameInput.value.trim()) { errBox.innerHTML = '<div class="err">Name is required.</div>'; return; }
+    if (!isEdit && !keyInput.value.trim()) {
+      errBox.innerHTML = '<div class="err">Product key is required (e.g. "tee", "hoodie").</div>';
+      return;
+    }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    const body = {
+      id:                     isEdit ? product.id : undefined,
+      product_key:            keyInput.value.trim(),
+      name:                   nameInput.value.trim(),
+      description:            descInput.value.trim() || null,
+      base_price_cents:       Math.round(parseFloat(priceInput.value || '0') * 100),
+      compare_at_price_cents: compareInput.value ? Math.round(parseFloat(compareInput.value) * 100) : null,
+      image_url:              imageInput.value.trim() || null,
+      is_active:              activeInput.checked,
+      sort_order:             parseInt(sortInput.value, 10) || 0
+    };
+    try {
+      await api('/api/portal/merch?action=upsert-product', { method: 'POST', body });
+      toast(isEdit ? 'Product saved' : 'Product created');
+      overlay.remove();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) {
+      errBox.innerHTML = `<div class="err">${e.message}</div>`;
+      saveBtn.disabled = false;
+      saveBtn.textContent = isEdit ? 'Save changes' : 'Create product';
+    }
+  };
+
+  const deleteBtn = isEdit ? el('button', { class: 'btn ghost', style: 'color:#fca5a5' }, 'Delete') : null;
+  if (deleteBtn) {
+    deleteBtn.onclick = async () => {
+      if (!confirm(`Delete "${product.name}"? This can't be undone.`)) return;
+      try {
+        await api('/api/portal/merch?action=delete-product', { method: 'POST', body: { id: product.id } });
+        toast('Product deleted');
+        overlay.remove();
+        if (typeof onSaved === 'function') onSaved();
+      } catch (e) { errBox.innerHTML = `<div class="err">${e.message}</div>`; }
+    };
+  }
+
+  drawer.appendChild(el('div', { class: 'application-drawer-header' },
+    el('div', { style: 'flex:1' }, el('h2', {}, isEdit ? 'Edit product' : 'Add product')),
+    el('button', { class: 'btn ghost sm', onclick: () => overlay.remove() }, '×')
+  ));
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('div', { class: 'field' }, el('label', {}, 'Name'), nameInput),
+    el('div', { class: 'field' }, el('label', {}, 'Product key' + (isEdit ? ' (locked)' : '')),
+      (isEdit ? el('input', { type: 'text', value: product.product_key, disabled: '' }) : keyInput),
+      el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' },
+        'Stable identifier the storefront uses (e.g. "tee"). Lowercase, no spaces.')
+    ),
+    el('div', { class: 'field' }, el('label', {}, 'Description'), descInput),
+    el('div', { class: 'row', style: 'gap:12px' },
+      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Price (USD)'), priceInput),
+      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Compare-at (optional)'), compareInput)
+    ),
+    el('div', { class: 'field' }, el('label', {}, 'Image URL'), imageInput),
+    el('div', { class: 'row', style: 'gap:12px;align-items:center' },
+      el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px' },
+        activeInput, 'Visible on storefront'),
+      el('div', { class: 'field', style: 'flex:1;margin:0' },
+        el('label', { style: 'font-size:11px' }, 'Sort order'),
+        sortInput
+      )
+    )
+  ));
+  drawer.appendChild(errBox);
+  drawer.appendChild(el('div', { class: 'application-drawer-actions' },
+    deleteBtn || el('button', { class: 'btn ghost', onclick: () => overlay.remove() }, 'Cancel'),
+    saveBtn
+  ));
+
+  overlay.appendChild(drawer);
+  document.body.appendChild(overlay);
+}
+
+async function renderMerchCoupons(container) {
+  const r = await api('/api/portal/merch?action=list-coupons');
+  const coupons = r.coupons || [];
+  const setupRequired = !!r.setup_required;
+  container.replaceChildren();
+
+  const header = el('div', { class: 'row between', style: 'margin-bottom:12px' },
+    el('div', { class: 'muted' }, 'Promo codes customers enter at checkout'),
+    el('button', { class: 'btn primary',
+      disabled: setupRequired ? '' : false,
+      onclick: () => openMerchCouponModal(null, () => renderMerchCoupons(container))
+    }, '+ Add Promo Code')
+  );
+  container.appendChild(header);
+
+  if (setupRequired) {
+    container.appendChild(el('div', { class: 'panel' },
+      el('p', { class: 'muted' }, 'Merch tables not yet installed. Master Admin → Run Pending Migrations.')
+    ));
+    return;
+  }
+  if (!coupons.length) {
+    container.appendChild(el('div', { class: 'panel', style: 'text-align:center;padding:48px 24px' },
+      el('div', { style: 'font-size:42px;margin-bottom:8px' }, '🎟️'),
+      el('h3', { style: 'margin:0 0 6px' }, 'No promo codes yet'),
+      el('p', { class: 'muted', style: 'margin:0 0 16px' },
+        'Create your first code to run a sale on your storefront.'),
+      el('button', { class: 'btn primary',
+        onclick: () => openMerchCouponModal(null, () => renderMerchCoupons(container))
+      }, '+ Add Promo Code')
+    ));
+    return;
+  }
+
+  const table = el('table', {},
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'Code'), el('th', {}, 'Discount'), el('th', {}, 'Status'),
+      el('th', {}, 'Used'), el('th', {}, 'Expires'), el('th', {}, '')
+    )),
+    el('tbody', {}, ...coupons.map(c => {
+      const disc = c.discount_type === 'percent'
+        ? `${c.discount_value}% off`
+        : `$${(c.discount_value / 100).toFixed(2)} off`;
+      const status = !c.is_active ? 'Disabled'
+        : c.expires_at && new Date(c.expires_at).getTime() < Date.now() ? 'Expired'
+        : c.max_uses && c.used_count >= c.max_uses ? 'Exhausted'
+        : 'Active';
+      const statusClass = status === 'Active' ? 'green' : '';
+      return el('tr', {},
+        el('td', { class: 'mono', style: 'font-weight:600' }, c.code),
+        el('td', {}, disc),
+        el('td', {}, el('span', { class: 'badge ' + statusClass }, status)),
+        el('td', { class: 'muted' }, `${c.used_count || 0}${c.max_uses ? ' / ' + c.max_uses : ''}`),
+        el('td', { class: 'muted' }, c.expires_at ? new Date(c.expires_at).toLocaleDateString() : '—'),
+        el('td', {}, el('button', {
+          class: 'btn sm ghost',
+          onclick: () => openMerchCouponModal(c, () => renderMerchCoupons(container))
+        }, 'Edit'))
+      );
+    }))
+  );
+  container.appendChild(el('div', { class: 'panel' }, table));
+}
+
+function openMerchCouponModal(coupon, onSaved) {
+  const isEdit = !!coupon;
+  const existing = document.querySelector('.application-drawer-overlay');
+  if (existing) existing.remove();
+  const overlay = el('div', { class: 'application-drawer-overlay' });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  const drawer = el('div', { class: 'application-drawer' });
+
+  const codeInput  = el('input', { type: 'text', value: coupon?.code || '', placeholder: 'SUMMER20',
+    style: 'text-transform:uppercase' });
+  const nameInput  = el('input', { type: 'text', value: coupon?.name || '', placeholder: 'Summer Sale 2026' });
+  const typeSelect = el('select', { class: 'cta-select' },
+    el('option', { value: 'percent', selected: (coupon?.discount_type !== 'fixed') ? '' : false }, 'Percent off'),
+    el('option', { value: 'fixed',   selected: coupon?.discount_type === 'fixed' ? '' : false }, 'Fixed amount off')
+  );
+  const valueInput = el('input', { type: 'number', min: '0', step: '0.01',
+    value: coupon ? (coupon.discount_type === 'fixed'
+      ? (coupon.discount_value / 100).toFixed(2)
+      : String(coupon.discount_value)) : '' });
+  const minSubtotalInput = el('input', { type: 'number', min: '0', step: '0.01',
+    value: coupon?.min_subtotal_cents != null ? (coupon.min_subtotal_cents / 100).toFixed(2) : '' });
+  const expiresInput = el('input', { type: 'date',
+    value: coupon?.expires_at ? new Date(coupon.expires_at).toISOString().slice(0, 10) : '' });
+  const maxUsesInput = el('input', { type: 'number', min: '1', value: coupon?.max_uses ?? '' });
+  const activeInput = el('input', { type: 'checkbox' });
+  if (!coupon || coupon.is_active) activeInput.checked = true;
+
+  const errBox = el('div');
+  const saveBtn = el('button', { class: 'btn primary' }, isEdit ? 'Save changes' : 'Create promo');
+  saveBtn.onclick = async () => {
+    errBox.innerHTML = '';
+    if (!isEdit && !codeInput.value.trim()) { errBox.innerHTML = '<div class="err">Code is required.</div>'; return; }
+    if (!valueInput.value || +valueInput.value <= 0) {
+      errBox.innerHTML = '<div class="err">Discount value must be greater than 0.</div>';
+      return;
+    }
+    const discountType = typeSelect.value;
+    const rawVal = parseFloat(valueInput.value);
+    const discountValue = discountType === 'fixed' ? Math.round(rawVal * 100) : Math.round(rawVal);
+    if (discountType === 'percent' && (discountValue < 1 || discountValue > 100)) {
+      errBox.innerHTML = '<div class="err">Percent discounts must be between 1 and 100.</div>';
+      return;
+    }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    const body = {
+      id: isEdit ? coupon.id : undefined,
+      code: codeInput.value.trim().toUpperCase(),
+      name: nameInput.value.trim() || null,
+      discount_type: discountType,
+      discount_value: discountValue,
+      min_subtotal_cents: minSubtotalInput.value ? Math.round(parseFloat(minSubtotalInput.value) * 100) : null,
+      expires_at: expiresInput.value ? new Date(expiresInput.value + 'T23:59:59').toISOString() : null,
+      max_uses:   maxUsesInput.value ? parseInt(maxUsesInput.value, 10) : null,
+      is_active:  activeInput.checked
+    };
+    try {
+      await api('/api/portal/merch?action=upsert-coupon', { method: 'POST', body });
+      toast(isEdit ? 'Promo code saved' : 'Promo code created');
+      overlay.remove();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) {
+      errBox.innerHTML = `<div class="err">${e.message}</div>`;
+      saveBtn.disabled = false; saveBtn.textContent = isEdit ? 'Save changes' : 'Create promo';
+    }
+  };
+
+  const deleteBtn = isEdit ? el('button', { class: 'btn ghost', style: 'color:#fca5a5' }, 'Delete') : null;
+  if (deleteBtn) deleteBtn.onclick = async () => {
+    if (!confirm(`Delete promo code "${coupon.code}"?`)) return;
+    try {
+      await api('/api/portal/merch?action=delete-coupon', { method: 'POST', body: { id: coupon.id } });
+      toast('Promo code deleted');
+      overlay.remove();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) { errBox.innerHTML = `<div class="err">${e.message}</div>`; }
+  };
+
+  drawer.appendChild(el('div', { class: 'application-drawer-header' },
+    el('div', { style: 'flex:1' }, el('h2', {}, isEdit ? 'Edit promo code' : 'Add promo code')),
+    el('button', { class: 'btn ghost sm', onclick: () => overlay.remove() }, '×')
+  ));
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('div', { class: 'field' }, el('label', {}, 'Code (customer types this at checkout)'),
+      isEdit ? el('input', { type: 'text', value: coupon.code, disabled: '', style: 'text-transform:uppercase' }) : codeInput),
+    el('div', { class: 'field' }, el('label', {}, 'Internal name (optional)'), nameInput),
+    el('div', { class: 'row', style: 'gap:12px' },
+      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Discount type'), typeSelect),
+      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Discount value'), valueInput)
+    ),
+    el('div', { class: 'muted', style: 'font-size:11px;margin:-6px 0 10px' },
+      'Percent: 1–100. Fixed: dollar amount (e.g. 5.00 = $5 off).'),
+    el('div', { class: 'row', style: 'gap:12px' },
+      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Minimum subtotal (optional)'), minSubtotalInput),
+      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Max uses (optional)'), maxUsesInput)
+    ),
+    el('div', { class: 'field' }, el('label', {}, 'Expires (optional)'), expiresInput),
+    el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px;margin-top:8px' },
+      activeInput, 'Active (accept this code at checkout)')
+  ));
+  drawer.appendChild(errBox);
+  drawer.appendChild(el('div', { class: 'application-drawer-actions' },
+    deleteBtn || el('button', { class: 'btn ghost', onclick: () => overlay.remove() }, 'Cancel'),
+    saveBtn
+  ));
+
+  overlay.appendChild(drawer);
+  document.body.appendChild(overlay);
+}
+
+async function renderMerchOrders(container) {
+  const r = await api('/api/portal/merch?action=list-orders');
+  const orders = r.orders || [];
+  container.replaceChildren();
+  if (r.setup_required) {
+    container.appendChild(el('div', { class: 'panel' },
+      el('p', { class: 'muted' }, 'Merch tables not yet installed. Master Admin → Run Pending Migrations.')));
+    return;
+  }
+  if (!orders.length) {
+    container.appendChild(el('div', { class: 'panel', style: 'text-align:center;padding:48px 24px' },
+      el('div', { style: 'font-size:42px;margin-bottom:8px' }, '📦'),
+      el('h3', { style: 'margin:0 0 6px' }, 'No orders yet'),
+      el('p', { class: 'muted', style: 'margin:0' },
+        'Completed checkouts from your storefront appear here in real time.')
+    ));
+    return;
+  }
+  const table = el('table', {},
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'When'), el('th', {}, 'Customer'), el('th', {}, 'Total'),
+      el('th', {}, 'Promo'), el('th', {}, 'Status'), el('th', {}, '')
+    )),
+    el('tbody', {}, ...orders.map(o => el('tr', {},
+      el('td', { class: 'muted' }, new Date(o.created_at).toLocaleString()),
+      el('td', {},
+        el('div', { style: 'font-weight:500' }, o.customer_name || '—'),
+        el('div', { class: 'muted', style: 'font-size:11px' }, o.customer_email || '')
+      ),
+      el('td', { style: 'font-weight:600' }, '$' + ((o.total_cents || 0) / 100).toFixed(2)),
+      el('td', { class: 'mono' }, o.coupon_code || '—'),
+      el('td', {}, el('span', { class: 'badge ' + (o.status === 'paid' ? 'green' : o.status === 'refunded' ? 'red' : '') }, o.status)),
+      el('td', {}, el('button', {
+        class: 'btn sm ghost',
+        onclick: () => openMerchOrderDrawer(o.id, () => renderMerchOrders(container))
+      }, 'View'))
+    )))
+  );
+  container.appendChild(el('div', { class: 'panel' }, table));
+}
+
+async function openMerchOrderDrawer(orderId, onChange) {
+  const r = await api('/api/portal/merch?action=order-detail&id=' + encodeURIComponent(orderId));
+  const o = r.order;
+  if (!o) return toast('Order not found', true);
+  const items = r.items || [];
+
+  const existing = document.querySelector('.application-drawer-overlay');
+  if (existing) existing.remove();
+  const overlay = el('div', { class: 'application-drawer-overlay' });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  const drawer = el('div', { class: 'application-drawer' });
+
+  const row = (label, value) =>
+    value
+      ? el('div', { class: 'application-field' },
+          el('div', { class: 'application-field-label' }, label),
+          el('div', { class: 'application-field-value' }, value)
+        )
+      : null;
+
+  drawer.appendChild(el('div', { class: 'application-drawer-header' },
+    el('div', { style: 'flex:1' },
+      el('h2', {}, o.customer_name || 'Order'),
+      el('div', { class: 'muted', style: 'font-size:12px;margin-top:2px' },
+        new Date(o.created_at).toLocaleString())
+    ),
+    el('button', { class: 'btn ghost sm', onclick: () => overlay.remove() }, '×')
+  ));
+
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Customer'),
+    el('div', { class: 'application-grid' },
+      row('Name', o.customer_name),
+      row('Email', o.customer_email),
+      row('Phone', o.customer_phone)
+    )
+  ));
+
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Shipping'),
+    el('div', { class: 'application-grid' },
+      row('Street', [o.shipping_address1, o.shipping_address2].filter(Boolean).join(', ')),
+      row('City',   o.shipping_city),
+      row('State',  o.shipping_state),
+      row('ZIP',    o.shipping_zip),
+      row('Country', o.shipping_country)
+    )
+  ));
+
+  if (items.length) {
+    drawer.appendChild(el('div', { class: 'application-section' },
+      el('h3', {}, 'Items'),
+      el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'Product'), el('th', {}, 'Variant'),
+          el('th', {}, 'Qty'),     el('th', {}, 'Price')
+        )),
+        el('tbody', {}, ...items.map(i => el('tr', {},
+          el('td', {}, i.name || i.product_key),
+          el('td', { class: 'muted' }, [i.color, i.size].filter(Boolean).join(' / ') || '—'),
+          el('td', {}, String(i.quantity)),
+          el('td', {}, '$' + ((i.price_cents || 0) / 100).toFixed(2))
+        )))
+      )
+    ));
+  }
+
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'Totals'),
+    el('div', { class: 'application-grid' },
+      row('Subtotal', '$' + ((o.subtotal_cents || 0) / 100).toFixed(2)),
+      row('Shipping', '$' + ((o.shipping_cents || 0) / 100).toFixed(2)),
+      o.coupon_code ? row('Promo', `${o.coupon_code} (−$${((o.discount_cents || 0) / 100).toFixed(2)})`) : null,
+      row('Total',    '$' + ((o.total_cents || 0) / 100).toFixed(2))
+    )
+  ));
+
+  drawer.appendChild(el('div', { class: 'application-section' },
+    el('h3', {}, 'References'),
+    el('div', { class: 'application-grid' },
+      row('Stripe payment', o.stripe_payment_id),
+      row('Printify order', o.printify_order_id),
+      row('Order number',   o.external_order_number),
+      row('Status',         o.status)
+    )
+  ));
+
+  const refundBtn = el('button', { class: 'btn ghost', style: 'color:#fca5a5' },
+    o.status === 'refunded' ? 'Refunded' : 'Mark refunded');
+  if (o.status === 'refunded') refundBtn.disabled = true;
+  refundBtn.onclick = async () => {
+    if (!confirm('Mark this order as refunded? (You still need to issue the refund in Stripe separately.)')) return;
+    try {
+      await api('/api/portal/merch?action=refund-order', { method: 'POST', body: { id: o.id } });
+      toast('Order marked refunded');
+      overlay.remove();
+      if (typeof onChange === 'function') onChange();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  drawer.appendChild(el('div', { class: 'application-drawer-actions' },
+    refundBtn,
+    el('button', { class: 'btn primary', onclick: () => overlay.remove() }, 'Done')
   ));
 
   overlay.appendChild(drawer);
@@ -7233,6 +7813,7 @@ async function render() {
       case 'messages':  view = await viewMessages(); break;
       case 'messaging': view = await viewMessaging(); break;
       case 'applications': view = await viewApplications(); break;
+      case 'merch':     view = await viewMerch(); break;
       case 'trainer_applications': view = await viewTrainerApplications(); break;
       case 'billing':   view = await viewBilling(); break;
       case 'connect':   view = await viewConnect(); break;
