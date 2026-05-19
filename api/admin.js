@@ -1994,6 +1994,17 @@ async function applyPendingMigrations(req, res) {
        SET portal_api_key = 'wpff_' || replace(gen_random_uuid()::text, '-', '')
      WHERE slug = 'willpower-fitness'
        AND portal_api_key IS NULL;`,
+    `UPDATE public.clients
+       SET portal_api_key = 'flex_' || replace(gen_random_uuid()::text, '-', '')
+     WHERE slug = 'flex-facility'
+       AND portal_api_key IS NULL;`,
+
+    // Default platform fee for Flex Facility — same 10% rate as
+    // Will Power. Master Admin can adjust per-tenant later.
+    `UPDATE public.clients
+       SET platform_fee_pct = 10
+     WHERE slug = 'flex-facility'
+       AND platform_fee_pct IS NULL;`,
 
     // Will Power gets Merch in his sidebar. Slot ordering applied
     // client-side by collapseToCleanNav; here we just write the array.
@@ -2001,6 +2012,15 @@ async function applyPendingMigrations(req, res) {
     `UPDATE public.clients
        SET portal_tabs = '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb
      WHERE slug = 'willpower-fitness'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`,
+
+    // Flex Facility gets Merch in the same slot. They keep their
+    // Bookings tab since the booking calendar is core to their
+    // business — Merch sits alongside, not in place of it.
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb
+     WHERE slug = 'flex-facility'
        AND portal_tabs IS DISTINCT FROM
            '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`
   ];
