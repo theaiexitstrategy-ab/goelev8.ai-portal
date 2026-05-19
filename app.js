@@ -4020,13 +4020,22 @@ async function openMerchOrderDrawer(orderId, onChange) {
     ));
   }
 
+  // Customer + tenant-side totals with the platform fee + Stripe
+  // pass-through called out so the operator sees exactly where each
+  // dollar went.
+  const platformFee = (o.platform_fee_cents || 0) / 100;
+  const stripeFee   = (o.stripe_fee_cents   || 0) / 100;
+  const tenantTake  = ((o.subtotal_cents || 0) + (o.shipping_cents || 0) - (o.discount_cents || 0)) / 100;
   drawer.appendChild(el('div', { class: 'application-section' },
     el('h3', {}, 'Totals'),
     el('div', { class: 'application-grid' },
       row('Subtotal', '$' + ((o.subtotal_cents || 0) / 100).toFixed(2)),
       row('Shipping', '$' + ((o.shipping_cents || 0) / 100).toFixed(2)),
       o.coupon_code ? row('Promo', `${o.coupon_code} (−$${((o.discount_cents || 0) / 100).toFixed(2)})`) : null,
-      row('Total',    '$' + ((o.total_cents || 0) / 100).toFixed(2))
+      platformFee ? row('Platform fee (GoElev8)', '$' + platformFee.toFixed(2)) : null,
+      stripeFee   ? row('Stripe processing',      '$' + stripeFee.toFixed(2))   : null,
+      row('Customer paid', '$' + ((o.total_cents || 0) / 100).toFixed(2)),
+      row('Tenant takehome', '$' + tenantTake.toFixed(2))
     )
   ));
 

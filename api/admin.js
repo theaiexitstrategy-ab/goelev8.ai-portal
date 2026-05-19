@@ -1955,6 +1955,37 @@ async function applyPendingMigrations(req, res) {
     `CREATE TRIGGER merch_coupons_touch BEFORE UPDATE ON public.merch_coupons
        FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();`,
 
+    // ----- Platform fee config + per-order fee breakdown -----
+    // Adds a per-tenant platform fee rate (% of subtotal) that the
+    // storefront includes in the customer-facing total via
+    // /api/external/fees/quote, and records on each order so the
+    // operator and platform can both audit what was collected.
+    //
+    // Money flow (with Stripe Connect): platform_fee_cents becomes
+    // the application_fee_amount on the PaymentIntent — Stripe routes
+    // tenant_takehome to the connected account and platform_fee to
+    // the platform account at charge time.
+    //
+    // Money flow (without Connect, near-term): all money lands in
+    // tenant's Stripe account; portal records what's owed for
+    // monthly invoicing.
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS platform_fee_pct numeric(5,2)
+         CHECK (platform_fee_pct IS NULL OR (platform_fee_pct >= 0 AND platform_fee_pct <= 100));`,
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS pass_stripe_fees_to_customer boolean DEFAULT true;`,
+    `ALTER TABLE public.merch_orders
+       ADD COLUMN IF NOT EXISTS platform_fee_cents integer NOT NULL DEFAULT 0;`,
+    `ALTER TABLE public.merch_orders
+       ADD COLUMN IF NOT EXISTS stripe_fee_cents integer NOT NULL DEFAULT 0;`,
+
+    // Default Will Power to the platform default rate (10%). NULL on
+    // other rows just means 'use PLATFORM_FEE_DEFAULT_PCT env'.
+    `UPDATE public.clients
+       SET platform_fee_pct = 10
+     WHERE slug = 'willpower-fitness'
+       AND platform_fee_pct IS NULL;`,
+
     // Generate a portal_api_key for Will Power so his storefront can
     // authenticate to /api/external/orders. Slug-scoped, idempotent
     // (skipped when one already exists). Uses gen_random_uuid() as
