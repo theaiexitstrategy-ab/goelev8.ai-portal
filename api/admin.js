@@ -2323,6 +2323,32 @@ async function applyPendingMigrations(req, res) {
      SELECT id, 'hoodie', 'Flex Training Sleeveless Hoodie', NULL, 4500,
             'https://theflexfacility.com/assets/merch/hoodie-black-cyan.png', true, 1
        FROM public.clients WHERE slug = 'flex-facility'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+
+    // iSlay Studios — 3 hair-care products for the upcoming
+    // islaystudiosllc.com/shop page. Nate uploads real photos via
+    // the portal Merch tab (image_url starts NULL). Default price
+    // $19.99 across all three; he can edit per-SKU.
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'shampoo', 'iSlay Studios Shampoo',
+            'Salon-grade shampoo formulated for daily use.',
+            1999, NULL, true, 1
+       FROM public.clients WHERE slug = 'islay-studios'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'conditioner', 'iSlay Studios Conditioner',
+            'Deep-moisturizing conditioner that pairs with our shampoo.',
+            1999, NULL, true, 2
+       FROM public.clients WHERE slug = 'islay-studios'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'beard-oil', 'iSlay Studios Beard Oil',
+            'Lightweight beard oil with a smooth finish.',
+            1999, NULL, true, 3
+       FROM public.clients WHERE slug = 'islay-studios'
      ON CONFLICT (client_id, product_key) DO NOTHING;`
   ];
 
