@@ -663,10 +663,14 @@ async function onboardPendingTenants(req, res) {
       // and credit pool until they get their own. The lib resolver
       // follows parent_client_id at every SMS send / credit read site.
       parent_client_slug: 'flex-facility',
-      // Unified 6-tab nav. 'messaging' wraps Inbox/Blasts/Nudges as
-      // sub-tabs in the SPA so the sidebar stays focused. 'contacts'
-      // is dropped (Leads is the single CRM view).
-      portal_tabs: ['overview','leads','messaging','bookings','analytics','settings'],
+      // Sidebar layout. 'messaging' wraps Inbox/Blasts/Nudges as
+      // sub-tabs in the SPA. 'merch' surfaces the Merch storefront
+      // (Products / Promos / Orders). 'contacts' is dropped — Leads
+      // is the single CRM view. Keep this in sync with the slug-scoped
+      // UPDATE in apply-pending-migrations so re-running either the
+      // onboard button or Run Pending Migrations converges on the
+      // same tab list.
+      portal_tabs: ['overview','leads','merch','messaging','bookings','analytics','settings'],
       user: {
         email: 'willpowerfitnessfactory@gmail.com',
         password: 'Will123!!!',
