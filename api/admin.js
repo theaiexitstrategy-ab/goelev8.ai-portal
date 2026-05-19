@@ -1999,12 +1999,15 @@ async function applyPendingMigrations(req, res) {
      WHERE slug = 'flex-facility'
        AND portal_api_key IS NULL;`,
 
-    // Default platform fee for Flex Facility — same 10% rate as
-    // Will Power. Master Admin can adjust per-tenant later.
+    // Platform fee for Flex Facility — 7%, matching the rate their
+    // existing storefront's lib/platform-config.js has been billing
+    // at. (Will Power stays on 10%, the platform default.)
+    // IS DISTINCT FROM gate so re-runs of this UPDATE either
+    // initialize a NULL row or correct a stale 10% from earlier runs.
     `UPDATE public.clients
-       SET platform_fee_pct = 10
+       SET platform_fee_pct = 7
      WHERE slug = 'flex-facility'
-       AND platform_fee_pct IS NULL;`,
+       AND platform_fee_pct IS DISTINCT FROM 7;`,
 
     // Will Power gets Merch in his sidebar. Slot ordering applied
     // client-side by collapseToCleanNav; here we just write the array.
