@@ -221,6 +221,228 @@ async function billingPause(req, res) {
   return res.status(200).json({ client: data });
 }
 
+// ──────────────────────────────────────────────────────────────
+// GoElev8 platform revenue dashboard. Aggregates every source of
+// income across the whole fleet of tenants. Admin-only — surfaced
+// in the master-admin "Sales" tab. Tolerant of schema gaps (returns
+// zeros for any source whose table doesn't exist yet) so this works
+// against any project version.
+//
+// Sources:
+//   1. Merch platform fees       (merch_orders.platform_fee_cents)
+//   2. Monthly subscriptions     (placeholder: hardcoded WPFF $99/mo
+//                                 until we wire Stripe Subscriptions
+//                                 list into a separate phase)
+//   3. SMS margin                (credit_ledger 'purchase' rows minus
+//                                 the per-segment Twilio cost stored
+//                                 in TWILIO_COST_PER_SEGMENT_CENTS)
+//   4. Booking fees              ($10 per paid booking on WPFF/Flex)
+//   5. Hire fees                 ($100 per applications.status='hired'
+//                                 for iSlay + Flex)
+// ──────────────────────────────────────────────────────────────
+const PLATFORM_REVENUE = {
+  BOOKING_FEE_CENTS:  1000,   // $10 per paid booking
+  HIRE_FEE_CENTS:    10000,   // $100 per hire
+  BOOKING_FEE_SLUGS: ['willpower-fitness', 'flex-facility'],
+  HIRE_FEE_SLUGS:    ['islay-studios', 'flex-facility'],
+  // Hardcoded subscription book. Until Stripe Subscriptions are
+  // queried live, this captures the founding link tenants the
+  // operator has activated.
+  ACTIVE_SUBSCRIPTIONS: [
+    { slug: 'willpower-fitness', plan: 'GoElev8 Founding', mrr_cents: 9900 }
+  ]
+};
+
+async function salesDashboard(req, res) {
+  const out = {
+    sources: {},
+    breakdowns: {},
+    totals: { last_30d_cents: 0, lifetime_cents: 0 }
+  };
+
+  // Helper: is the error 'relation does not exist'?
+  const tableMissing = (err, tbl) =>
+    err && new RegExp(`relation .*${tbl}.* does not exist`, 'i').test(err.message);
+
+  const since30d = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
+
+  // ─── 1. Merch platform fees ───────────────────────────────
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('merch_orders')
+      .select('client_id, platform_fee_cents, stripe_fee_cents, total_cents, status, created_at');
+    if (error && tableMissing(error, 'merch_orders')) {
+      out.sources.merch = { last_30d_cents: 0, lifetime_cents: 0, setup_required: true };
+    } else if (error) {
+      out.sources.merch = { error: error.message };
+    } else {
+      let life = 0, last30 = 0;
+      const perClient = {};
+      for (const r of (rows || [])) {
+        if (r.status === 'refunded') continue;
+        const fee = r.platform_fee_cents || 0;
+        life += fee;
+        if (r.created_at && r.created_at >= since30d) last30 += fee;
+        perClient[r.client_id] = (perClient[r.client_id] || 0) + fee;
+      }
+      out.sources.merch = { last_30d_cents: last30, lifetime_cents: life };
+      out.breakdowns.merch = perClient;
+    }
+  } catch (e) { out.sources.merch = { error: e.message }; }
+
+  // ─── 2. SMS margin (purchases minus Twilio cost) ─────────
+  try {
+    const perSegCents = parseInt(process.env.TWILIO_COST_PER_SEGMENT_CENTS || '1', 10);
+    // 'purchase' rows in credit_ledger record what tenants paid for
+    // credit packs. The number of credits added equals the segment
+    // capacity bought — multiply by Twilio's per-segment cost to get
+    // our outbound liability, subtract from revenue for margin.
+    const { data: rows, error } = await supabaseAdmin
+      .from('credit_ledger')
+      .select('client_id, delta, amount_cents, reason, created_at')
+      .in('reason', ['purchase', 'auto_reload']);
+    if (error && tableMissing(error, 'credit_ledger')) {
+      out.sources.sms = { last_30d_cents: 0, lifetime_cents: 0, setup_required: true };
+    } else if (error) {
+      out.sources.sms = { error: error.message };
+    } else {
+      let life = 0, last30 = 0;
+      const perClient = {};
+      for (const r of (rows || [])) {
+        const revenue = r.amount_cents || 0;
+        const cost    = Math.max(0, (r.delta || 0)) * perSegCents;
+        const margin  = revenue - cost;
+        life += margin;
+        if (r.created_at && r.created_at >= since30d) last30 += margin;
+        perClient[r.client_id] = (perClient[r.client_id] || 0) + margin;
+      }
+      out.sources.sms = { last_30d_cents: last30, lifetime_cents: life, twilio_cost_per_segment_cents: perSegCents };
+      out.breakdowns.sms = perClient;
+    }
+  } catch (e) { out.sources.sms = { error: e.message }; }
+
+  // ─── 3. Subscriptions (hardcoded book, swap to Stripe later) ─
+  out.sources.subscriptions = {
+    mrr_cents: PLATFORM_REVENUE.ACTIVE_SUBSCRIPTIONS.reduce((s, a) => s + (a.mrr_cents || 0), 0),
+    active:    PLATFORM_REVENUE.ACTIVE_SUBSCRIPTIONS,
+    note: 'Hardcoded for now. Wire Stripe Subscriptions list in a follow-up to make this live.'
+  };
+
+  // ─── 4. Booking fees ($10/paid booking on WPFF + Flex) ───
+  try {
+    const { data: clients } = await supabaseAdmin
+      .from('clients').select('id, slug').in('slug', PLATFORM_REVENUE.BOOKING_FEE_SLUGS);
+    const bookingClientIds = (clients || []).map(c => c.id);
+    if (bookingClientIds.length) {
+      // bookings.status uses mixed case in some seeds — match a
+      // permissive set so we don't undercount.
+      const { data: rows, error } = await supabaseAdmin
+        .from('bookings')
+        .select('client_id, status, created_at')
+        .in('client_id', bookingClientIds);
+      if (error && tableMissing(error, 'bookings')) {
+        out.sources.bookings = { last_30d_cents: 0, lifetime_cents: 0, setup_required: true };
+      } else if (error) {
+        out.sources.bookings = { error: error.message };
+      } else {
+        const isPaid = (s) => {
+          if (!s) return false;
+          const x = String(s).toLowerCase();
+          return x === 'confirmed' || x === 'paid' || x === 'completed' || x === 'fulfilled';
+        };
+        let life = 0, last30 = 0;
+        const perClient = {};
+        for (const r of (rows || [])) {
+          if (!isPaid(r.status)) continue;
+          life += PLATFORM_REVENUE.BOOKING_FEE_CENTS;
+          if (r.created_at && r.created_at >= since30d) last30 += PLATFORM_REVENUE.BOOKING_FEE_CENTS;
+          perClient[r.client_id] = (perClient[r.client_id] || 0) + PLATFORM_REVENUE.BOOKING_FEE_CENTS;
+        }
+        out.sources.bookings = {
+          last_30d_cents: last30,
+          lifetime_cents: life,
+          per_booking_cents: PLATFORM_REVENUE.BOOKING_FEE_CENTS
+        };
+        out.breakdowns.bookings = perClient;
+      }
+    } else {
+      out.sources.bookings = { last_30d_cents: 0, lifetime_cents: 0 };
+    }
+  } catch (e) { out.sources.bookings = { error: e.message }; }
+
+  // ─── 5. Hire fees ($100 per applications.status='hired') ──
+  try {
+    const { data: clients } = await supabaseAdmin
+      .from('clients').select('id, slug').in('slug', PLATFORM_REVENUE.HIRE_FEE_SLUGS);
+    const hireClientIds = (clients || []).map(c => c.id);
+    // applications.client_id is a TEXT slug (not uuid FK) — match
+    // all known slug variants for each tenant: hyphen, underscore,
+    // and uuid (legacy rows from before the column was cast).
+    const slugSet = new Set();
+    for (const c of (clients || [])) {
+      slugSet.add(c.slug);
+      slugSet.add(c.slug.replace(/-/g, '_'));
+      slugSet.add(c.id);
+    }
+    const { data: rows, error } = await supabaseAdmin
+      .from('applications')
+      .select('client_id, status, created_at')
+      .in('client_id', [...slugSet]);
+    if (error && tableMissing(error, 'applications')) {
+      out.sources.hires = { last_30d_cents: 0, lifetime_cents: 0, setup_required: true };
+    } else if (error) {
+      out.sources.hires = { error: error.message };
+    } else {
+      let life = 0, last30 = 0;
+      const perClient = {};
+      for (const r of (rows || [])) {
+        if (r.status !== 'hired') continue;
+        life += PLATFORM_REVENUE.HIRE_FEE_CENTS;
+        if (r.created_at && r.created_at >= since30d) last30 += PLATFORM_REVENUE.HIRE_FEE_CENTS;
+        // Map back to clients.id so the breakdown is keyed consistently.
+        const c = (clients || []).find(c =>
+          c.slug === r.client_id ||
+          c.slug.replace(/-/g, '_') === r.client_id ||
+          c.id === r.client_id
+        );
+        const key = c?.id || r.client_id;
+        perClient[key] = (perClient[key] || 0) + PLATFORM_REVENUE.HIRE_FEE_CENTS;
+      }
+      out.sources.hires = {
+        last_30d_cents: last30,
+        lifetime_cents: life,
+        per_hire_cents: PLATFORM_REVENUE.HIRE_FEE_CENTS
+      };
+      out.breakdowns.hires = perClient;
+    }
+  } catch (e) { out.sources.hires = { error: e.message }; }
+
+  // ─── Totals ───────────────────────────────────────────────
+  for (const src of Object.values(out.sources)) {
+    out.totals.last_30d_cents += src.last_30d_cents || 0;
+    out.totals.lifetime_cents += src.lifetime_cents || 0;
+  }
+  out.totals.mrr_cents = out.sources.subscriptions.mrr_cents || 0;
+
+  // Tenant names for the breakdown UI.
+  try {
+    const allClientIds = new Set();
+    for (const breakdown of Object.values(out.breakdowns)) {
+      for (const k of Object.keys(breakdown)) allClientIds.add(k);
+    }
+    if (allClientIds.size) {
+      const { data: cs } = await supabaseAdmin.from('clients')
+        .select('id, slug, name, business_name').in('id', [...allClientIds]);
+      out.tenants = {};
+      for (const c of (cs || [])) {
+        out.tenants[c.id] = { slug: c.slug, name: c.business_name || c.name };
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  return res.status(200).json(out);
+}
+
 async function analytics(req, res) {
   const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
   const since30 = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
@@ -2031,6 +2253,27 @@ async function applyPendingMigrations(req, res) {
        AND portal_tabs IS DISTINCT FROM
            '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`,
 
+    // iSlay Studios — Nate gets Merch alongside Applications. Order:
+    // Overview, Leads, Applications, Merch, Messaging, Analytics,
+    // Settings (still no Bookings tab per the iSlay layout decided
+    // earlier — Applications is their primary intake pipeline).
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","applications","merch","messaging","analytics","settings"]'::jsonb
+     WHERE slug = 'islay-studios'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","applications","merch","messaging","analytics","settings"]'::jsonb;`,
+
+    // iSlay portal_api_key + 10% platform fee. Same default rate as
+    // Will Power; can be tuned per-tenant later via Master Admin.
+    `UPDATE public.clients
+       SET portal_api_key = 'islay_' || replace(gen_random_uuid()::text, '-', '')
+     WHERE slug = 'islay-studios'
+       AND portal_api_key IS NULL;`,
+    `UPDATE public.clients
+       SET platform_fee_pct = 10
+     WHERE slug = 'islay-studios'
+       AND platform_fee_pct IS NULL;`,
+
     // ----- Supabase Storage bucket for uploaded product photos -----
     // Public bucket so the storefront can fetch images via the URL
     // we store on merch_products.image_url. Service-role uploads
@@ -2270,6 +2513,7 @@ export default async function handler(req, res) {
       case 'twilio-reserve-diagnose':  return await twilioReserveDiagnose(req, res);
       case 'create-onboarding-link':   return await createOnboardingPaymentLink(req, res);
       case 'onboard-pending-tenants':  return await onboardPendingTenants(req, res);
+      case 'sales-dashboard':           return await salesDashboard(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);

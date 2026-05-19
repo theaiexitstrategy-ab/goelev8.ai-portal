@@ -309,19 +309,30 @@ async function uploadImage(res, clientId, body) {
   const baseName = safeName ? safeName.replace(/\.[^.]+$/, '') : 'photo';
   const path = `${clientId}/${Date.now()}-${baseName}.${extFromMime}`;
 
-  const { error: upErr } = await supabaseAdmin.storage
-    .from('merch-images')
-    .upload(path, buf, { contentType: mime, upsert: false });
-  if (upErr) {
-    // Common: bucket missing. Surface a clear message instead of a
-    // generic 500 so the operator knows to run pending migrations.
-    if (/Bucket not found/i.test(upErr.message || '')) {
+  let upErr;
+  {
+    const r = await supabaseAdmin.storage
+      .from('merch-images')
+      .upload(path, buf, { contentType: mime, upsert: false });
+    upErr = r.error;
+  }
+  // If the bucket doesn't exist, the migration row may not have
+  // landed (storage.buckets writes from the SQL editor can fail
+  // silently on some plans). Auto-create + retry once so the
+  // operator doesn't have to debug the migration runner.
+  if (upErr && /Bucket not found/i.test(upErr.message || '')) {
+    const created = await supabaseAdmin.storage.createBucket('merch-images', { public: true });
+    if (created.error && !/already exists/i.test(created.error.message || '')) {
       return res.status(500).json({
-        error: 'merch-images bucket not found. Master Admin → Run Pending Migrations creates it.'
+        error: 'could_not_create_merch_images_bucket: ' + created.error.message
       });
     }
-    return res.status(500).json({ error: 'upload_failed: ' + upErr.message });
+    const retry = await supabaseAdmin.storage
+      .from('merch-images')
+      .upload(path, buf, { contentType: mime, upsert: false });
+    upErr = retry.error;
   }
+  if (upErr) return res.status(500).json({ error: 'upload_failed: ' + upErr.message });
 
   const { data: pub } = supabaseAdmin.storage
     .from('merch-images').getPublicUrl(path);

@@ -387,6 +387,7 @@ const TAB_LABELS = {
   merch:     'Merch',
   analytics: 'Analytics',
   admin:     'Master Admin',
+  admin_sales: 'Sales',
   booking_admin: 'book.goelev8.ai'
 };
 
@@ -409,11 +410,12 @@ const TAB_ICONS = {
   merch:     '🛍️',
   analytics: '📈',
   admin:     '🛡️',
+  admin_sales: '💰',
   booking_admin: '🗓️'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
-const ADMIN_TABS = ['admin','booking_admin','activity','analytics'];
+const ADMIN_TABS = ['admin','admin_sales','booking_admin','activity','analytics'];
 
 // Final pass over the resolved tab list to:
 //   - Drop the deprecated 'contacts' tab (Leads is the unified CRM view)
@@ -3676,6 +3678,11 @@ function openMerchProductModal(product, onSaved) {
   const uploadBtn  = el('button', { type: 'button', class: 'btn sm ghost',
     onclick: () => fileInput.click()
   }, '📷 Upload from phone');
+  // Track in-flight uploads so saveBtn (defined later) can block until
+  // the URL lands. Without this, an impatient operator clicks Save
+  // before the upload returns and the product is saved with image_url
+  // null — exactly the bug Will hit on the first test product.
+  let uploadingPromise = null;
   fileInput.addEventListener('change', async () => {
     const f = fileInput.files && fileInput.files[0];
     if (!f) return;
@@ -3688,29 +3695,39 @@ function openMerchProductModal(product, onSaved) {
       return;
     }
     uploadBtn.disabled = true; uploadBtn.textContent = 'Uploading…';
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.dataset.uploadGate = '1'; }
     fileStatus.textContent = '';
-    try {
-      const dataUrl = await new Promise((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result || ''));
-        r.onerror = reject;
-        r.readAsDataURL(f);
-      });
-      const out = await api('/api/portal/merch?action=upload-image', {
-        method: 'POST',
-        body: { data_url: dataUrl, filename: f.name }
-      });
-      imageInput.value = out.url || '';
-      imagePreview.src = out.url || '';
-      imagePreview.style.display = out.url ? 'block' : 'none';
-      fileStatus.innerHTML = '<span style="color:#86efac">✓ Uploaded</span>';
-    } catch (e) {
-      fileStatus.innerHTML = `<span style="color:#fca5a5">${e.message}</span>`;
-    } finally {
-      uploadBtn.disabled = false;
-      uploadBtn.textContent = '📷 Upload from phone';
-      fileInput.value = ''; // allow re-selecting the same file
-    }
+    uploadingPromise = (async () => {
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result || ''));
+          r.onerror = reject;
+          r.readAsDataURL(f);
+        });
+        const out = await api('/api/portal/merch?action=upload-image', {
+          method: 'POST',
+          body: { data_url: dataUrl, filename: f.name }
+        });
+        imageInput.value = out.url || '';
+        imagePreview.src = out.url || '';
+        imagePreview.style.display = out.url ? 'block' : 'none';
+        fileStatus.innerHTML = '<span style="color:#86efac">✓ Uploaded · click Save to attach</span>';
+        return out.url;
+      } catch (e) {
+        fileStatus.innerHTML = `<span style="color:#fca5a5">${e.message}</span>`;
+        return null;
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = '📷 Upload from phone';
+        fileInput.value = ''; // allow re-selecting the same file
+        if (saveBtn && saveBtn.dataset.uploadGate === '1') {
+          delete saveBtn.dataset.uploadGate;
+          saveBtn.disabled = false;
+        }
+      }
+    })();
+    return uploadingPromise;
   });
   const activeInput  = el('input', { type: 'checkbox' });
   if (!product || product.is_active) activeInput.checked = true;
@@ -3724,6 +3741,13 @@ function openMerchProductModal(product, onSaved) {
     if (!isEdit && !keyInput.value.trim()) {
       errBox.innerHTML = '<div class="err">Product key is required (e.g. "tee", "hoodie").</div>';
       return;
+    }
+    // If an upload is still in flight, wait for it to land before
+    // submitting — otherwise we'd save the product with image_url
+    // null even though the operator picked a file.
+    if (uploadingPromise) {
+      saveBtn.disabled = true; saveBtn.textContent = 'Waiting for upload…';
+      try { await uploadingPromise; } catch { /* error already shown in fileStatus */ }
     }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
     const body = {
@@ -7002,6 +7026,139 @@ async function viewAdmin() {
 }
 
 // ============================================================
+// MASTER ADMIN — GoElev8 platform revenue dashboard ("Sales" tab).
+// Aggregates every source of income across all tenants. Hidden from
+// every non-admin context — the router gates by state.isAdmin.
+// ============================================================
+async function viewAdminSales() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, '💰 Sales — GoElev8 Revenue'),
+    el('div', { class: 'muted' }, 'Platform-wide income across all tenants'))
+  );
+
+  const fmt = (c) => '$' + ((c || 0) / 100).toFixed(2);
+  const tenantsCache = {};
+
+  // Headline KPIs — last 30d, lifetime, MRR.
+  const headerStrip = el('div', { class: 'cards' });
+  const stat = (icon, label, value, sub) => el('div', { class: 'card' },
+    el('div', { class: 'label' }, icon + ' ' + label),
+    el('div', { class: 'value' }, value),
+    sub ? el('div', { class: 'sub muted' }, sub) : null
+  );
+  headerStrip.appendChild(el('div', { class: 'card' }, el('div', { class: 'muted' }, 'Loading…')));
+  wrap.appendChild(headerStrip);
+
+  const sourcesPanel = el('div', {});
+  wrap.appendChild(sourcesPanel);
+
+  let data;
+  try {
+    data = await api('/api/admin?action=sales-dashboard');
+  } catch (e) {
+    headerStrip.innerHTML = '';
+    headerStrip.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'Failed: ' + e.message)));
+    return wrap;
+  }
+  tenantsCache.byId = data.tenants || {};
+
+  headerStrip.innerHTML = '';
+  headerStrip.appendChild(stat('📅', 'Last 30 days', fmt(data.totals?.last_30d_cents), 'all sources combined'));
+  headerStrip.appendChild(stat('Σ',  'Lifetime',     fmt(data.totals?.lifetime_cents), 'all-time platform income'));
+  headerStrip.appendChild(stat('🔁', 'MRR',          fmt(data.totals?.mrr_cents),       'recurring monthly'));
+
+  const tenantName = (id) => (tenantsCache.byId[id]?.name) || (tenantsCache.byId[id]?.slug) || id;
+
+  // Source-by-source panels.
+  const sourceMeta = [
+    { id: 'merch',          icon: '🛍️', title: 'Merch platform fees',
+      desc: 'GoElev8 cut on every paid order across all tenant storefronts.' },
+    { id: 'sms',            icon: '📣', title: 'SMS margin',
+      desc: 'Tenant credit purchases minus Twilio per-segment cost.' },
+    { id: 'subscriptions',  icon: '🔁', title: 'Monthly subscriptions',
+      desc: 'Recurring SaaS plans (FOUNDING / Growth / etc.).' },
+    { id: 'bookings',       icon: '📆', title: 'Booking fees',
+      desc: '$10 per paid booking on Will Power + Flex Facility.' },
+    { id: 'hires',          icon: '🤝', title: 'Hire fees',
+      desc: '$100 per hire on iSlay Studios + Flex trainer applications.' }
+  ];
+
+  for (const meta of sourceMeta) {
+    const src = data.sources?.[meta.id] || {};
+    const panel = el('div', { class: 'panel' });
+    panel.appendChild(el('div', { class: 'row between', style: 'margin-bottom:6px;flex-wrap:wrap;gap:8px' },
+      el('h2', { style: 'margin:0' }, meta.icon + ' ' + meta.title),
+      meta.id === 'subscriptions'
+        ? el('div', { class: 'mono', style: 'color:var(--brand-1,#00CFFF);font-weight:600' }, fmt(src.mrr_cents) + '/mo')
+        : el('div', { style: 'text-align:right' },
+            el('div', { class: 'mono', style: 'font-weight:600' }, fmt(src.last_30d_cents) + ' / 30d'),
+            el('div', { class: 'muted mono', style: 'font-size:11px' }, fmt(src.lifetime_cents) + ' lifetime')
+          )
+    ));
+    panel.appendChild(el('p', { class: 'muted', style: 'font-size:12px;margin:0 0 12px' }, meta.desc));
+
+    if (src.setup_required) {
+      panel.appendChild(el('p', { class: 'muted' }, 'Underlying tables not yet installed. Master Admin → Run Pending Migrations.'));
+    } else if (src.error) {
+      panel.appendChild(el('p', { class: 'err' }, src.error));
+    } else if (meta.id === 'subscriptions') {
+      const subs = src.active || [];
+      if (!subs.length) {
+        panel.appendChild(el('p', { class: 'muted' }, 'No active subscriptions.'));
+      } else {
+        panel.appendChild(el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Tenant'), el('th', {}, 'Plan'), el('th', { style: 'text-align:right' }, 'MRR')
+          )),
+          el('tbody', {}, ...subs.map(s => el('tr', {},
+            el('td', {}, s.slug),
+            el('td', {}, s.plan),
+            el('td', { class: 'mono', style: 'text-align:right' }, fmt(s.mrr_cents))
+          )))
+        ));
+      }
+      if (src.note) panel.appendChild(el('p', { class: 'muted', style: 'font-size:11px;margin-top:8px' }, src.note));
+    } else {
+      const breakdown = data.breakdowns?.[meta.id] || {};
+      const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
+      if (!entries.length) {
+        panel.appendChild(el('p', { class: 'muted' }, 'No revenue from this source yet.'));
+      } else {
+        panel.appendChild(el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Tenant'),
+            el('th', { style: 'text-align:right' }, 'Lifetime')
+          )),
+          el('tbody', {}, ...entries.map(([cid, amt]) => el('tr', {},
+            el('td', {}, tenantName(cid)),
+            el('td', { class: 'mono', style: 'text-align:right' }, fmt(amt))
+          )))
+        ));
+      }
+      if (meta.id === 'sms' && Number.isFinite(src.twilio_cost_per_segment_cents)) {
+        panel.appendChild(el('p', { class: 'muted', style: 'font-size:11px;margin-top:8px' },
+          `Computed against ${src.twilio_cost_per_segment_cents}¢/segment Twilio cost. Update with the twilio-cost admin action if your rate changes.`));
+      }
+    }
+
+    sourcesPanel.appendChild(panel);
+  }
+
+  // Footer: phase 2 reminders.
+  sourcesPanel.appendChild(el('div', { class: 'panel', style: 'background:rgba(0,207,255,0.04);border-color:rgba(0,207,255,0.18)' },
+    el('h3', { style: 'margin:0 0 8px' }, 'Phase 2 — coming next'),
+    el('ul', { style: 'margin:0;padding-left:18px;line-height:1.7;font-size:13px;color:var(--text-mute,#9ca3af)' },
+      el('li', {}, 'Live Stripe Subscriptions feed (replaces hardcoded MRR table).'),
+      el('li', {}, 'Stripe Connect status check for each tenant (verifies application_fee splits).'),
+      el('li', {}, 'Auto-invoice Kenny / Nate / Will after each booking + hire.')
+    )
+  ));
+
+  return wrap;
+}
+
+// ============================================================
 // BOOKING CALENDAR ADMIN (book.goelev8.ai management)
 // ============================================================
 async function viewBookingAdmin() {
@@ -7899,6 +8056,7 @@ async function render() {
       case 'nudges':    view = await viewNudges(); break;
       case 'settings':  view = await viewSettings(); break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
+      case 'admin_sales':   view = state.isAdmin ? await viewAdminSales()   : await viewOverview(); break;
       case 'analytics': view = (state.user?.email === 'ab@goelev8.ai' || ['flex-facility', 'willpower-fitness'].includes(state.client?.slug)) ? await viewAnalytics() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
