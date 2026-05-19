@@ -2025,7 +2025,58 @@ async function applyPendingMigrations(req, res) {
        SET portal_tabs = '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb
      WHERE slug = 'flex-facility'
        AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`
+           '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`,
+
+    // ----- Supabase Storage bucket for uploaded product photos -----
+    // Public bucket so the storefront can fetch images via the URL
+    // we store on merch_products.image_url. Service-role uploads
+    // come through /api/portal/merch?action=upload-image; no anon
+    // write policy needed.
+    `INSERT INTO storage.buckets (id, name, public)
+     VALUES ('merch-images', 'merch-images', true)
+     ON CONFLICT (id) DO UPDATE SET public = true;`,
+
+    // ----- Seed merch_products with what's currently on the live
+    //       storefronts so operators don't start from an empty list.
+    //       Each row is slug-scoped and ON CONFLICT (client_id,
+    //       product_key) DO NOTHING — running this a second time
+    //       won't overwrite changes the operator made via the portal.
+    // -----------------------------------------------------------
+    // Will Power Fitness Factory — 4 products from merch/index.html
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'tee', 'WillPower Classic Tee', 'Premium heavyweight tee. Built for the grind.', 3499,
+            'https://willpowerfitnessfactory.com/white-tee.png', true, 1
+       FROM public.clients WHERE slug = 'willpower-fitness'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'tank', 'WillPower Tank', 'Cut for movement. Train in style.', 2799,
+            'https://willpowerfitnessfactory.com/image1.png', true, 2
+       FROM public.clients WHERE slug = 'willpower-fitness'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'hoodie', 'WillPower Hoodie', 'Heavyweight pullover. Represent everywhere.', 5999,
+            NULL, false, 3
+       FROM public.clients WHERE slug = 'willpower-fitness'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'snapback', 'Fitness Factory Snapback', 'Structured snapback. One size fits all.', 2999,
+            NULL, false, 4
+       FROM public.clients WHERE slug = 'willpower-fitness'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+
+    // The Flex Facility — one merch product on merch.html (the ebook
+    // is tracked separately via the existing R2S sales pipeline so
+    // we don't double-list it here).
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'hoodie', 'Flex Training Sleeveless Hoodie', NULL, 4500,
+            'https://theflexfacility.com/assets/merch/hoodie-black-cyan.png', true, 1
+       FROM public.clients WHERE slug = 'flex-facility'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;

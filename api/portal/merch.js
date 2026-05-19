@@ -48,6 +48,7 @@ export default async function handler(req, res) {
     if (action === 'upsert-coupon')  return await upsertCoupon(res, ctx.clientId, body);
     if (action === 'delete-coupon')  return await deleteCoupon(res, ctx.clientId, body);
     if (action === 'refund-order')   return await refundOrder(res, ctx.clientId, body);
+    if (action === 'upload-image')   return await uploadImage(res, ctx.clientId, body);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -266,4 +267,63 @@ async function refundOrder(res, clientId, body) {
   if (error) return res.status(500).json({ error: error.message });
   if (!data)  return res.status(404).json({ error: 'order_not_found' });
   return res.status(200).json({ order: data });
+}
+
+// Upload a product image to Supabase Storage and return its public
+// URL. Accepts the file as a base64 data URI in the body — that way
+// the frontend doesn't need to assemble multipart/form-data and the
+// Vercel function doesn't need an extra parser. Roughly fine for
+// reasonably-sized product photos (a few MB). Larger files should
+// be uploaded direct-to-Storage; out of scope for now.
+//
+// Body:
+//   { data_url: 'data:image/jpeg;base64,…', filename?: 'tee.jpg' }
+// Response:
+//   { url: 'https://<project>.supabase.co/storage/v1/object/public/merch-images/<path>' }
+async function uploadImage(res, clientId, body) {
+  const dataUrl = String(body?.data_url || '');
+  if (!dataUrl.startsWith('data:')) {
+    return res.status(400).json({ error: 'data_url must be a base64 data URI' });
+  }
+  const m = dataUrl.match(/^data:([\w/+.-]+);base64,(.+)$/);
+  if (!m) return res.status(400).json({ error: 'invalid_data_url' });
+  const mime = m[1];
+  const b64  = m[2];
+  if (!/^image\//i.test(mime)) {
+    return res.status(400).json({ error: 'only_image_uploads_allowed' });
+  }
+  // 10 MB ceiling on the decoded bytes — protects the function from
+  // a runaway upload tying up memory.
+  const sizeBytes = Math.floor(b64.length * 0.75);
+  if (sizeBytes > 10 * 1024 * 1024) {
+    return res.status(413).json({ error: 'image_too_large', max_bytes: 10 * 1024 * 1024 });
+  }
+  const buf = Buffer.from(b64, 'base64');
+
+  // Extension from mime: image/jpeg → .jpg, image/png → .png, etc.
+  const extFromMime = {
+    'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+    'image/gif': 'gif',  'image/webp': 'webp', 'image/heic': 'heic'
+  }[mime.toLowerCase()] || 'jpg';
+  const safeName = String(body?.filename || '').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 60);
+  const baseName = safeName ? safeName.replace(/\.[^.]+$/, '') : 'photo';
+  const path = `${clientId}/${Date.now()}-${baseName}.${extFromMime}`;
+
+  const { error: upErr } = await supabaseAdmin.storage
+    .from('merch-images')
+    .upload(path, buf, { contentType: mime, upsert: false });
+  if (upErr) {
+    // Common: bucket missing. Surface a clear message instead of a
+    // generic 500 so the operator knows to run pending migrations.
+    if (/Bucket not found/i.test(upErr.message || '')) {
+      return res.status(500).json({
+        error: 'merch-images bucket not found. Master Admin → Run Pending Migrations creates it.'
+      });
+    }
+    return res.status(500).json({ error: 'upload_failed: ' + upErr.message });
+  }
+
+  const { data: pub } = supabaseAdmin.storage
+    .from('merch-images').getPublicUrl(path);
+  return res.status(200).json({ url: pub?.publicUrl, path });
 }

@@ -3653,6 +3653,65 @@ function openMerchProductModal(product, onSaved) {
   const priceInput   = el('input', { type: 'number', min: '0', step: '0.01', value: product ? ((product.base_price_cents || 0) / 100).toFixed(2) : '' });
   const compareInput = el('input', { type: 'number', min: '0', step: '0.01', value: product?.compare_at_price_cents != null ? (product.compare_at_price_cents / 100).toFixed(2) : '' });
   const imageInput   = el('input', { type: 'url', value: product?.image_url || '', placeholder: 'https://…/tee.jpg' });
+  const imagePreview = el('img', {
+    src: product?.image_url || '',
+    alt: '',
+    style: 'max-width:140px;max-height:140px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);' +
+      'object-fit:cover;display:' + (product?.image_url ? 'block' : 'none') + ';margin-bottom:8px;'
+  });
+  imageInput.addEventListener('input', () => {
+    if (imageInput.value) {
+      imagePreview.src = imageInput.value;
+      imagePreview.style.display = 'block';
+    } else {
+      imagePreview.style.display = 'none';
+    }
+  });
+  // Mobile photo picker: accept="image/*" prompts iOS/Android to show
+  // both "Take Photo" and "Choose from Library". Once selected, we
+  // base64-encode the file and POST to the upload endpoint, then drop
+  // the resulting public URL into the URL field above.
+  const fileInput = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
+  const fileStatus = el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px;min-height:14px' });
+  const uploadBtn  = el('button', { type: 'button', class: 'btn sm ghost',
+    onclick: () => fileInput.click()
+  }, '📷 Upload from phone');
+  fileInput.addEventListener('change', async () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    if (!/^image\//.test(f.type)) {
+      fileStatus.innerHTML = '<span style="color:#fca5a5">Please pick an image file.</span>';
+      return;
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      fileStatus.innerHTML = '<span style="color:#fca5a5">Image too large (10 MB max).</span>';
+      return;
+    }
+    uploadBtn.disabled = true; uploadBtn.textContent = 'Uploading…';
+    fileStatus.textContent = '';
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ''));
+        r.onerror = reject;
+        r.readAsDataURL(f);
+      });
+      const out = await api('/api/portal/merch?action=upload-image', {
+        method: 'POST',
+        body: { data_url: dataUrl, filename: f.name }
+      });
+      imageInput.value = out.url || '';
+      imagePreview.src = out.url || '';
+      imagePreview.style.display = out.url ? 'block' : 'none';
+      fileStatus.innerHTML = '<span style="color:#86efac">✓ Uploaded</span>';
+    } catch (e) {
+      fileStatus.innerHTML = `<span style="color:#fca5a5">${e.message}</span>`;
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = '📷 Upload from phone';
+      fileInput.value = ''; // allow re-selecting the same file
+    }
+  });
   const activeInput  = el('input', { type: 'checkbox' });
   if (!product || product.is_active) activeInput.checked = true;
   const sortInput    = el('input', { type: 'number', value: product?.sort_order ?? 0 });
@@ -3719,7 +3778,17 @@ function openMerchProductModal(product, onSaved) {
       el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Price (USD)'), priceInput),
       el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Compare-at (optional)'), compareInput)
     ),
-    el('div', { class: 'field' }, el('label', {}, 'Image URL'), imageInput),
+    el('div', { class: 'field' },
+      el('label', {}, 'Product image'),
+      imagePreview,
+      el('div', { class: 'row', style: 'gap:8px;align-items:center;flex-wrap:wrap' },
+        uploadBtn,
+        fileInput,
+        el('span', { class: 'muted', style: 'font-size:11px' }, 'or paste a URL:')
+      ),
+      imageInput,
+      fileStatus
+    ),
     el('div', { class: 'row', style: 'gap:12px;align-items:center' },
       el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px' },
         activeInput, 'Visible on storefront'),
