@@ -4600,12 +4600,31 @@ async function viewConnect() {
 
   if (!status.connected || !status.charges_enabled) {
     panel.appendChild(el('p', {}, 'Connect your Stripe account to start accepting payments from your customers. GoElev8 takes a 2.9% platform fee on each transaction.'));
-    panel.appendChild(el('button', { class: 'btn', onclick: async () => {
+    const errInline = el('div', { style: 'margin-top:10px;font-size:13px;min-height:18px' });
+    const startBtn = el('button', { class: 'btn', onclick: async () => {
+      errInline.innerHTML = '';
+      startBtn.disabled = true;
+      const orig = startBtn.textContent;
+      startBtn.textContent = 'Opening Stripe…';
       try {
         const r = await api('/api/portal/connect?action=start', { method: 'POST' });
+        if (!r?.url) throw new Error('Stripe returned no onboarding URL.');
         window.location.href = r.url;
-      } catch (e) { toast(e.message, true); }
-    }}, status.connected ? 'Continue Stripe onboarding' : 'Connect Stripe'));
+      } catch (e) {
+        // Inline error with the actual reason so the operator
+        // doesn't see a vanishing toast and have no idea what
+        // happened. The endpoint now returns specific error codes
+        // (stripe_env_missing, stripe_account_create_failed, etc.)
+        // surfaced verbatim here.
+        errInline.innerHTML =
+          `<div class="err">Stripe onboarding failed: ${e.message}</div>` +
+          `<div class="muted" style="margin-top:4px;font-size:11px">If this keeps happening, check that STRIPE_SECRET_KEY is set in Vercel and that Stripe Connect is enabled on the platform account.</div>`;
+        startBtn.disabled = false;
+        startBtn.textContent = orig;
+      }
+    }}, status.connected ? 'Continue Stripe onboarding' : 'Connect Stripe');
+    panel.appendChild(startBtn);
+    panel.appendChild(errInline);
   } else {
     panel.appendChild(el('p', {}, '✓ Stripe connected. You can now generate payment links for your customers.'));
     panel.appendChild(el('p', { class: 'muted' }, `Account: ${status.account_id}`));
@@ -5682,12 +5701,23 @@ async function loadIntegrationStatus(container) {
     stripeStatus.innerHTML = '';
     if (!sc.connected) {
       stripeStatus.appendChild(el('span', { class: 'badge red' }, 'Not connected'));
-      stripeStatus.appendChild(el('button', { class: 'btn sm', style: 'margin-left:8px', onclick: async () => {
+      const connectErr = el('div', { style: 'margin-left:8px;font-size:11px;color:#fca5a5;display:inline-block' });
+      const connectBtn = el('button', { class: 'btn sm', style: 'margin-left:8px', onclick: async () => {
+        connectErr.textContent = '';
+        connectBtn.disabled = true;
+        connectBtn.textContent = 'Opening…';
         try {
           const r = await api('/api/portal/connect?action=start', { method: 'POST' });
+          if (!r?.url) throw new Error('Stripe returned no URL.');
           window.location.href = r.url;
-        } catch (e) { toast('Stripe setup failed: ' + e.message, true); }
-      } }, 'Connect Stripe'));
+        } catch (e) {
+          connectErr.textContent = 'Setup failed: ' + e.message;
+          connectBtn.disabled = false;
+          connectBtn.textContent = 'Connect Stripe';
+        }
+      } }, 'Connect Stripe');
+      stripeStatus.appendChild(connectBtn);
+      stripeStatus.appendChild(connectErr);
     } else {
       const statusBadge = sc.charges_enabled
         ? el('span', { class: 'badge green' }, 'Active')
