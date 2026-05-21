@@ -2486,13 +2486,38 @@ async function applyPendingMigrations(req, res) {
        FROM public.clients WHERE slug = 'willpower-fitness'
      ON CONFLICT (client_id, product_key) DO NOTHING;`,
 
-    // The Flex Facility — one merch product on merch.html (the ebook
-    // is tracked separately via the existing R2S sales pipeline so
-    // we don't double-list it here).
+    // The Flex Facility hoodie — one product key per color so Kenny
+    // can price + image each variant independently from the portal
+    // Merch tab. The ebook is tracked separately via the existing
+    // R2S sales pipeline, not seeded here.
+    //
+    // Backfill: rename the legacy 'hoodie' row (originally seeded as
+    // the Black/Cyan variant) so the rename + add path is idempotent
+    // and doesn't strand price edits the operator made on the old
+    // row. Done BEFORE the new INSERTs so the UPDATE never collides.
+    `UPDATE public.merch_products
+       SET product_key = 'hoodie-black-cyan',
+           name = CASE WHEN name LIKE '%Black/Cyan%' THEN name
+                       ELSE 'Flex Training Sleeveless Hoodie — Black/Cyan' END,
+           image_url = COALESCE(image_url, 'https://theflexfacility.com/assets/merch/hoodie-black-cyan.png')
+     WHERE client_id = (SELECT id FROM public.clients WHERE slug = 'flex-facility')
+       AND product_key = 'hoodie';`,
     `INSERT INTO public.merch_products
        (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
-     SELECT id, 'hoodie', 'Flex Training Sleeveless Hoodie', NULL, 4500,
+     SELECT id, 'hoodie-black-cyan', 'Flex Training Sleeveless Hoodie — Black/Cyan', NULL, 4500,
             'https://theflexfacility.com/assets/merch/hoodie-black-cyan.png', true, 1
+       FROM public.clients WHERE slug = 'flex-facility'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'hoodie-black-white', 'Flex Training Sleeveless Hoodie — Black/White', NULL, 4500,
+            'https://theflexfacility.com/assets/merch/hoodie-black-white.png', true, 2
+       FROM public.clients WHERE slug = 'flex-facility'
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+    `INSERT INTO public.merch_products
+       (client_id, product_key, name, description, base_price_cents, image_url, is_active, sort_order)
+     SELECT id, 'hoodie-white', 'Flex Training Sleeveless Hoodie — White', NULL, 4500,
+            'https://theflexfacility.com/assets/merch/hoodie-white.png', true, 3
        FROM public.clients WHERE slug = 'flex-facility'
      ON CONFLICT (client_id, product_key) DO NOTHING;`,
 
