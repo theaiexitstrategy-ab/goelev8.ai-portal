@@ -6624,18 +6624,48 @@ async function viewAdmin() {
   migPanel.appendChild(el('h2', {}, '🗄️ Database Migrations'));
   migPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
     'Apply pending schema changes (Stripe key, RLS, Twilio reserve, tags + paid_at) to Supabase. Idempotent — safe to re-run.'));
+  // Persistent status card — replaces the disappearing toast so the
+  // operator sees a clear ✓ / ⚠ summary that sticks around until
+  // they click again. Toast still fires for screen-reader / mobile
+  // visibility.
+  const migStatus = el('div', { style: 'display:none;margin-top:12px;padding:12px 14px;border-radius:6px;font-size:13px;line-height:1.5' });
   const migOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:240px;margin-top:8px' });
   const migBtn = el('button', { class: 'btn primary', onclick: async (e) => {
     e.currentTarget.disabled = true;
     e.currentTarget.textContent = 'Applying…';
+    migStatus.style.display = 'block';
+    migStatus.style.background = 'rgba(255,255,255,0.04)';
+    migStatus.style.border = '1px solid rgba(255,255,255,0.08)';
+    migStatus.style.color = 'var(--text-mute,#9ca3af)';
+    migStatus.textContent = 'Applying migrations… (this can take 15–30 seconds for the full run)';
     try {
       const r = await api('/api/admin?action=apply-pending-migrations', { method: 'POST' });
       const failed = (r.results || []).filter(x => !x.ok);
       toast(`Applied ${r.success}/${r.total} statements${r.failed ? ` · ${r.failed} failed` : ''}`,
             failed.length > 0);
+      if (failed.length) {
+        migStatus.style.background = 'rgba(239,68,68,0.10)';
+        migStatus.style.border = '1px solid rgba(239,68,68,0.35)';
+        migStatus.style.color = '#fca5a5';
+        migStatus.innerHTML =
+          `<strong>⚠ ${r.failed} of ${r.total} statements failed.</strong><br/>` +
+          `${r.success} succeeded · project ${r.project_ref || '—'}. ` +
+          `Expand the JSON below for the failures.`;
+      } else {
+        migStatus.style.background = 'rgba(34,197,94,0.10)';
+        migStatus.style.border = '1px solid rgba(34,197,94,0.35)';
+        migStatus.style.color = '#86efac';
+        migStatus.innerHTML =
+          `<strong>✓ All ${r.total} migration statements applied successfully.</strong><br/>` +
+          `<span class="muted" style="color:#86efac;opacity:0.85;font-size:12px">project ${r.project_ref || '—'} · click <strong>Verify Migrations</strong> next to confirm the schema landed.</span>`;
+      }
       migOut.style.display = 'block';
       migOut.textContent = JSON.stringify({ project_ref: r.project_ref, total: r.total, success: r.success, failed: r.failed, errors: failed }, null, 2);
     } catch (err) {
+      migStatus.style.background = 'rgba(239,68,68,0.10)';
+      migStatus.style.border = '1px solid rgba(239,68,68,0.35)';
+      migStatus.style.color = '#fca5a5';
+      migStatus.innerHTML = `<strong>⚠ Failed:</strong> ${err.message}`;
       toast('Failed: ' + err.message, true);
     } finally {
       e.currentTarget.disabled = false;
@@ -6643,6 +6673,7 @@ async function viewAdmin() {
     }
   } }, 'Run Pending Migrations');
   migPanel.appendChild(migBtn);
+  migPanel.appendChild(migStatus);
   migPanel.appendChild(migOut);
 
   // Dedupe leads — merges any leads sharing a phone/email into the
@@ -6694,35 +6725,67 @@ async function viewAdmin() {
   const trashBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: () => openTrashView() }, '🗑 View Trash (30d)');
   migPanel.appendChild(trashBtn);
 
-  // One-click finish for the next pending tenant (currently Will Power
-  // Fitness Factory): creates the auth user, sets the logo, sends a
-  // branded password-reset email, and seeds the booking calendar +
-  // Free Consultation service + default Mon–Fri availability.
-  // Idempotent — safe to re-click. TAES + ATBHR were retired from the
-  // server-side TENANTS list once they were live.
-  const onboardOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:280px;margin-top:8px' });
-  const onboardBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+  // Verify migrations — probes the live DB for every artifact the
+  // migration runner is supposed to have installed and renders a
+  // pass/fail checklist. Operators click this AFTER Run Pending
+  // Migrations to confirm the schema actually landed instead of
+  // guessing. Replaces the now-redundant "Onboard Will Power"
+  // button since Will is fully onboarded; re-onboarding adds no
+  // value.
+  const verifyStatus = el('div', { style: 'display:none;margin-top:12px;padding:12px 14px;border-radius:6px;font-size:13px;line-height:1.5' });
+  const verifyChecks = el('div', { style: 'display:none;margin-top:8px;background:rgba(0,0,0,0.25);padding:12px 14px;border-radius:6px;font-size:12px;max-height:340px;overflow:auto' });
+  const verifyBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
     e.currentTarget.disabled = true;
-    e.currentTarget.textContent = 'Onboarding…';
+    e.currentTarget.textContent = 'Verifying…';
+    verifyStatus.style.display = 'block';
+    verifyStatus.style.background = 'rgba(255,255,255,0.04)';
+    verifyStatus.style.border = '1px solid rgba(255,255,255,0.08)';
+    verifyStatus.style.color = 'var(--text-mute,#9ca3af)';
+    verifyStatus.textContent = 'Checking…';
+    verifyChecks.style.display = 'none';
     try {
-      const r = await api('/api/admin?action=onboard-pending-tenants', { method: 'POST' });
-      onboardOut.style.display = 'block';
-      onboardOut.textContent = JSON.stringify(r, null, 2);
-      const failed = (r.results || []).filter(x => x.error || x.steps?.some(s => !s.ok));
-      if (failed.length) {
-        toast(`${failed.length} tenant(s) had issues — check JSON below.`, true);
+      const r = await api('/api/admin?action=verify-migrations');
+      const passed = r.summary?.passed || 0;
+      const failed = r.summary?.failed || 0;
+      const total  = r.summary?.total  || 0;
+      if (r.healthy) {
+        verifyStatus.style.background = 'rgba(34,197,94,0.10)';
+        verifyStatus.style.border = '1px solid rgba(34,197,94,0.35)';
+        verifyStatus.style.color = '#86efac';
+        verifyStatus.innerHTML =
+          `<strong>✓ All ${total} checks passed.</strong><br/>` +
+          `<span style="opacity:0.85;font-size:12px">Schema + tenant config are healthy.</span>`;
       } else {
-        toast('Will Power Fitness Factory onboarded · refreshing cards…');
-        render();
+        verifyStatus.style.background = 'rgba(239,68,68,0.10)';
+        verifyStatus.style.border = '1px solid rgba(239,68,68,0.35)';
+        verifyStatus.style.color = '#fca5a5';
+        verifyStatus.innerHTML =
+          `<strong>⚠ ${failed} of ${total} checks failed.</strong><br/>` +
+          `<span style="opacity:0.85;font-size:12px">${passed} passed. Failures detailed below.</span>`;
       }
-    } catch (err) { toast('Onboard failed: ' + err.message, true); }
-    finally {
+      verifyChecks.innerHTML = (r.checks || []).map(c =>
+        `<div style="display:flex;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+           <span style="font-size:14px;color:${c.ok ? '#86efac' : '#fca5a5'};flex-shrink:0">${c.ok ? '✓' : '✗'}</span>
+           <div style="flex:1;min-width:0">
+             <div style="font-weight:500">${c.name}</div>
+             <div class="muted" style="font-size:11px;word-break:break-word">${c.detail || ''}</div>
+           </div>
+         </div>`
+      ).join('');
+      verifyChecks.style.display = 'block';
+    } catch (err) {
+      verifyStatus.style.background = 'rgba(239,68,68,0.10)';
+      verifyStatus.style.border = '1px solid rgba(239,68,68,0.35)';
+      verifyStatus.style.color = '#fca5a5';
+      verifyStatus.innerHTML = `<strong>⚠ Verify failed:</strong> ${err.message}`;
+    } finally {
       e.currentTarget.disabled = false;
-      e.currentTarget.textContent = 'Onboard Will Power Fitness Factory';
+      e.currentTarget.textContent = '✅ Verify Migrations';
     }
-  } }, 'Onboard Will Power Fitness Factory');
-  migPanel.appendChild(onboardBtn);
-  migPanel.appendChild(onboardOut);
+  } }, '✅ Verify Migrations');
+  migPanel.appendChild(verifyBtn);
+  migPanel.appendChild(verifyStatus);
+  migPanel.appendChild(verifyChecks);
 
   wrap.appendChild(migPanel);
 

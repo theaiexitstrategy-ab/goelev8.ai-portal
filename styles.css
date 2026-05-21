@@ -427,6 +427,14 @@ input, textarea, select {
   width: 100%;
   transition: all 0.15s ease;
 }
+/* Dropdown options — Chrome/Edge let us style these; Safari falls
+   back to OS chrome but at least gets the dark-on-dark unreadable
+   case fixed when the user agent honors color-scheme. */
+select option {
+  background: #141414;
+  color: var(--text);
+}
+select { color-scheme: dark; }
 input::placeholder, textarea::placeholder { color: var(--text-mute); }
 input:hover, textarea:hover, select:hover { border-color: var(--border-strong); }
 input:focus, textarea:focus, select:focus {

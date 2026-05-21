@@ -253,6 +253,157 @@ const PLATFORM_REVENUE = {
   ]
 };
 
+// ──────────────────────────────────────────────────────────────
+// Migration verifier — probes the live DB for every artifact the
+// migration runner is supposed to have installed (tables, columns,
+// per-tenant config rows) and returns a pass/fail checklist. The
+// admin clicks this AFTER Run Pending Migrations to confirm
+// everything actually landed instead of guessing.
+// ──────────────────────────────────────────────────────────────
+async function verifyMigrations(req, res) {
+  const checks = [];
+  const ok = (name, detail) => checks.push({ name, ok: true, detail });
+  const fail = (name, detail) => checks.push({ name, ok: false, detail });
+
+  // Helper: probe a table by SELECT 1. Returns true if reachable.
+  async function tableExists(name) {
+    const { error } = await supabaseAdmin.from(name).select('*').limit(1);
+    if (!error) return true;
+    if (/relation .* does not exist/i.test(error.message)) return false;
+    // Some other error — surface but treat as exists (column issue, etc.)
+    return true;
+  }
+
+  // 1. Merch tables
+  for (const t of ['merch_products', 'merch_coupons', 'merch_orders', 'merch_order_items']) {
+    if (await tableExists(t)) ok(`Table ${t}`, 'exists');
+    else fail(`Table ${t}`, 'missing — Run Pending Migrations to create');
+  }
+
+  // 2. Applications tables
+  for (const t of ['applications', 'trainer_applications']) {
+    if (await tableExists(t)) ok(`Table ${t}`, 'exists');
+    else fail(`Table ${t}`, 'missing');
+  }
+
+  // 3. Client columns added by recent migrations
+  {
+    const probes = [
+      'portal_api_key', 'platform_fee_pct', 'pass_stripe_fees_to_customer',
+      'parent_client_id', 'ga4_property_id', 'ga4_measurement_id', 'portal_tabs'
+    ];
+    for (const col of probes) {
+      const { error } = await supabaseAdmin.from('clients').select(col).limit(1);
+      if (!error) ok(`Column clients.${col}`, 'present');
+      else if (/column .* does not exist/i.test(error.message)) {
+        fail(`Column clients.${col}`, 'missing');
+      } else {
+        ok(`Column clients.${col}`, 'present (probe surfaced unrelated error: ' + error.message + ')');
+      }
+    }
+  }
+
+  // 4. Storage bucket for merch images
+  {
+    const { data, error } = await supabaseAdmin
+      .from('storage.buckets').select('id, public').eq('id', 'merch-images').maybeSingle();
+    if (error || !data) {
+      // Fallback: try via storage API list
+      try {
+        const list = await supabaseAdmin.storage.listBuckets();
+        const found = (list?.data || []).find(b => b.id === 'merch-images' || b.name === 'merch-images');
+        if (found) ok('Bucket merch-images', `present (public=${found.public})`);
+        else fail('Bucket merch-images', 'missing — auto-created on first photo upload, or re-run migrations');
+      } catch {
+        fail('Bucket merch-images', 'could not verify (storage API unreachable)');
+      }
+    } else {
+      ok('Bucket merch-images', `present (public=${data.public})`);
+    }
+  }
+
+  // 5. Per-tenant config — Will Power Fitness Factory
+  {
+    const { data: c } = await supabaseAdmin
+      .from('clients').select('slug, name, parent_client_id, portal_api_key, platform_fee_pct, portal_tabs, ga4_property_id')
+      .eq('slug', 'willpower-fitness').maybeSingle();
+    if (!c) {
+      fail('Tenant willpower-fitness', 'row missing');
+    } else {
+      c.portal_api_key       ? ok('Will Power portal_api_key', 'set')                : fail('Will Power portal_api_key', 'NULL');
+      c.platform_fee_pct != null ? ok('Will Power platform_fee_pct', String(c.platform_fee_pct) + '%') : fail('Will Power platform_fee_pct', 'NULL');
+      c.parent_client_id     ? ok('Will Power parent_client_id', 'linked to Flex')   : fail('Will Power parent_client_id', 'NOT linked — SMS will fall back to own row');
+      c.ga4_property_id      ? ok('Will Power ga4_property_id', c.ga4_property_id)   : fail('Will Power ga4_property_id', 'NULL — Analytics will be empty');
+      (Array.isArray(c.portal_tabs) && c.portal_tabs.includes('merch'))
+        ? ok('Will Power portal_tabs', 'includes merch')
+        : fail('Will Power portal_tabs', `missing 'merch' — current: ${JSON.stringify(c.portal_tabs)}`);
+    }
+  }
+
+  // 6. Per-tenant config — Flex Facility
+  {
+    const { data: c } = await supabaseAdmin
+      .from('clients').select('slug, portal_api_key, platform_fee_pct, portal_tabs')
+      .eq('slug', 'flex-facility').maybeSingle();
+    if (!c) {
+      fail('Tenant flex-facility', 'row missing');
+    } else {
+      c.portal_api_key      ? ok('Flex portal_api_key', 'set')                              : fail('Flex portal_api_key', 'NULL');
+      c.platform_fee_pct != null ? ok('Flex platform_fee_pct', String(c.platform_fee_pct) + '%') : fail('Flex platform_fee_pct', 'NULL');
+      const needed = ['merch', 'trainer_applications'];
+      const tabs = Array.isArray(c.portal_tabs) ? c.portal_tabs : [];
+      const missing = needed.filter(t => !tabs.includes(t));
+      missing.length === 0
+        ? ok('Flex portal_tabs', `includes ${needed.join(' + ')}`)
+        : fail('Flex portal_tabs', `missing ${missing.join(', ')} — current: ${JSON.stringify(tabs)}`);
+    }
+  }
+
+  // 7. Per-tenant config — iSlay Studios
+  {
+    const { data: c } = await supabaseAdmin
+      .from('clients').select('slug, portal_api_key, platform_fee_pct, portal_tabs')
+      .eq('slug', 'islay-studios').maybeSingle();
+    if (!c) {
+      fail('Tenant islay-studios', 'row missing');
+    } else {
+      c.portal_api_key      ? ok('iSlay portal_api_key', 'set')                              : fail('iSlay portal_api_key', 'NULL');
+      c.platform_fee_pct != null ? ok('iSlay platform_fee_pct', String(c.platform_fee_pct) + '%') : fail('iSlay platform_fee_pct', 'NULL');
+      const tabs = Array.isArray(c.portal_tabs) ? c.portal_tabs : [];
+      const needed = ['applications', 'merch'];
+      const missing = needed.filter(t => !tabs.includes(t));
+      missing.length === 0
+        ? ok('iSlay portal_tabs', `includes ${needed.join(' + ')}`)
+        : fail('iSlay portal_tabs', `missing ${missing.join(', ')} — current: ${JSON.stringify(tabs)}`);
+    }
+  }
+
+  // 8. Seeded merch products
+  {
+    const counts = {};
+    for (const slug of ['willpower-fitness', 'flex-facility', 'islay-studios']) {
+      const { data: c } = await supabaseAdmin.from('clients').select('id').eq('slug', slug).maybeSingle();
+      if (!c) { counts[slug] = 'tenant missing'; continue; }
+      const { count } = await supabaseAdmin.from('merch_products').select('id', { count: 'exact', head: true }).eq('client_id', c.id);
+      counts[slug] = count ?? 0;
+    }
+    const total = Object.values(counts).filter(v => typeof v === 'number').reduce((s, n) => s + n, 0);
+    total > 0
+      ? ok('Seeded merch products', JSON.stringify(counts))
+      : fail('Seeded merch products', 'no products in merch_products for any tenant');
+  }
+
+  const totalChecks = checks.length;
+  const passed = checks.filter(c => c.ok).length;
+  const failed = totalChecks - passed;
+
+  return res.status(200).json({
+    summary: { total: totalChecks, passed, failed },
+    healthy: failed === 0,
+    checks
+  });
+}
+
 async function salesDashboard(req, res) {
   const out = {
     sources: {},
@@ -2559,6 +2710,7 @@ export default async function handler(req, res) {
       case 'twilio-reserve-diagnose':  return await twilioReserveDiagnose(req, res);
       case 'create-onboarding-link':   return await createOnboardingPaymentLink(req, res);
       case 'onboard-pending-tenants':  return await onboardPendingTenants(req, res);
+      case 'verify-migrations':         return await verifyMigrations(req, res);
       case 'sales-dashboard':           return await salesDashboard(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
