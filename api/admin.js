@@ -2268,10 +2268,10 @@ async function applyPendingMigrations(req, res) {
     // Bookings tab since the booking calendar is core to their
     // business — Merch sits alongside, not in place of it.
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb
+       SET portal_tabs = '["overview","leads","trainer_applications","merch","messaging","bookings","analytics","settings"]'::jsonb
      WHERE slug = 'flex-facility'
        AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`,
+           '["overview","leads","trainer_applications","merch","messaging","bookings","analytics","settings"]'::jsonb;`,
 
     // iSlay Studios — Nate gets Merch alongside Applications. Order:
     // Overview, Leads, Applications, Merch, Messaging, Analytics,
