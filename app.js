@@ -4599,7 +4599,12 @@ async function viewConnect() {
   const panel = el('div', { class: 'panel' });
 
   if (!status.connected || !status.charges_enabled) {
-    panel.appendChild(el('p', {}, 'Connect your Stripe account to start accepting payments from your customers. GoElev8 takes a 2.9% platform fee on each transaction.'));
+    panel.appendChild(el('p', {},
+      'Link your existing Stripe account so customer payments land in your bank ' +
+      'directly. GoElev8 takes a small platform fee on each transaction (handled ' +
+      'automatically — you keep the rest). Clicking the button opens a Stripe ' +
+      'login page where you sign in with your normal Stripe credentials.'
+    ));
     const errInline = el('div', { style: 'margin-top:10px;font-size:13px;min-height:18px' });
     const startBtn = el('button', { class: 'btn', onclick: async () => {
       errInline.innerHTML = '';
@@ -4608,21 +4613,16 @@ async function viewConnect() {
       startBtn.textContent = 'Opening Stripe…';
       try {
         const r = await api('/api/portal/connect?action=start', { method: 'POST' });
-        if (!r?.url) throw new Error('Stripe returned no onboarding URL.');
+        if (!r?.url) throw new Error('Stripe returned no authorize URL.');
         window.location.href = r.url;
       } catch (e) {
-        // Inline error with the actual reason so the operator
-        // doesn't see a vanishing toast and have no idea what
-        // happened. The endpoint now returns specific error codes
-        // (stripe_env_missing, stripe_account_create_failed, etc.)
-        // surfaced verbatim here.
         errInline.innerHTML =
-          `<div class="err">Stripe onboarding failed: ${e.message}</div>` +
-          `<div class="muted" style="margin-top:4px;font-size:11px">If this keeps happening, check that STRIPE_SECRET_KEY is set in Vercel and that Stripe Connect is enabled on the platform account.</div>`;
+          `<div class="err">Stripe connect failed: ${e.message}</div>` +
+          `<div class="muted" style="margin-top:4px;font-size:11px">If this keeps happening, check that STRIPE_CLIENT_ID + STRIPE_SECRET_KEY are set in Vercel and that Stripe Connect is enabled on the platform account.</div>`;
         startBtn.disabled = false;
         startBtn.textContent = orig;
       }
-    }}, status.connected ? 'Continue Stripe onboarding' : 'Connect Stripe');
+    }}, status.connected ? 'Continue connecting Stripe →' : 'Connect Stripe →');
     panel.appendChild(startBtn);
     panel.appendChild(errInline);
   } else {
@@ -8191,8 +8191,27 @@ if (params.get('credits') === 'success') {
     } catch (e) { /* silent — webhook may have already done it */ }
   })();
 }
+// OAuth callback landed — Stripe redirected the tenant back after
+// they linked their personal account. Show a clear toast (the
+// new ?account= param carries the just-linked acct_... id) and
+// strip the params before rendering so a refresh doesn't repeat.
 if (params.get('connect') === 'done') {
-  toast('Stripe Connect onboarding complete!');
+  const acct = params.get('account');
+  toast(acct
+    ? `✓ Stripe connected · ${acct}`
+    : 'Stripe Connect onboarding complete!');
+  history.replaceState({}, '', '/');
+}
+if (params.get('connect') === 'error') {
+  const reason = params.get('reason') || 'unknown';
+  // Friendlier copy for the cases the user might trigger themselves.
+  const REASON_COPY = {
+    access_denied:  'You declined to authorize the connection.',
+    state_expired:  'The connection link expired — click Connect Stripe again to retry.',
+    invalid_state:  'Security token mismatch — refresh the page and try again.',
+    missing_params: 'Stripe redirected without a code — try Connect Stripe again.'
+  };
+  toast(REASON_COPY[reason] || ('Stripe connect failed: ' + reason), true);
   history.replaceState({}, '', '/');
 }
 

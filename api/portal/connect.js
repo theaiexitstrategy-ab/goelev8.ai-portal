@@ -1,13 +1,122 @@
+// © 2026 GoElev8.ai | Aaron Bryant. All rights reserved. Unauthorized use prohibited.
+//
+// Stripe Connect — OAuth flow for Standard accounts.
+//
+// Tenants link their EXISTING personal Stripe account to the GoElev8
+// platform by clicking 'Connect Stripe', getting redirected to
+// Stripe's hosted authorize page, logging in with their own
+// credentials, and approving the connection. Once approved, Stripe
+// redirects them back to our /api/portal/connect?action=callback
+// endpoint with an authorization code. We exchange that code for a
+// stripe_user_id (their account id) which we store on
+// clients.stripe_connected_account_id. From there, every charge on
+// the platform can route money to the tenant's account while
+// taking application_fee_amount for GoElev8.
+//
+// Required env (set in Vercel):
+//   STRIPE_CLIENT_ID     — your platform's Connect client_id (Stripe
+//                          Dashboard → Connect → Settings → "OAuth").
+//                          Looks like ca_xxxxxxxxxxxx for live mode.
+//   STRIPE_SECRET_KEY    — already in use elsewhere
+//   PORTAL_BASE_URL      — already in use elsewhere
+//
+// The OAuth state parameter carries the tenant's client_id signed
+// with HMAC-SHA256 (key = STRIPE_SECRET_KEY) so a forged callback
+// can't link a stripe account to the wrong tenant. State has a 10
+// minute TTL.
+//
+// Actions on this endpoint:
+//   GET  ?action=status       — auth-required, returns connection state
+//   POST ?action=start        — auth-required, returns Stripe OAuth URL
+//   GET  ?action=callback     — Stripe-driven redirect; no portal auth
+//                                (state HMAC proves the tenant identity)
+//   POST ?action=payment-link — auth-required, Checkout on connected acct
+
+import crypto from 'node:crypto';
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { stripe } from '../../lib/stripe.js';
 
+// ─── State signing helpers (CSRF protection for OAuth) ─────────
+function stateSecret() {
+  // STRIPE_SECRET_KEY is unique per env + already secret. Reusing it
+  // as the HMAC key avoids needing yet another env var while keeping
+  // state tokens unforgeable.
+  return process.env.STRIPE_SECRET_KEY || 'unset';
+}
+function signState(payload) {
+  const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', stateSecret()).update(b64).digest('base64url');
+  return `${b64}.${sig}`;
+}
+function verifyState(state) {
+  try {
+    if (typeof state !== 'string' || !state.includes('.')) return null;
+    const [b64, sig] = state.split('.');
+    const expected = crypto.createHmac('sha256', stateSecret()).update(b64).digest('base64url');
+    // Timing-safe compare to avoid leaking secret via response timing.
+    if (sig.length !== expected.length) return null;
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+    return JSON.parse(Buffer.from(b64, 'base64url').toString('utf8'));
+  } catch { return null; }
+}
+
 export default async function handler(req, res) {
-  const ctx = await requireUser(req, res); if (!ctx) return;
   const url = new URL(req.url, `http://${req.headers.host}`);
   const action = url.searchParams.get('action');
 
-  // GET ?action=status
+  // ─── OAuth callback (no portal auth — Stripe redirects unauthenticated) ─
+  // Comes back via GET. The signed state param + Supabase update prove
+  // which tenant is linking which Stripe account. After exchanging
+  // the code for a stripe_user_id, we redirect into the portal with
+  // a ?connect=done flag so the SPA shows a welcome banner.
+  if (action === 'callback') {
+    if (req.method !== 'GET') return res.status(405).end();
+    const code  = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const portalBase = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
+    const back = (qs) => res.redirect(302, `${portalBase}/?${qs}`);
+
+    // Stripe sends `error` + `error_description` when the user cancels
+    // or declines on the authorize page.
+    const stripeErr = url.searchParams.get('error');
+    if (stripeErr) {
+      return back(`connect=error&reason=${encodeURIComponent(stripeErr)}`);
+    }
+    if (!code || !state) return back('connect=error&reason=missing_params');
+
+    const parsed = verifyState(state);
+    if (!parsed) return back('connect=error&reason=invalid_state');
+    if (!parsed.client_id) return back('connect=error&reason=invalid_state');
+    if (typeof parsed.ts !== 'number' || Date.now() - parsed.ts > 10 * 60 * 1000) {
+      return back('connect=error&reason=state_expired');
+    }
+
+    // Exchange the authorization code for the tenant's stripe_user_id.
+    let tokenResp;
+    try {
+      tokenResp = await stripe.oauth.token({ grant_type: 'authorization_code', code });
+    } catch (e) {
+      return back(`connect=error&reason=${encodeURIComponent(e.message || 'oauth_token_failed')}`);
+    }
+    const stripeUserId = tokenResp?.stripe_user_id;
+    if (!stripeUserId) return back('connect=error&reason=no_stripe_user_id');
+
+    // Persist the linkage. We store ONLY the account id —
+    // application_fee_amount + transfer_data.destination handle
+    // charge routing; we never need the user's access_token long-term.
+    const { error: updErr } = await supabaseAdmin.from('clients')
+      .update({ stripe_connected_account_id: stripeUserId })
+      .eq('id', parsed.client_id);
+    if (updErr) return back(`connect=error&reason=${encodeURIComponent(updErr.message)}`);
+
+    return back(`connect=done&account=${encodeURIComponent(stripeUserId)}`);
+  }
+
+  // Everything below requires the user to be authed into the portal.
+  const ctx = await requireUser(req, res); if (!ctx) return;
+
+  // ─── GET ?action=status ────────────────────────────────────────
   if (action === 'status') {
     if (!methodGuard(req, res, ['GET'])) return;
     const { data: client } = await supabaseAdmin
@@ -20,128 +129,91 @@ export default async function handler(req, res) {
         charges_enabled: acct.charges_enabled,
         payouts_enabled: acct.payouts_enabled,
         details_submitted: acct.details_submitted,
-        account_id: acct.id
+        account_id: acct.id,
+        // 'standard' for OAuth-linked accounts, 'express' for the
+        // legacy flow. Surfacing this lets the SPA show the right
+        // copy (e.g. "open dashboard" vs "continue onboarding").
+        type: acct.type || 'standard',
+        business_name: acct.business_profile?.name || acct.settings?.dashboard?.display_name || null,
+        country: acct.country || null
       });
     } catch { return res.status(200).json({ connected: false }); }
   }
 
-  // POST ?action=start  → create/refresh Express onboarding link
-  //
-  // Three paths, all wrapped in try/catch with descriptive errors so
-  // a failure (missing env var, stale stripe_connected_account_id,
-  // Stripe API rejection) surfaces a real reason instead of a silent
-  // generic 500 the frontend can't translate.
-  //
-  //   1. No stripe_connected_account_id on file
-  //      → create an Express account + accountLinks for onboarding
-  //   2. Account exists, charges_enabled=true
-  //      → return a login link to the Express dashboard
-  //   3. Account exists, onboarding incomplete
-  //      → re-create accountLinks for continued onboarding
+  // ─── POST ?action=start ─ build the Stripe OAuth authorize URL ─
+  // Returns { url } to the SPA, which sets window.location.href to
+  // that URL — the tenant lands on Stripe's hosted authorize page,
+  // logs into THEIR existing Stripe account, and approves the
+  // platform. Stripe redirects them back to ?action=callback above.
   if (action === 'start') {
     if (!methodGuard(req, res, ['POST'])) return;
 
-    if (!process.env.STRIPE_SECRET_KEY) {
-      return res.status(500).json({ error: 'stripe_env_missing',
-        detail: 'STRIPE_SECRET_KEY is not set in Vercel env vars.' });
-    }
-    const portalBase = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
-
-    const { data: client, error: clientErr } = await supabaseAdmin
-      .from('clients').select('id, name, business_name, stripe_connected_account_id')
-      .eq('id', ctx.clientId).single();
-    if (clientErr || !client) {
-      return res.status(500).json({ error: 'client_lookup_failed', detail: clientErr?.message });
-    }
-
-    let acctId = client.stripe_connected_account_id;
-    let acct = null;
-
-    // If we have an account id on file, verify it still exists in
-    // Stripe before reusing — a deleted/restricted account would
-    // crash accountLinks.create with a confusing message.
-    if (acctId) {
-      try {
-        acct = await stripe.accounts.retrieve(acctId);
-      } catch (e) {
-        // Stale id (account deleted in Stripe Dashboard, or wrong
-        // mode key) — drop it and re-onboard.
-        if (/No such account|does not exist|invalid/i.test(e.message || '')) {
-          await supabaseAdmin.from('clients')
-            .update({ stripe_connected_account_id: null }).eq('id', client.id);
-          acctId = null;
-        } else {
-          return res.status(500).json({
-            error: 'stripe_account_retrieve_failed',
-            detail: e.message,
-            account_id: acctId
-          });
-        }
-      }
-    }
-
-    // Create a fresh Express account if needed.
-    if (!acctId) {
-      try {
-        const account = await stripe.accounts.create({
-          type: 'express',
-          email: ctx.user.email,
-          business_profile: { name: client.business_name || client.name || 'GoElev8 tenant' },
-          capabilities: {
-            card_payments: { requested: true },
-            transfers: { requested: true }
-          },
-          metadata: { client_id: client.id }
-        });
-        acctId = account.id;
-        acct = account;
-        await supabaseAdmin.from('clients')
-          .update({ stripe_connected_account_id: acctId }).eq('id', client.id);
-      } catch (e) {
-        return res.status(500).json({
-          error: 'stripe_account_create_failed',
-          detail: e.message
-        });
-      }
-    }
-
-    // If the account is fully onboarded, send them to the Express
-    // dashboard instead of restarting onboarding.
-    if (acct && acct.charges_enabled && acct.details_submitted) {
-      try {
-        const loginLink = await stripe.accounts.createLoginLink(acctId);
-        return res.status(200).json({ url: loginLink.url, mode: 'dashboard' });
-      } catch (e) {
-        return res.status(500).json({
-          error: 'stripe_login_link_failed',
-          detail: e.message,
-          account_id: acctId
-        });
-      }
-    }
-
-    // Otherwise return an onboarding link.
-    try {
-      const link = await stripe.accountLinks.create({
-        account: acctId,
-        refresh_url: `${portalBase}/?connect=refresh`,
-        return_url:  `${portalBase}/?connect=done`,
-        type: 'account_onboarding'
-      });
-      return res.status(200).json({ url: link.url, mode: 'onboarding', account_id: acctId });
-    } catch (e) {
+    if (!process.env.STRIPE_CLIENT_ID) {
       return res.status(500).json({
-        error: 'stripe_account_link_failed',
-        detail: e.message,
-        account_id: acctId,
-        hint: /capability/i.test(e.message || '')
-          ? 'Your platform account may not have Stripe Connect enabled — check Connect settings in your Stripe Dashboard.'
-          : undefined
+        error: 'stripe_client_id_missing',
+        detail: 'STRIPE_CLIENT_ID env var not set in Vercel. Get it from Stripe Dashboard → Connect → Settings → Integration (looks like ca_xxxxxxxxxxxx for live mode).'
       });
     }
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({
+        error: 'stripe_env_missing',
+        detail: 'STRIPE_SECRET_KEY is not set in Vercel env vars.'
+      });
+    }
+
+    const portalBase  = (process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '');
+    const redirectUri = `${portalBase}/api/portal/connect?action=callback`;
+    const state       = signState({ client_id: ctx.clientId, ts: Date.now() });
+
+    // Look up tenant email/name to prefill Stripe's authorize page.
+    // Reduces friction — Will/Kenny/Nate land on the page with their
+    // info already filled in for the matching existing Stripe account.
+    const { data: client } = await supabaseAdmin
+      .from('clients').select('business_name, name').eq('id', ctx.clientId).maybeSingle();
+    const businessName = client?.business_name || client?.name || '';
+
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id:     process.env.STRIPE_CLIENT_ID,
+      scope:         'read_write',
+      state:         state,
+      redirect_uri:  redirectUri
+    });
+    // Prefill what we know about the tenant — Stripe ignores fields
+    // it doesn't recognize, so this is safe across SDK versions.
+    if (ctx.user?.email) params.set('stripe_user[email]', ctx.user.email);
+    if (businessName)    params.set('stripe_user[business_name]', businessName);
+
+    const authorizeUrl = `https://connect.stripe.com/oauth/v2/authorize?${params.toString()}`;
+    return res.status(200).json({ url: authorizeUrl, mode: 'oauth' });
   }
 
-  // POST ?action=payment-link  → Checkout on the connected account, with platform fee
+  // ─── POST ?action=disconnect ─ revoke the OAuth grant + clear the row
+  // Operator-driven; tenants can hit this if they want to unlink
+  // their Stripe account from the platform.
+  if (action === 'disconnect') {
+    if (!methodGuard(req, res, ['POST'])) return;
+    const { data: client } = await supabaseAdmin
+      .from('clients').select('stripe_connected_account_id').eq('id', ctx.clientId).single();
+    if (!client?.stripe_connected_account_id) {
+      return res.status(200).json({ ok: true, already_disconnected: true });
+    }
+    try {
+      await stripe.oauth.deauthorize({
+        client_id: process.env.STRIPE_CLIENT_ID,
+        stripe_user_id: client.stripe_connected_account_id
+      });
+    } catch (e) {
+      // Already revoked / account deleted — non-fatal; still clear our row.
+      console.warn('[connect] deauthorize warning:', e.message);
+    }
+    await supabaseAdmin.from('clients')
+      .update({ stripe_connected_account_id: null })
+      .eq('id', ctx.clientId);
+    return res.status(200).json({ ok: true });
+  }
+
+  // ─── POST ?action=payment-link ─ Checkout on the connected account
   if (action === 'payment-link') {
     if (!methodGuard(req, res, ['POST'])) return;
     const { amount_cents, description, customer_email } = await readJson(req);
