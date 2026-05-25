@@ -2730,6 +2730,53 @@ body.nav-open .bottom-nav .bnav-menu { color: #93c5fd; }
   padding: 4px 0 12px;
   /* Wraps onto multiple rows instead of forcing a sideways scroll. */
 }
+
+/* Messaging tab sub-navigation. Segmented-control style so Inbox /
+   SMS Blasts / Nudges read as proper sub-tabs (the old generic chip
+   style was too subtle — operators didn't realize the Blasts page
+   lived behind one of the chips and assumed it had been removed). */
+.messaging-subtabs {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.messaging-subtab-btn {
+  flex: 1 1 0;
+  min-width: 120px;
+  padding: 10px 18px;
+  border-radius: 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim, #94a3b8);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+  white-space: nowrap;
+  text-align: center;
+}
+.messaging-subtab-btn:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text, #e5e5e5);
+}
+.messaging-subtab-btn.active {
+  background: rgba(45,156,219,0.18);
+  color: #93c5fd;
+  border-color: rgba(45,156,219,0.5);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+@media (max-width: 540px) {
+  .messaging-subtab-btn {
+    min-width: 0;
+    padding: 9px 12px;
+    font-size: 12.5px;
+  }
+}
 .chip {
   padding: 6px 14px;
   border-radius: 999px;

@@ -2907,18 +2907,21 @@ async function viewMessaging() {
   state._messagingSub = state._messagingSub || 'inbox';
   let active = state._messagingSub;
 
-  const subTabBar = el('div', { class: 'filter-bar', style: 'margin-bottom:14px' });
+  // Prominent segmented-control sub-tab bar so 'Blasts' and 'Nudges'
+  // read unambiguously as sub-sections (the previous tiny .chip
+  // styling buried them — operators thought Blasts had been deleted).
+  const subTabBar = el('div', { class: 'messaging-subtabs' });
   const content = el('div', {});
 
   const SUBTABS = [
-    { id: 'inbox',  label: 'Inbox',  loader: viewMessages },
-    { id: 'blasts', label: 'Blasts', loader: viewBlasts },
-    { id: 'nudges', label: 'Nudges', loader: viewNudges }
+    { id: 'inbox',  label: '💬 Inbox',     loader: viewMessages },
+    { id: 'blasts', label: '📣 SMS Blasts', loader: viewBlasts },
+    { id: 'nudges', label: '⚡ Nudges',     loader: viewNudges }
   ];
 
   function renderSubTabBar() {
     subTabBar.replaceChildren(...SUBTABS.map(t => el('button', {
-      class: 'chip' + (active === t.id ? ' active' : ''),
+      class: 'messaging-subtab-btn' + (active === t.id ? ' active' : ''),
       onclick: async () => {
         if (active === t.id) return;
         active = t.id;
