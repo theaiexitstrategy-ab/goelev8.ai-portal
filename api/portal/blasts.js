@@ -42,15 +42,16 @@ export default async function handler(req, res) {
   const excludeArr = Array.isArray(excludeTags)
     ? excludeTags.map(t => String(t).trim()).filter(Boolean) : [];
 
-  // Build the recipient list. The 'contacts' segment pulls from the
-  // contacts table (covers imported CSV uploads + funnel-sourced
-  // contacts created by the nudge sequence). Every other segment pulls
-  // from leads and applies a status/booking filter.
+  // Build the recipient list.
+  //   'contacts' — every contact (imported CSVs + funnel-sourced)
+  //   'imported' — ONLY contacts whose source = 'import'  (CSV uploads)
+  //   everything else — pulls from leads with a status/booking filter
   let recipients = [];
-  if (segment === 'contacts') {
+  if (segment === 'contacts' || segment === 'imported') {
     let cq = supabaseAdmin
-      .from('contacts').select('id, name, phone, email, opted_out, tags')
+      .from('contacts').select('id, name, phone, email, opted_out, tags, source')
       .eq('client_id', clientId);
+    if (segment === 'imported') cq = cq.eq('source', 'import');
     if (includeArr.length) cq = cq.overlaps('tags', includeArr);
     const { data: contacts, error: cErr } = await cq;
     if (cErr) return res.status(500).json({ error: cErr.message });

@@ -2521,6 +2521,37 @@ async function applyPendingMigrations(req, res) {
        FROM public.clients WHERE slug = 'flex-facility'
      ON CONFLICT (client_id, product_key) DO NOTHING;`,
 
+    // Backfill the 'Imported' tag onto every contact whose source
+    // column already says they came from a CSV import. New imports
+    // get the tag added automatically by the import endpoint; this
+    // catches the historical rows so the SMS Blasts 'Imported
+    // Contacts Only' segment + the tag-filter chips cover them too.
+    // Idempotent — the NOT-IN-tags guard prevents double-tagging.
+    `DO $migrate$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name   = 'contacts'
+            AND column_name  = 'source'
+       ) AND EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name   = 'contacts'
+            AND column_name  = 'tags'
+       ) THEN
+         UPDATE public.contacts
+            SET tags = (
+              SELECT ARRAY(
+                SELECT DISTINCT unnest(COALESCE(tags, ARRAY[]::text[]) || ARRAY['Imported'])
+              )
+            )
+          WHERE source = 'import'
+            AND NOT (COALESCE(tags, ARRAY[]::text[]) && ARRAY['Imported']);
+       END IF;
+     END
+     $migrate$;`,
+
     // iSlay Studios — 3 hair-care products for the upcoming
     // islaystudiosllc.com/shop page. Nate uploads real photos via
     // the portal Merch tab (image_url starts NULL). Default price

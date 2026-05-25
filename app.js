@@ -5551,6 +5551,7 @@ function openBlastModal(wrap) {
   const promoIn = el('input', { type: 'text', placeholder: 'e.g. SPRING25 (optional)' });
   const segSel = el('select', {},
     el('option', { value: 'contacts' }, 'All Contacts (imported + funnel)'),
+    el('option', { value: 'imported' }, 'Imported Contacts Only'),
     el('option', { value: 'all' }, 'Funnel Leads'),
     el('option', { value: 'first_timers' }, 'First Timers'),
     el('option', { value: 'returning' }, 'Returning'),

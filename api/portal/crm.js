@@ -275,12 +275,19 @@ async function handleContactsImport(req, res, ctx) {
     if (!phone) continue;
     if (seen.has(phone)) { skipped_duplicates.push(phone); continue; }
     seen.add(phone);
+    // Auto-add an 'Imported' tag in addition to whatever the operator
+    // supplied. Surfaces these contacts in the SMS Blast tag-filter
+    // chips alongside the explicit 'imported' segment so the operator
+    // can target them from either UI affordance. Deduped via Set so
+    // explicitly passing 'Imported' doesn't double the entry.
+    const explicit = c.tag ? [String(c.tag).trim()].filter(Boolean) : [];
+    const tagSet = new Set(['Imported', ...explicit]);
     normalized.push({
       client_id: clientId,
       name: (c.name || [c.first_name, c.last_name].filter(Boolean).join(' ')).trim() || 'Unknown',
       phone,
       email: c.email || null,
-      tags: c.tag ? [c.tag] : [],
+      tags: [...tagSet],
       notes: c.notes || null,
       source: 'import'
     });
