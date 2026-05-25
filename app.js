@@ -2937,10 +2937,27 @@ async function viewMessaging() {
     const def = SUBTABS.find(t => t.id === active) || SUBTABS[0];
     try {
       const inner = await def.loader();
-      // Each sub-view renders its own topbar with its own H1; strip
-      // those when nested so we don't show two stacked headings.
+      // Each sub-view renders its own topbar with an H1 + (sometimes)
+      // action buttons like '+ New Blast' / 'Import Contacts'. We
+      // strip JUST the duplicate H1 so the Messaging tab's own H1
+      // doesn't double up — but we KEEP the action buttons by
+      // promoting the remaining topbar contents into a slim toolbar.
+      // Previous version removed the whole .topbar, which made
+      // '+ New Blast' and 'Import Contacts' vanish from the Blasts
+      // sub-tab.
       const innerTopbar = inner.querySelector('.topbar');
-      if (innerTopbar) innerTopbar.remove();
+      if (innerTopbar) {
+        const h1 = innerTopbar.querySelector('h1');
+        if (h1) h1.remove();
+        // Anything left in the topbar (action buttons, status text)
+        // stays where it is — just restyle so it doesn't look like
+        // a stranded page header.
+        innerTopbar.classList.remove('topbar');
+        innerTopbar.classList.add('messaging-subview-toolbar');
+        if (!innerTopbar.children.length && !innerTopbar.textContent.trim()) {
+          innerTopbar.remove();
+        }
+      }
       content.replaceChildren(inner);
     } catch (e) {
       content.replaceChildren(el('p', { class: 'err', style: 'padding:24px' }, 'Failed to load: ' + e.message));
@@ -4167,9 +4184,126 @@ async function openMerchOrderDrawer(orderId, onChange) {
   document.body.appendChild(overlay);
 }
 
+// New Message composer — phone-style "start a new thread" modal.
+// Takes any phone number + optional contact name + message body and
+// POSTs to /api/portal/messages (which already accepts a raw `to`
+// number, not just contact_id). On success, optionally saves the
+// recipient as a new contact so the thread surfaces in the Inbox
+// list on future renders.
+function openNewMessageModal() {
+  const existing = document.querySelector('.new-message-overlay');
+  if (existing) existing.remove();
+
+  const overlay = el('div', { class: 'new-message-overlay' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  const card = el('div', { class: 'new-message-card' });
+
+  const phoneInput = el('input', {
+    type: 'tel', placeholder: '+1 555 123 4567', autocomplete: 'tel',
+    style: 'width:100%'
+  });
+  const nameInput = el('input', {
+    type: 'text', placeholder: '(optional) Save as new contact',
+    autocomplete: 'name', style: 'width:100%'
+  });
+  const bodyInput = el('textarea', {
+    placeholder: 'Type your message…', rows: 5,
+    style: 'width:100%;resize:vertical;min-height:110px'
+  });
+  const segHint = el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' });
+  bodyInput.addEventListener('input', () => {
+    const len = bodyInput.value.length;
+    const segments = len === 0 ? 0 : (len <= 160 ? 1 : Math.ceil(len / 153));
+    segHint.textContent = len ? `${len} chars · ${segments} segment${segments === 1 ? '' : 's'}` : '';
+  });
+
+  const errBox = el('div', { style: 'font-size:13px;min-height:18px;margin-top:8px' });
+  const sendBtn = el('button', { class: 'btn primary' }, 'Send Message');
+
+  sendBtn.onclick = async () => {
+    errBox.innerHTML = '';
+    const phone = phoneInput.value.trim();
+    const text  = bodyInput.value.trim();
+    if (!phone) { errBox.innerHTML = '<div class="err">Phone number is required.</div>'; phoneInput.focus(); return; }
+    if (!text)  { errBox.innerHTML = '<div class="err">Type a message before sending.</div>'; bodyInput.focus(); return; }
+
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      // Optionally create a contact first so the thread shows up
+      // properly in the Inbox list. If creation fails (duplicate
+      // phone, etc.) we still try to send — the message endpoint
+      // accepts a raw `to` number directly.
+      let contactId = null;
+      if (nameInput.value.trim()) {
+        try {
+          const r = await api('/api/portal/crm?action=contacts', {
+            method: 'POST',
+            body: { name: nameInput.value.trim(), phone }
+          });
+          contactId = r?.contact?.id || null;
+        } catch { /* non-fatal — fall through to direct send */ }
+      }
+
+      const sendBody = contactId
+        ? { contact_id: contactId, body: text }
+        : { to: phone, body: text };
+      const r = await api('/api/portal/messages', { method: 'POST', body: sendBody });
+      toast(`Sent · balance ${r.balance ?? '—'} credits`);
+      close();
+      // Re-render the Messaging tab so the new thread + bumped credit
+      // balance reflect immediately.
+      render();
+    } catch (e) {
+      const msg = String(e.message || e);
+      // Friendlier copy for the most common failure modes.
+      if (/insufficient_credits/i.test(msg)) {
+        errBox.innerHTML = '<div class="err">Not enough credits to send. Top up first.</div>';
+      } else if (/no_twilio_number/i.test(msg)) {
+        errBox.innerHTML = '<div class="err">No Twilio phone number on this tenant — set one in Settings before sending.</div>';
+      } else if (/invalid_phone/i.test(msg)) {
+        errBox.innerHTML = '<div class="err">That phone number couldn\'t be parsed. Use full digits including country code (e.g. +1 555 123 4567).</div>';
+      } else {
+        errBox.innerHTML = `<div class="err">${msg}</div>`;
+      }
+      sendBtn.disabled = false; sendBtn.textContent = 'Send Message';
+    }
+  };
+
+  card.appendChild(el('div', { class: 'new-message-header' },
+    el('h2', {}, '+ New Message'),
+    el('button', { class: 'btn ghost sm', onclick: close, title: 'Close' }, '×')
+  ));
+  card.appendChild(el('div', { class: 'field' }, el('label', {}, 'To (phone number)'), phoneInput));
+  card.appendChild(el('div', { class: 'field' }, el('label', {}, 'Contact name'), nameInput));
+  card.appendChild(el('div', { class: 'field' },
+    el('label', {}, 'Message'),
+    bodyInput,
+    segHint
+  ));
+  card.appendChild(errBox);
+  card.appendChild(el('div', { class: 'new-message-actions' },
+    el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+    sendBtn
+  ));
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => phoneInput.focus(), 60);
+}
+
 async function viewMessages() {
   const wrap = el('div', { class: 'messages-tab' });
-  wrap.appendChild(el('div', { class: 'topbar' }, el('h1', {}, 'Messages')));
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Messages'),
+    el('div', { style: 'display:flex;gap:8px' },
+      el('button', {
+        class: 'btn primary',
+        onclick: () => openNewMessageModal()
+      }, '+ New Message')
+    )
+  ));
 
   const layout = el('div', { class: 'chat-layout' });
   wrap.appendChild(layout);
