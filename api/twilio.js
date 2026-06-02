@@ -178,10 +178,81 @@ export default async function handler(req, res) {
     const upper = body.toUpperCase();
     let reply = null;
     if (['STOP','STOPALL','UNSUBSCRIBE','CANCEL','END','QUIT'].includes(upper)) {
-      await supabaseAdmin.from('contacts').update({ opted_out: true }).eq('id', contact.id);
+      // Mark the contact opted-out + add the 'Do Not Contact' tag
+      // (matches the nudges blocklist convention so they're suppressed
+      // in every downstream system, not just blasts).
+      const contactTags = new Set([...(contact.tags || []), 'Do Not Contact']);
+      await supabaseAdmin.from('contacts')
+        .update({ opted_out: true, tags: [...contactTags] })
+        .eq('id', contact.id);
+
+      // Propagate to EVERY matching lead in this tenant (same phone).
+      // Lead-based blast segments (Funnel Leads, First Timers, etc.)
+      // were silently bypassing the opt-out before this — now they
+      // suppress too. We fetch the rows first so we can union the
+      // tag array without an UPDATE … tags = ARRAY[…] overwrite.
+      try {
+        const { data: matchingLeads } = await supabaseAdmin
+          .from('leads').select('id, tags')
+          .eq('client_id', client.id).eq('phone', from);
+        for (const ld of (matchingLeads || [])) {
+          const ts = new Set([...(ld.tags || []), 'Do Not Contact']);
+          await supabaseAdmin.from('leads')
+            .update({ opted_out: true, tags: [...ts] })
+            .eq('id', ld.id);
+        }
+      } catch (e) {
+        // Tolerant if leads.opted_out column hasn't migrated yet —
+        // retry without it.
+        if (/column .*opted_out.* does not exist/i.test(e.message || '')) {
+          const { data: matchingLeads } = await supabaseAdmin
+            .from('leads').select('id, tags')
+            .eq('client_id', client.id).eq('phone', from);
+          for (const ld of (matchingLeads || [])) {
+            const ts = new Set([...(ld.tags || []), 'Do Not Contact']);
+            await supabaseAdmin.from('leads').update({ tags: [...ts] }).eq('id', ld.id);
+          }
+        } else {
+          console.error('[twilio/inbound] opt-out propagation failed:', e.message);
+        }
+      }
+
+      // Cancel any pending nudge queue rows for this lead so a STOP
+      // also kills already-queued automation immediately, not just
+      // future enrollments. Defense-in-depth alongside the nudges
+      // cron's own re-check.
+      try {
+        const { data: matchingLeads2 } = await supabaseAdmin
+          .from('leads').select('id').eq('client_id', client.id).eq('phone', from);
+        const leadIds = (matchingLeads2 || []).map(l => l.id);
+        if (leadIds.length) {
+          await supabaseAdmin.from('nudge_queue')
+            .update({ failed_reason: 'opted_out' })
+            .in('lead_id', leadIds)
+            .is('sent_at', null)
+            .is('failed_reason', null);
+        }
+      } catch { /* nudge_queue may not exist in some envs */ }
+
       reply = 'You have been unsubscribed and will no longer receive messages. Reply START to resubscribe.';
     } else if (upper === 'START' || upper === 'UNSTOP') {
-      await supabaseAdmin.from('contacts').update({ opted_out: false }).eq('id', contact.id);
+      // Mirror the resubscribe across contact + matching leads.
+      // Removes 'Do Not Contact' from tags too so the operator sees
+      // them re-eligible for future campaigns.
+      const stripDNC = (tags) => (tags || []).filter(t => t !== 'Do Not Contact');
+      await supabaseAdmin.from('contacts')
+        .update({ opted_out: false, tags: stripDNC(contact.tags) })
+        .eq('id', contact.id);
+      try {
+        const { data: matchingLeads } = await supabaseAdmin
+          .from('leads').select('id, tags')
+          .eq('client_id', client.id).eq('phone', from);
+        for (const ld of (matchingLeads || [])) {
+          await supabaseAdmin.from('leads')
+            .update({ opted_out: false, tags: stripDNC(ld.tags) })
+            .eq('id', ld.id);
+        }
+      } catch { /* opted_out column missing — non-fatal */ }
       reply = 'You have been resubscribed.';
     } else if (upper === 'HELP') {
       reply = 'Reply STOP to unsubscribe. Msg & data rates may apply.';

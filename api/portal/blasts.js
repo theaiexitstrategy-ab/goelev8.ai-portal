@@ -55,10 +55,14 @@ export default async function handler(req, res) {
     if (includeArr.length) cq = cq.overlaps('tags', includeArr);
     const { data: contacts, error: cErr } = await cq;
     if (cErr) return res.status(500).json({ error: cErr.message });
+    // Defense-in-depth: always exclude 'Do Not Contact' tagged
+    // contacts on top of the opted_out flag, so a tenant who hasn't
+    // hit the inbound-STOP webhook yet (manual tag only) is also
+    // protected. Operator-supplied excludeTags layer on top.
+    const hardExclude = new Set([...(excludeArr || []), 'Do Not Contact']);
     recipients = (contacts || [])
       .filter(c => c.phone && !c.opted_out)
-      .filter(c => !excludeArr.length ||
-        !(c.tags || []).some(t => excludeArr.includes(t)))
+      .filter(c => !(c.tags || []).some(t => hardExclude.has(t)))
       .map(c => ({ id: c.id, name: c.name, phone: c.phone, email: c.email, _source: 'contact' }));
   } else {
     let query = supabaseAdmin.from('leads').select('*').eq('client_id', clientId);
@@ -72,12 +76,22 @@ export default async function handler(req, res) {
       // 'all' — no filter
     }
     if (includeArr.length) query = query.overlaps('tags', includeArr);
-    const { data: leads, error: leadsErr } = await query;
+
+    // Always exclude opted-out leads. Tolerant if leads.opted_out
+    // column hasn't been migrated yet — retries without the filter.
+    let { data: leads, error: leadsErr } = await query.eq('opted_out', false);
+    if (leadsErr && /column .*opted_out.* does not exist/i.test(leadsErr.message)) {
+      const retry = await query;  // same builder minus the .eq('opted_out', false)
+      leads = retry.data; leadsErr = retry.error;
+    }
     if (leadsErr) return res.status(500).json({ error: leadsErr.message });
+
+    // Always exclude 'Do Not Contact' tagged rows (defense-in-depth
+    // for tenants whose opted_out column hasn't migrated yet).
+    const hardExclude = new Set([...(excludeArr || []), 'Do Not Contact']);
     recipients = (leads || [])
       .filter(l => l.phone)
-      .filter(l => !excludeArr.length ||
-        !(l.tags || []).some(t => excludeArr.includes(t)))
+      .filter(l => !(l.tags || []).some(t => hardExclude.has(t)))
       .map(l => ({ id: l.id, name: l.name, phone: l.phone, email: l.email, _source: 'lead' }));
   }
   if (!recipients.length) return res.status(400).json({ error: 'no_recipients_with_phone' });

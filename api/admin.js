@@ -2651,6 +2651,56 @@ async function applyPendingMigrations(req, res) {
        FROM public.clients WHERE slug = 'flex-facility'
      ON CONFLICT (client_id, product_key) DO NOTHING;`,
 
+    // ----- Opt-out propagation: leads.opted_out + 'Do Not Contact' -----
+    // Twilio's inbound STOP handler marked contacts.opted_out but the
+    // matching lead row stayed un-flagged, so lead-based blast
+    // segments (Funnel Leads, First Timers, etc.) still hit those
+    // people. Adds the column + backfills from contacts so any
+    // pre-existing opt-out propagates immediately.
+    `ALTER TABLE public.leads
+       ADD COLUMN IF NOT EXISTS opted_out boolean NOT NULL DEFAULT false;`,
+    `CREATE INDEX IF NOT EXISTS leads_opted_out_idx
+       ON public.leads(client_id, opted_out)
+       WHERE opted_out = true;`,
+    // Backfill: every lead whose phone matches an opted-out contact
+    // gets opted_out = true + the 'Do Not Contact' tag (the same tag
+    // the nudges blocklist already honors). Tolerant of legacy rows
+    // missing tags column.
+    `DO $migrate$
+     BEGIN
+       UPDATE public.leads l
+          SET opted_out = true,
+              tags = (
+                SELECT ARRAY(
+                  SELECT DISTINCT unnest(COALESCE(l.tags, ARRAY[]::text[]) || ARRAY['Do Not Contact'])
+                )
+              )
+        WHERE l.opted_out = false
+          AND EXISTS (
+            SELECT 1 FROM public.contacts c
+             WHERE c.client_id = l.client_id
+               AND c.phone     = l.phone
+               AND c.opted_out = true
+          );
+       -- Mirror back to contacts: any contact whose lead is already
+       -- opted-out should also carry the contact-side flag.
+       UPDATE public.contacts c
+          SET opted_out = true,
+              tags = (
+                SELECT ARRAY(
+                  SELECT DISTINCT unnest(COALESCE(c.tags, ARRAY[]::text[]) || ARRAY['Do Not Contact'])
+                )
+              )
+        WHERE c.opted_out = false
+          AND EXISTS (
+            SELECT 1 FROM public.leads l
+             WHERE l.client_id = c.client_id
+               AND l.phone     = c.phone
+               AND l.opted_out = true
+          );
+     END
+     $migrate$;`,
+
     // ----- Enforce per-tenant contact uniqueness on phone -----
     // Prevents the 'CSV re-upload created duplicate contacts' problem
     // iSlay hit. supabaseAdmin (service-role) bypasses RLS, and the

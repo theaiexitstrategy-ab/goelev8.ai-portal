@@ -32,15 +32,32 @@ async function handleContacts(req, res, ctx) {
   const { sb, clientId } = ctx;
 
   if (req.method === 'GET') {
-    // Soft-deleted rows hidden from the default list (recoverable via
-    // Trash). Tolerant if the deleted_at column hasn't migrated yet.
-    let { data, error } = await sb
-      .from('contacts').select('*').eq('client_id', clientId).is('deleted_at', null)
+    // Hide soft-deleted AND opted-out by default. Operators can pass
+    // ?include_opted_out=1 to surface them (e.g. when auditing who
+    // unsubscribed). Tolerant of legacy projects missing either column.
+    const url = new URL(req.url, 'http://x');
+    const includeOptedOut = url.searchParams.get('include_opted_out') === '1';
+    let q = sb.from('contacts').select('*').eq('client_id', clientId);
+    if (!includeOptedOut) q = q.eq('opted_out', false);
+    let { data, error } = await q.is('deleted_at', null)
       .order('created_at', { ascending: false });
+    // Retry path: deleted_at column missing.
     if (error && /column .*deleted_at.* does not exist/i.test(error.message)) {
-      const retry = await sb.from('contacts').select('*').eq('client_id', clientId)
-        .order('created_at', { ascending: false });
+      let q2 = sb.from('contacts').select('*').eq('client_id', clientId);
+      if (!includeOptedOut) q2 = q2.eq('opted_out', false);
+      const retry = await q2.order('created_at', { ascending: false });
       data = retry.data; error = retry.error;
+    }
+    // Retry path: opted_out column missing.
+    if (error && /column .*opted_out.* does not exist/i.test(error.message)) {
+      const retry = await sb.from('contacts').select('*').eq('client_id', clientId)
+        .is('deleted_at', null).order('created_at', { ascending: false });
+      data = retry.data; error = retry.error;
+      // Belt-and-suspenders: filter 'Do Not Contact' tag client-side
+      // for tenants whose opted_out column hasn't migrated yet.
+      if (!error && Array.isArray(data) && !includeOptedOut) {
+        data = data.filter(c => !(c.tags || []).includes('Do Not Contact'));
+      }
     }
     if (error) return res.status(500).json({ error: error.message });
     return res.status(200).json({ contacts: data });
@@ -144,16 +161,32 @@ async function handleLeads(req, res, ctx) {
   if (req.method === 'GET') {
     const url = new URL(req.url, 'http://x');
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
-    // Build the query with the soft-delete + paid_at filters; retry
-    // with progressively leaner column sets if either migration hasn't
-    // been applied yet.
+    const includeOptedOut = url.searchParams.get('include_opted_out') === '1';
+    // Build the query with the soft-delete + opted_out filters; retry
+    // with progressively leaner column sets if any migration hasn't
+    // been applied yet (deleted_at, avatar_url, paid_at, opted_out).
     let q = sb.from('leads')
-      .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at, avatar_url')
+      .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at, avatar_url, opted_out')
       .eq('client_id', clientId)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(limit);
+    if (!includeOptedOut) q = q.eq('opted_out', false);
     let { data, error } = await q;
+    // Retry without opted_out (column missing on this project).
+    if (error && /column .*opted_out.* does not exist/i.test(error.message)) {
+      const retry = await sb.from('leads')
+        .select('id, name, phone, email, source, status, notes, tags, funnel, created_at, paid_at, avatar_url')
+        .eq('client_id', clientId)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      data = retry.data; error = retry.error;
+      if (!error && Array.isArray(data) && !includeOptedOut) {
+        // Tag-based fallback while migration is pending.
+        data = data.filter(l => !(l.tags || []).includes('Do Not Contact'));
+      }
+    }
     if (error && /column .*\b(deleted_at|avatar_url)\b.* does not exist/i.test(error.message)) {
       // Strip avatar_url and/or the deleted_at filter, retry.
       const retryCols = error.message.match(/avatar_url/i)
