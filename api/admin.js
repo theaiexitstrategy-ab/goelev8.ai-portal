@@ -900,6 +900,136 @@ async function dedupeLeads(req, res) {
   });
 }
 
+// ──────────────────────────────────────────────────────────────
+// Merge duplicate CONTACTS across every tenant.
+//
+// Triggered when re-uploading a CSV produces the duplicates iSlay
+// hit — the import endpoint upserts on (client_id, phone) but
+// supabaseAdmin bypasses RLS and the inputs sometimes diverge in
+// phone format (raw vs E.164) so the unique constraint can't kick
+// in. This action:
+//
+//   1. Groups contacts per-client by NORMALIZED phone (digits + '+')
+//      so '+15551234567', '(555) 123-4567', '5551234567' all collapse
+//      into one canonical row.
+//   2. Keeps the oldest row in each group, unions tags/source/notes
+//      into it, fills any blank name/email/phone from a dupe.
+//   3. Repoints every FK reference (messages, bookings, leads,
+//      vapi_calls, nudge_queue) from the dupes to the canonical row
+//      BEFORE deletion so message history stays intact.
+//   4. Deletes the dupes.
+//
+// Idempotent — re-running finds zero groups once the table is clean.
+// Tolerant of tables that don't exist in a given environment
+// (catches per-table errors and continues).
+// ──────────────────────────────────────────────────────────────
+async function dedupeContacts(req, res) {
+  const { data: clients } = await supabaseAdmin
+    .from('clients').select('id, name, slug');
+  let scanned = 0, mergedGroups = 0, deleted = 0;
+  const perClient = [];
+
+  const FK_TABLES = ['messages', 'bookings', 'leads', 'vapi_calls', 'nudge_queue'];
+
+  for (const c of clients || []) {
+    const { data: contacts, error } = await supabaseAdmin
+      .from('contacts').select('id, name, phone, email, tags, source, notes, opted_out, created_at')
+      .eq('client_id', c.id)
+      .order('created_at', { ascending: true });
+    if (error || !contacts?.length) continue;
+    scanned += contacts.length;
+
+    // Group by normalized phone. Strip everything except digits + a
+    // leading '+'. Empty-phone rows can't dedupe by this key and
+    // get skipped (operator can clean those up manually).
+    const groups = new Map();
+    for (const ct of contacts) {
+      const key = String(ct.phone || '').replace(/[^\d+]/g, '');
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(ct);
+    }
+    const allGroups = [...groups.values()].filter(g => g.length > 1);
+    let clientMerged = 0, clientDeleted = 0;
+
+    for (const group of allGroups) {
+      // Canonical = oldest row (already at index 0 thanks to ORDER BY).
+      const canonical = group[0];
+      const dupes = group.slice(1);
+
+      // Union tags, prefer first non-null source, concat notes.
+      const allTags = new Set();
+      for (const ct of group) for (const t of (ct.tags || [])) allTags.add(t);
+      const firstSource = group.map(g => g.source).find(Boolean) || null;
+      const noteParts = group.map(g => g.notes).filter(Boolean);
+      const optedOut = group.some(g => g.opted_out);
+
+      const patch = {};
+      if (allTags.size) patch.tags = [...allTags];
+      if (firstSource && !canonical.source) patch.source = firstSource;
+      if (noteParts.length) {
+        const joined = [...new Set(noteParts)].join(' · ');
+        patch.notes = joined !== canonical.notes ? joined : canonical.notes;
+      }
+      if (optedOut !== canonical.opted_out) patch.opted_out = optedOut;
+      // Fill blank fields from a dupe if the canonical is missing them.
+      for (const f of ['name', 'phone', 'email']) {
+        if (!canonical[f]) {
+          const filler = dupes.find(d => d[f]);
+          if (filler) patch[f] = filler[f];
+        }
+      }
+      if (Object.keys(patch).length) {
+        await supabaseAdmin.from('contacts').update(patch).eq('id', canonical.id);
+      }
+
+      // Repoint every FK reference from the dupes to canonical.
+      for (const dupe of dupes) {
+        for (const tbl of FK_TABLES) {
+          try {
+            await supabaseAdmin.from(tbl)
+              .update({ contact_id: canonical.id })
+              .eq('contact_id', dupe.id);
+          } catch (e) {
+            // Table or column missing in this env — keep going.
+            if (!/relation .* does not exist|column .* does not exist/i.test(e.message || '')) {
+              console.error(`[dedupe-contacts] FK repoint ${tbl}:`, e.message);
+            }
+          }
+        }
+      }
+
+      // Delete the dupes.
+      const dupeIds = dupes.map(d => d.id);
+      const { error: delErr } = await supabaseAdmin
+        .from('contacts').delete().in('id', dupeIds);
+      if (!delErr) {
+        clientMerged++;
+        clientDeleted += dupeIds.length;
+      } else {
+        console.error('[dedupe-contacts] delete failed:', delErr.message);
+      }
+    }
+
+    if (clientMerged) {
+      perClient.push({
+        slug: c.slug, name: c.name,
+        merged_groups: clientMerged,
+        duplicates_removed: clientDeleted
+      });
+      mergedGroups += clientMerged;
+      deleted += clientDeleted;
+    }
+  }
+
+  return res.status(200).json({
+    scanned_contacts: scanned,
+    merged_groups: mergedGroups,
+    duplicates_removed: deleted,
+    per_client: perClient
+  });
+}
+
 // Make sure every tenant's portal_tabs includes the canonical set of
 // tabs that the unified SPA supports. Idempotent: only ADDS missing
 // tabs to each tenant's existing list (never removes tabs an operator
@@ -2521,6 +2651,40 @@ async function applyPendingMigrations(req, res) {
        FROM public.clients WHERE slug = 'flex-facility'
      ON CONFLICT (client_id, product_key) DO NOTHING;`,
 
+    // ----- Enforce per-tenant contact uniqueness on phone -----
+    // Prevents the 'CSV re-upload created duplicate contacts' problem
+    // iSlay hit. supabaseAdmin (service-role) bypasses RLS, and the
+    // application-level onConflict only catches matches when the
+    // phone strings are literally identical — but historical rows
+    // had raw '(555) 123-4567' alongside re-imports as '+15551234567',
+    // so the application couldn't dedupe them on its own. Adding a
+    // proper unique constraint forces the DB itself to enforce it.
+    //
+    // Idempotent: skipped if a unique index already exists on
+    // (client_id, phone). Existing duplicates would prevent the
+    // CREATE — operators should click 'Merge Duplicate Contacts'
+    // first if the runner returns 'unique constraint violated'.
+    `DO $migrate$
+     BEGIN
+       IF NOT EXISTS (
+         SELECT 1 FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND tablename = 'contacts'
+            AND indexname = 'contacts_client_phone_uniq'
+       ) THEN
+         BEGIN
+           CREATE UNIQUE INDEX contacts_client_phone_uniq
+             ON public.contacts(client_id, phone)
+             WHERE phone IS NOT NULL;
+         EXCEPTION WHEN unique_violation OR not_null_violation OR others THEN
+           -- Existing duplicates block the index. Operator runs the
+           -- 'Merge Duplicate Contacts' action then re-runs migrations.
+           RAISE NOTICE 'contacts_client_phone_uniq deferred — merge dupes first.';
+         END;
+       END IF;
+     END
+     $migrate$;`,
+
     // Backfill the 'Imported' tag onto every contact whose source
     // column already says they came from a CSV import. New imports
     // get the tag added automatically by the import endpoint; this
@@ -2769,6 +2933,7 @@ export default async function handler(req, res) {
       case 'verify-migrations':         return await verifyMigrations(req, res);
       case 'sales-dashboard':           return await salesDashboard(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
+      case 'dedupe-contacts':           return await dedupeContacts(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);

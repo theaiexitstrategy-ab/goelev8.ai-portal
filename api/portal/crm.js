@@ -293,10 +293,63 @@ async function handleContactsImport(req, res, ctx) {
     });
   }
 
-  let created = 0, errors = [];
+  // Two-step ingest to avoid creating duplicates when:
+  //   - the (client_id, phone) UNIQUE constraint isn't installed yet
+  //   - phone formats differ across import sessions ('(555) 123-4567'
+  //     vs '+15551234567') so prior raw rows escape the constraint
+  //
+  // Step 1: load every existing contact row for this client so we
+  //         can match by NORMALIZED phone (digits + leading '+').
+  //         This is also what dedupeContacts uses, keeping the two
+  //         paths consistent.
+  // Step 2: for each incoming row, either UPDATE the matching
+  //         existing row (merge tags + fill blanks) or INSERT a
+  //         fresh one. INSERTs go through .upsert with onConflict
+  //         as a belt-and-suspenders in case the constraint
+  //         exists and we missed a match.
+  const { data: existingRows } = await sb
+    .from('contacts')
+    .select('id, name, phone, email, tags, source, notes, opted_out')
+    .eq('client_id', clientId);
+  const normalizePhone = (p) => String(p || '').replace(/[^\d+]/g, '');
+  const byPhone = new Map();
+  for (const r of (existingRows || [])) {
+    const key = normalizePhone(r.phone);
+    if (key) byPhone.set(key, r);
+  }
+
+  let created = 0, updated = 0, errors = [];
+  const inserts = [];
+  for (const row of normalized) {
+    const key = normalizePhone(row.phone);
+    const match = key && byPhone.get(key);
+    if (match) {
+      const patch = {};
+      const mergedTags = new Set([...(match.tags || []), ...(row.tags || [])]);
+      if (mergedTags.size !== (match.tags || []).length) patch.tags = [...mergedTags];
+      if (!match.name  && row.name)  patch.name  = row.name;
+      if (!match.email && row.email) patch.email = row.email;
+      if (!match.notes && row.notes) patch.notes = row.notes;
+      // Refresh source label to 'import' on re-import so the
+      // 'Imported Contacts Only' segment in SMS Blasts catches
+      // this row from now on.
+      if (match.source !== 'import') patch.source = 'import';
+      if (Object.keys(patch).length) {
+        const { error: upErr } = await sb.from('contacts')
+          .update(patch).eq('id', match.id);
+        if (upErr) errors.push({ id: match.id, message: upErr.message });
+        else updated++;
+      } else {
+        updated++; // no-op merge counts as "handled"
+      }
+    } else {
+      inserts.push(row);
+    }
+  }
+
   const BATCH = 200;
-  for (let i = 0; i < normalized.length; i += BATCH) {
-    const batch = normalized.slice(i, i + BATCH);
+  for (let i = 0; i < inserts.length; i += BATCH) {
+    const batch = inserts.slice(i, i + BATCH);
     const { data, error } = await sb.from('contacts')
       .upsert(batch, { onConflict: 'client_id,phone', ignoreDuplicates: false })
       .select('id');
@@ -305,7 +358,7 @@ async function handleContactsImport(req, res, ctx) {
   }
 
   return res.status(200).json({
-    created, errors,
+    created, updated, errors,
     total: contacts.length,
     skipped_duplicates: skipped_duplicates.length
   });

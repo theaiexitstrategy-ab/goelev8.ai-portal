@@ -6837,6 +6837,31 @@ async function viewAdmin() {
   migPanel.appendChild(dedupeBtn);
   migPanel.appendChild(dedupeOut);
 
+  // Dedupe contacts — groups contacts per-client by normalized phone
+  // (digits + leading '+'), merges into the oldest row, repoints FK
+  // references in messages/bookings/leads/vapi_calls/nudge_queue, and
+  // deletes the dupes. Idempotent. Fixes the 'CSV re-upload created
+  // duplicate contacts' problem iSlay hit.
+  const dedupeContactsOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:240px;margin-top:8px' });
+  const dedupeContactsBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    if (!confirm('Find and merge duplicate contacts across every tenant?\n\nGroups by normalized phone — collapses (555) 123-4567, +15551234567, 5551234567 onto one row. Keeps the oldest, repoints messages/bookings/leads/calls/nudges, deletes the dupes. Idempotent.')) return;
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Merging contacts…';
+    try {
+      const r = await api('/api/admin?action=dedupe-contacts', { method: 'POST' });
+      toast(`Merged ${r.merged_groups} contact groups · removed ${r.duplicates_removed} duplicates`);
+      dedupeContactsOut.style.display = 'block';
+      dedupeContactsOut.textContent = JSON.stringify(r, null, 2);
+    } catch (err) {
+      toast('Contact dedupe failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Merge Duplicate Contacts';
+    }
+  } }, 'Merge Duplicate Contacts');
+  migPanel.appendChild(dedupeContactsBtn);
+  migPanel.appendChild(dedupeContactsOut);
+
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
   // tab into every tenant's sidebar without per-tenant SQL.
