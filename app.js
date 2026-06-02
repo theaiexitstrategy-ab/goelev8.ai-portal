@@ -5547,7 +5547,16 @@ function openBlastModal(wrap) {
   if (existing) existing.remove();
 
   const nameIn = el('input', { type: 'text', placeholder: 'e.g. Spring Promo' });
-  const msgIn = el('textarea', { rows: '4', placeholder: 'Hey [first name], it’s {business_name}...' });
+  // Tag the textarea so the catch-all input style at the bottom of
+  // openBlastModal skips it. That bulk style applies cssText (full
+  // overwrite) which would otherwise wipe out the height/min-height
+  // we need to keep the message box editable on long messages.
+  const msgIn = el('textarea', {
+    rows: '6',
+    placeholder: 'Hey [first name], it’s {business_name}...',
+    'data-blast-msg': '1',
+    style: 'min-height:140px;height:140px;max-height:240px;resize:vertical;'
+  });
   const promoIn = el('input', { type: 'text', placeholder: 'e.g. SPRING25 (optional)' });
   const segSel = el('select', {},
     el('option', { value: 'contacts' }, 'All Contacts (imported + funnel)'),
@@ -5710,6 +5719,22 @@ function openBlastModal(wrap) {
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px env(safe-area-inset-bottom,16px);overflow-y:auto;z-index:1000';
   modal.style.cssText = 'background:var(--card,#1a2236);border:1px solid var(--border,#2a3a5c);border-radius:12px;width:100%;max-width:480px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;';
   modal.querySelectorAll('input,textarea,select').forEach(i => {
+    // The message-body textarea ships its own min-height / height /
+    // resize via inline style. Setting cssText below would obliterate
+    // those and let flex layout squeeze the box to nothing — leaving
+    // the operator with a 1-line textarea they can't really edit.
+    // Append the visual styling instead of replacing.
+    if (i.dataset.blastMsg === '1') {
+      i.style.width = '100%';
+      i.style.padding = '8px 12px';
+      i.style.margin = '4px 0 12px';
+      i.style.background = '#0d1117';
+      i.style.border = '1px solid var(--border, #2a3a5c)';
+      i.style.borderRadius = '6px';
+      i.style.color = 'var(--text, #e0e0e0)';
+      i.style.fontSize = '0.85rem';
+      return;
+    }
     i.style.cssText = 'width:100%;padding:8px 12px;margin:4px 0 12px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem';
   });
   modal.querySelectorAll('label').forEach(l => l.style.cssText = 'font-size:0.8rem;color:var(--muted,#888)');
