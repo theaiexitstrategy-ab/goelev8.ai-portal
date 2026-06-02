@@ -4840,32 +4840,79 @@ async function viewBlasts() {
   table.appendChild(tbody);
   wrap.appendChild(table);
 
-  try {
-    const data = await api('/api/portal/blasts');
-    const blasts = data.blasts || [];
-    if (!blasts.length) {
-      tbody.appendChild(el('p', { class: 'muted' }, 'No blasts sent yet. Click "New Blast" to get started.'));
-    } else {
-      const tbl = el('table', {},
-        el('thead', {}, el('tr', {},
-          el('th', {}, 'Sent At'), el('th', {}, 'Name'), el('th', {}, 'Message'),
-          el('th', {}, 'Recipients'), el('th', {}, 'Delivered'), el('th', {}, 'Failed'), el('th', {}, 'Status')
-        )),
-        el('tbody', {}, ...blasts.map(b => el('tr', {},
-          el('td', {}, new Date(b.sent_at || b.created_at).toLocaleString()),
-          el('td', {}, b.name || '—'),
-          el('td', {}, (b.message || '').slice(0, 60) + ((b.message || '').length > 60 ? '…' : '')),
-          el('td', {}, String(b.recipients ?? b.total_recipients ?? '—')),
-          el('td', {}, String(b.delivered ?? b.delivered_count ?? '—')),
-          el('td', {}, String(b.failed ?? b.failed_count ?? '—')),
-          el('td', {}, b.status || 'pending')
-        )))
+  // Color-coded status pill. Sending rows get a live progress bar so
+  // the operator can see "35 / 200" instead of a frozen-looking row.
+  const renderStatusCell = (b) => {
+    const status = (b.status || 'pending').toLowerCase();
+    const total = b.recipients ?? b.total_recipients ?? 0;
+    const delivered = b.delivered ?? b.delivered_count ?? 0;
+    const failed = b.failed ?? b.failed_count ?? 0;
+    const done = delivered + failed;
+    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+
+    const colors = {
+      sending:  { bg: 'rgba(99,179,237,0.15)',  fg: '#63b3ed' },
+      sent:     { bg: 'rgba(72,187,120,0.15)',  fg: '#48bb78' },
+      partial:  { bg: 'rgba(237,137,54,0.15)',  fg: '#ed8936' },
+      failed:   { bg: 'rgba(245,101,101,0.15)', fg: '#f56565' },
+      pending:  { bg: 'rgba(160,174,192,0.15)', fg: '#a0aec0' }
+    };
+    const c = colors[status] || colors.pending;
+    const label = (b.status || 'pending');
+
+    if (status === 'sending') {
+      const bar = el('div', { style: 'width:100%;max-width:120px;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;margin-top:4px' });
+      bar.appendChild(el('div', { style: `width:${pct}%;height:100%;background:#63b3ed;transition:width 0.3s` }));
+      return el('td', {},
+        el('span', { style: `display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:600;background:${c.bg};color:${c.fg}` }, label),
+        el('div', { style: 'font-size:0.7rem;color:#a0aec0;margin-top:2px' }, `${done} / ${total} (${pct}%)`),
+        bar
       );
-      tbody.appendChild(tbl);
     }
-  } catch (e) {
-    tbody.appendChild(el('p', { class: 'err' }, 'Failed to load blasts: ' + e.message));
-  }
+    return el('td', {},
+      el('span', { style: `display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:600;background:${c.bg};color:${c.fg}` }, label)
+    );
+  };
+
+  let refreshTimer = null;
+  const renderBlasts = async () => {
+    try {
+      const data = await api('/api/portal/blasts');
+      const blasts = data.blasts || [];
+      tbody.innerHTML = '';
+      if (!blasts.length) {
+        tbody.appendChild(el('p', { class: 'muted' }, 'No blasts sent yet. Click "New Blast" to get started.'));
+      } else {
+        const tbl = el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Sent At'), el('th', {}, 'Name'), el('th', {}, 'Message'),
+            el('th', {}, 'Recipients'), el('th', {}, 'Delivered'), el('th', {}, 'Failed'), el('th', {}, 'Status')
+          )),
+          el('tbody', {}, ...blasts.map(b => el('tr', {},
+            el('td', {}, new Date(b.sent_at || b.created_at).toLocaleString()),
+            el('td', {}, b.blast_name || b.name || '—'),
+            el('td', {}, ((b.message_body || b.message) || '').slice(0, 60) + (((b.message_body || b.message) || '').length > 60 ? '…' : '')),
+            el('td', {}, String(b.recipients ?? b.total_recipients ?? '—')),
+            el('td', {}, String(b.delivered ?? b.delivered_count ?? '—')),
+            el('td', {}, String(b.failed ?? b.failed_count ?? '—')),
+            renderStatusCell(b)
+          )))
+        );
+        tbody.appendChild(tbl);
+      }
+      // Auto-refresh while anything is mid-send so the operator can
+      // watch the row tick up without leaving the page.
+      const hasInFlight = blasts.some(b => (b.status || '').toLowerCase() === 'sending');
+      if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+      if (hasInFlight && document.body.contains(wrap)) {
+        refreshTimer = setTimeout(renderBlasts, 3000);
+      }
+    } catch (e) {
+      tbody.innerHTML = '';
+      tbody.appendChild(el('p', { class: 'err' }, 'Failed to load blasts: ' + e.message));
+    }
+  };
+  renderBlasts();
   return wrap;
 }
 
@@ -5646,12 +5693,59 @@ function openBlastModal(wrap) {
   drawIncludeChips();
   drawExcludeChips();
 
+  // Tracks the in-flight POST so a re-click can't fire a second one.
+  // The button is also disabled, but this is belt-and-braces in case
+  // a browser quirk re-enables it before the request settles.
+  let inFlight = false;
   const sendBtn = el('button', { class: 'btn primary', onclick: async () => {
+    if (inFlight) return;
     if (!nameIn.value.trim() || !msgIn.value.trim()) { toast('Name and message are required', true); return; }
+    inFlight = true;
     sendBtn.disabled = true; sendBtn.textContent = 'Sending...';
+
+    // Live progress overlay — sits on top of the modal body so the
+    // operator sees movement immediately and never feels the urge to
+    // click Send a second time. Polls GET /api/portal/blasts every 2s
+    // to find this run by name and surface delivered/failed counts.
+    const progressTitle = el('div', { style: 'font-size:1.05rem;font-weight:600;color:#fff;text-align:center' }, 'Sending blast…');
+    const progressSub   = el('div', { style: 'font-size:0.8rem;color:#a0aec0;text-align:center' }, 'Preparing recipients…');
+    const progressBarBg = el('div', { style: 'width:100%;max-width:320px;height:10px;background:rgba(255,255,255,0.08);border-radius:5px;overflow:hidden' });
+    const progressBarFill = el('div', { style: 'width:0%;height:100%;background:linear-gradient(90deg,#63b3ed,#4299e1);transition:width 0.3s' });
+    progressBarBg.appendChild(progressBarFill);
+    const progressNote = el('div', { style: 'font-size:0.7rem;color:#718096;text-align:center;max-width:320px;line-height:1.4' }, 'Don\'t close this window. Numbers texted in the last hour are skipped automatically.');
+    const progressOverlay = el('div', {
+      style: 'position:absolute;inset:0;background:rgba(13,17,23,0.96);' +
+             'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+             'gap:14px;padding:32px;border-radius:12px;z-index:20;'
+    }, progressTitle, progressBarBg, progressSub, progressNote);
+    modal.style.position = 'relative';
+    modal.appendChild(progressOverlay);
+
+    const blastNameForPoll = nameIn.value.trim();
+    let pollTimer = null;
+    let stopped = false;
+    const pollProgress = async () => {
+      if (stopped) return;
+      try {
+        const d = await api('/api/portal/blasts');
+        const row = (d.blasts || []).find(b => b.blast_name === blastNameForPoll);
+        if (row) {
+          const total = row.total_recipients || 0;
+          const done = (row.delivered_count || 0) + (row.failed_count || 0);
+          const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+          progressBarFill.style.width = pct + '%';
+          progressSub.textContent = total > 0
+            ? `${done} of ${total} sent (${pct}%)`
+            : 'Queuing messages…';
+        }
+      } catch {}
+      if (!stopped) pollTimer = setTimeout(pollProgress, 2000);
+    };
+    pollTimer = setTimeout(pollProgress, 600);
+
     try {
       const body = {
-        name: nameIn.value.trim(),
+        name: blastNameForPoll,
         message: msgIn.value.trim(),
         segment: segSel.value,
         includeTags,
@@ -5659,13 +5753,31 @@ function openBlastModal(wrap) {
       };
       if (promoIn.value.trim()) body.promoCode = promoIn.value.trim();
       const data = await api('/api/portal/blasts', { method: 'POST', body });
-      toast(`Blast sent! ${data.sent || 0} delivered, ${data.failed || 0} failed`);
+      stopped = true; if (pollTimer) clearTimeout(pollTimer);
+
+      // Snap the bar to 100% for the brief instant before we close.
+      progressBarFill.style.width = '100%';
+
+      if (data.duplicate) {
+        toast(`This blast was already sent in the last 5 minutes — not re-sent. ${data.sent || 0} were delivered.`, true, 6000);
+      } else if (data.throttled) {
+        toast(`Nothing sent. ${data.skipped_recent || 0} recipient(s) were texted within the last hour and were skipped.`, true, 6000);
+      } else {
+        const parts = [`${data.sent || 0} delivered`];
+        if (data.failed) parts.push(`${data.failed} failed`);
+        if (data.skipped_recent) parts.push(`${data.skipped_recent} skipped (texted within last hour)`);
+        toast(`Blast complete — ${parts.join(', ')}`);
+      }
       bg.remove();
       state.view = 'blasts'; render();
     } catch (e) {
+      stopped = true; if (pollTimer) clearTimeout(pollTimer);
+      progressOverlay.remove();
       result.textContent = 'Error: ' + e.message;
       result.style.color = 'var(--error)';
-    } finally { sendBtn.disabled = false; sendBtn.textContent = 'Send Blast'; }
+      inFlight = false;
+      sendBtn.disabled = false; sendBtn.textContent = 'Send Blast';
+    }
   } }, 'Send Blast');
 
   // Split into a scrollable body + a fixed-height footer. The footer

@@ -1,6 +1,18 @@
 // SMS blast endpoint for client portals.
 // GET  — list past blasts
 // POST — send a new blast (credit-gated: deduct BEFORE sending)
+//
+// Safety guards layered on POST:
+//   1. Idempotency: a blast with the same name+message in the last 5
+//      minutes returns the existing row instead of re-sending. Protects
+//      operators who panic-click "Send Blast" when the request feels slow.
+//   2. Per-number throttle: any recipient phone that has received an
+//      outbound SMS from this tenant within the last hour is skipped.
+//      No single number can be blasted twice within an hour no matter
+//      how many times the operator clicks Send.
+//   3. Live progress: the blasts row is inserted BEFORE the Twilio
+//      loop with status='Sending', and delivered/failed counts are
+//      updated every few sends so the client can poll and show progress.
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
@@ -8,6 +20,10 @@ import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
 import { renderTemplate, firstName } from '../../lib/merge-tags.js';
 import { toE164 } from '../../lib/phone.js';
 import { getBillingClient } from '../../lib/credits.js';
+
+const THROTTLE_MS = 60 * 60 * 1000;        // 1 hour per-number throttle
+const IDEMPOTENCY_MS = 5 * 60 * 1000;       // 5-minute dupe-click window
+const PROGRESS_UPDATE_EVERY = 5;            // write progress every N sends
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET', 'POST'])) return;
@@ -36,6 +52,33 @@ export default async function handler(req, res) {
     await readJson(req);
   if (!name || !message) return res.status(400).json({ error: 'name_and_message_required' });
 
+  // --- Idempotency guard ---
+  // Reject if a blast with the same name AND same message body was
+  // recorded within the last 5 minutes. Returns the existing row so
+  // the client can show "already sent" instead of double-charging.
+  const idempotencyCutoff = new Date(Date.now() - IDEMPOTENCY_MS).toISOString();
+  const { data: dupe } = await supabaseAdmin
+    .from('blasts')
+    .select('id, blast_name, status, delivered_count, failed_count, total_recipients, sent_at')
+    .eq('client_id', slug)
+    .eq('blast_name', name)
+    .eq('message_body', message)
+    .gte('sent_at', idempotencyCutoff)
+    .order('sent_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (dupe) {
+    return res.status(200).json({
+      duplicate: true,
+      blast_id: dupe.id,
+      sent: dupe.delivered_count || 0,
+      failed: dupe.failed_count || 0,
+      total: dupe.total_recipients || 0,
+      status: dupe.status,
+      message: 'This blast was already sent within the last 5 minutes. Showing existing.'
+    });
+  }
+
   // Tag filters apply to leads and contacts uniformly.
   const includeArr = Array.isArray(includeTags)
     ? includeTags.map(t => String(t).trim()).filter(Boolean) : [];
@@ -55,10 +98,6 @@ export default async function handler(req, res) {
     if (includeArr.length) cq = cq.overlaps('tags', includeArr);
     const { data: contacts, error: cErr } = await cq;
     if (cErr) return res.status(500).json({ error: cErr.message });
-    // Defense-in-depth: always exclude 'Do Not Contact' tagged
-    // contacts on top of the opted_out flag, so a tenant who hasn't
-    // hit the inbound-STOP webhook yet (manual tag only) is also
-    // protected. Operator-supplied excludeTags layer on top.
     const hardExclude = new Set([...(excludeArr || []), 'Do Not Contact']);
     recipients = (contacts || [])
       .filter(c => c.phone && !c.opted_out)
@@ -73,21 +112,16 @@ export default async function handler(req, res) {
       case 'returning':    query = query.eq('booking_confirmed', true); break;
       case 'no_shows':     query = query.eq('lead_status', 'No Show'); break;
       case 'by_artist':    query = query.eq('artist_selected', artistFilter); break;
-      // 'all' — no filter
     }
     if (includeArr.length) query = query.overlaps('tags', includeArr);
 
-    // Always exclude opted-out leads. Tolerant if leads.opted_out
-    // column hasn't been migrated yet — retries without the filter.
     let { data: leads, error: leadsErr } = await query.eq('opted_out', false);
     if (leadsErr && /column .*opted_out.* does not exist/i.test(leadsErr.message)) {
-      const retry = await query;  // same builder minus the .eq('opted_out', false)
+      const retry = await query;
       leads = retry.data; leadsErr = retry.error;
     }
     if (leadsErr) return res.status(500).json({ error: leadsErr.message });
 
-    // Always exclude 'Do Not Contact' tagged rows (defense-in-depth
-    // for tenants whose opted_out column hasn't migrated yet).
     const hardExclude = new Set([...(excludeArr || []), 'Do Not Contact']);
     recipients = (leads || [])
       .filter(l => l.phone)
@@ -95,6 +129,38 @@ export default async function handler(req, res) {
       .map(l => ({ id: l.id, name: l.name, phone: l.phone, email: l.email, _source: 'lead' }));
   }
   if (!recipients.length) return res.status(400).json({ error: 'no_recipients_with_phone' });
+
+  // --- Per-number 1-hour throttle ---
+  // Drop any recipient whose phone received an outbound SMS from this
+  // tenant within the last hour. This is the hard safety net: even if
+  // the operator clicks Send 5 times in 30 seconds, no number gets a
+  // second message. Queries by client_id+direction+created_at — we
+  // filter the matched phones in JS to avoid Supabase URL length
+  // limits on huge .in() arrays.
+  const throttleCutoff = new Date(Date.now() - THROTTLE_MS).toISOString();
+  const { data: recentOutbound } = await supabaseAdmin
+    .from('messages')
+    .select('to_number')
+    .eq('client_id', clientId)
+    .eq('direction', 'outbound')
+    .gte('created_at', throttleCutoff);
+  const recentTos = new Set((recentOutbound || []).map(m => m.to_number).filter(Boolean));
+  const beforeThrottle = recipients.length;
+  recipients = recipients.filter(r => {
+    const e = toE164(r.phone);
+    return e && !recentTos.has(e);
+  });
+  const skippedRecent = beforeThrottle - recipients.length;
+  if (!recipients.length) {
+    return res.status(200).json({
+      sent: 0,
+      failed: 0,
+      skipped_recent: skippedRecent,
+      total: beforeThrottle,
+      throttled: true,
+      message: `All ${skippedRecent} recipient${skippedRecent === 1 ? '' : 's'} received an SMS from you within the last hour and were skipped.`
+    });
+  }
 
   // Credit gate: check balance BEFORE sending
   const { data: clientRow } = await supabaseAdmin
@@ -119,6 +185,35 @@ export default async function handler(req, res) {
   await supabaseAdmin.from('clients')
     .update({ credit_balance: newBalance }).eq('id', billingId);
 
+  // --- Create the blast row up front ---
+  // Status='Sending' so the client poll can find it and show progress.
+  // We update delivered/failed counts every PROGRESS_UPDATE_EVERY sends
+  // and finalize the status at the end.
+  const { data: blastRow, error: blastInsErr } = await supabaseAdmin
+    .from('blasts')
+    .insert({
+      client_id: slug,
+      blast_name: name,
+      message_body: message,
+      sent_at: new Date().toISOString(),
+      total_recipients: recipients.length,
+      delivered_count: 0,
+      failed_count: 0,
+      promo_code: promoCode || null,
+      target_segment: segment || 'all',
+      artist_filter: segment === 'by_artist' ? artistFilter : null,
+      status: 'Sending'
+    })
+    .select('id')
+    .single();
+  if (blastInsErr) {
+    // Refund the credits we already debited — we never sent anything.
+    await supabaseAdmin.from('clients')
+      .update({ credit_balance: balance }).eq('id', billingId);
+    return res.status(500).json({ error: blastInsErr.message });
+  }
+  const blastId = blastRow.id;
+
   let baseMessage = message;
   if (promoCode) baseMessage += `\n\nUse code: ${promoCode}`;
 
@@ -126,7 +221,8 @@ export default async function handler(req, res) {
   const fromNumber = billingClient?.twilio_phone_number;
   const businessName = clientRow?.business_name || clientRow?.name || '';
   let sent = 0, failed = 0;
-  for (const r of recipients) {
+  for (let idx = 0; idx < recipients.length; idx++) {
+    const r = recipients[idx];
     const toE = toE164(r.phone);
     if (!toE) { failed++; continue; }
     const personalized = renderTemplate(baseMessage, {
@@ -146,8 +242,6 @@ export default async function handler(req, res) {
       });
       sent++;
 
-      // Link the message to whichever side we sourced from. For lead
-      // sends, look up a matching contact to keep thread continuity.
       let contactId = null;
       let leadId = null;
       if (r._source === 'contact') {
@@ -179,28 +273,34 @@ export default async function handler(req, res) {
     } catch {
       failed++;
     }
+
+    // Periodic progress update so the polling client sees the bar move.
+    if (((idx + 1) % PROGRESS_UPDATE_EVERY === 0) || (idx + 1 === recipients.length)) {
+      await supabaseAdmin.from('blasts')
+        .update({ delivered_count: sent, failed_count: failed })
+        .eq('id', blastId);
+    }
   }
 
-  // If some failed, refund the difference
+  // Refund any failed sends so the operator isn't double-charged.
   if (failed > 0) {
     await supabaseAdmin.from('clients')
-      .update({ credit_balance: newBalance + failed }).eq('id', clientId);
+      .update({ credit_balance: newBalance + failed }).eq('id', billingId);
   }
 
-  // Record blast
-  await supabaseAdmin.from('blasts').insert({
-    client_id: slug,
-    blast_name: name,
-    message_body: message,
-    sent_at: new Date().toISOString(),
-    total_recipients: recipients.length,
-    delivered_count: sent,
-    failed_count: failed,
-    promo_code: promoCode || null,
-    target_segment: segment || 'all',
-    artist_filter: segment === 'by_artist' ? artistFilter : null,
-    status: 'Sent'
-  });
+  // Finalize the blast row: status reflects outcome.
+  const finalStatus = failed === 0 ? 'Sent' : (sent === 0 ? 'Failed' : 'Partial');
+  await supabaseAdmin.from('blasts')
+    .update({ delivered_count: sent, failed_count: failed, status: finalStatus })
+    .eq('id', blastId);
 
-  return res.status(200).json({ sent, failed, credits_remaining: newBalance + failed });
+  return res.status(200).json({
+    sent,
+    failed,
+    total: recipients.length,
+    skipped_recent: skippedRecent,
+    blast_id: blastId,
+    status: finalStatus,
+    credits_remaining: newBalance + failed
+  });
 }
