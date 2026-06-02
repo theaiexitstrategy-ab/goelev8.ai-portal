@@ -5659,8 +5659,16 @@ function openBlastModal(wrap) {
     } finally { sendBtn.disabled = false; sendBtn.textContent = 'Send Blast'; }
   } }, 'Send Blast');
 
-  const modal = el('div', { class: 'modal' },
-    el('h2', {}, 'New SMS Blast'),
+  // Split into a scrollable body + a fixed-height footer. The footer
+  // is OUTSIDE the scrolling area so its buttons are always visible
+  // regardless of how long the message body / preview / tag chip
+  // rows get. This is the reliable sticky-footer pattern — the
+  // previous position:sticky bottom:-24px hid the buttons because
+  // the negative offset put them past the scroll edge.
+  const blastBody = el('div', {
+    style: 'flex:1 1 auto;overflow-y:auto;padding:24px 24px 8px;'
+  },
+    el('h2', { style: 'margin:0 0 12px' }, 'New SMS Blast'),
     el('label', {}, 'Blast Name'), nameIn,
     el('label', {}, 'Message Body'), msgIn,
     chipsRow,
@@ -5674,20 +5682,19 @@ function openBlastModal(wrap) {
     el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:4px' },
       'Tip: exclude "Do Not Contact" and "Current Client" to keep blasts focused on prospects.'
     ),
-    result,
-    // Sticky action row so the Send Now button never scrolls off-
-    // screen no matter how long the message preview gets. The
-    // background matches the modal's --card variable so content
-    // scrolling beneath it stays visually clean.
-    el('div', {
-      style: 'display:flex;gap:12px;justify-content:flex-end;margin-top:16px;' +
-             'position:sticky;bottom:-24px;background:var(--card,#1a2236);' +
-             'padding:14px 0 0;border-top:1px solid var(--border,rgba(255,255,255,0.08));'
-    },
-      el('button', { class: 'btn', onclick: () => bg.remove() }, 'Cancel'),
-      sendBtn
-    )
+    result
   );
+  const blastFooter = el('div', {
+    style: 'flex:0 0 auto;display:flex;gap:12px;justify-content:flex-end;' +
+           'padding:14px 24px env(safe-area-inset-bottom,16px);' +
+           'background:var(--card,#1a2236);' +
+           'border-top:1px solid var(--border,rgba(255,255,255,0.08));' +
+           'border-bottom-left-radius:12px;border-bottom-right-radius:12px;'
+  },
+    el('button', { class: 'btn', onclick: () => bg.remove() }, 'Cancel'),
+    sendBtn
+  );
+  const modal = el('div', { class: 'modal' }, blastBody, blastFooter);
   // Initial preview render now that nodes are mounted.
   updatePreview();
 
@@ -5697,8 +5704,11 @@ function openBlastModal(wrap) {
   // (overflow-y:auto) AND the modal caps at 90vh with its own
   // scroll, so the action row stays clickable regardless of how
   // big the message body / preview grows.
+  // Overlay scrolls if needed (very tall screens / zoom-in users).
+  // Modal is flex-column with a max-height so the body scrolls
+  // INSIDE the modal while the footer stays glued to its bottom.
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px env(safe-area-inset-bottom,16px);overflow-y:auto;z-index:1000';
-  modal.style.cssText = 'background:var(--card,#1a2236);border:1px solid var(--border,#2a3a5c);border-radius:12px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;display:flex;flex-direction:column;gap:0';
+  modal.style.cssText = 'background:var(--card,#1a2236);border:1px solid var(--border,#2a3a5c);border-radius:12px;width:100%;max-width:480px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;';
   modal.querySelectorAll('input,textarea,select').forEach(i => {
     i.style.cssText = 'width:100%;padding:8px 12px;margin:4px 0 12px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem';
   });
