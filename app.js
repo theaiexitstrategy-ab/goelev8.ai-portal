@@ -1999,6 +1999,7 @@ async function viewBookings() {
     subTabBar.replaceChildren(
       mk('appointments', 'Appointments'),
       mk('availability', 'Availability'),
+      mk('days_off',     'Days Off'),
       mk('services',     'Services')
     );
   }
@@ -2008,6 +2009,7 @@ async function viewBookings() {
     content.replaceChildren();
     if (subTab === 'appointments') { renderAppointments(); renderGoelev8Bookings(); }
     else if (subTab === 'availability') renderAvailability();
+    else if (subTab === 'days_off') renderDaysOff();
     else renderServices();
   }
 
@@ -2478,6 +2480,112 @@ async function viewBookings() {
     const mer = h >= 12 ? 'PM' : 'AM';
     h = h % 12; if (h === 0) h = 12;
     return `${h}:${String(m).padStart(2, '0')} ${mer}`;
+  }
+
+  // ----- Days Off sub-view -----
+  // One-off date blackouts. Will needs Monday off → add a row here
+  // for that Monday and the widget skips it. Doesn't touch the
+  // weekly recurring template, so the *next* Monday is back to
+  // normal automatically.
+  async function renderDaysOff() {
+    content.appendChild(liveSyncNotice());
+    const panel = el('div', { class: 'panel' });
+    panel.appendChild(el('h2', { style: 'margin:0 0 4px' }, 'Days Off'));
+    panel.appendChild(el('p', { class: 'muted', style: 'margin:0 0 16px;font-size:0.85rem' },
+      'Block specific dates without changing your weekly schedule. Leave the time fields empty to block the entire day.'));
+
+    // --- Add form ---
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const dateIn = el('input', { type: 'date', min: todayIso, value: todayIso, style: 'padding:8px 10px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem' });
+    const startIn = el('input', { type: 'time', placeholder: 'Start (optional)', style: 'padding:8px 10px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem;width:120px' });
+    const endIn   = el('input', { type: 'time', placeholder: 'End (optional)',   style: 'padding:8px 10px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem;width:120px' });
+    const reasonIn = el('input', { type: 'text', placeholder: 'Reason (optional, e.g. "Doctor appt")', style: 'padding:8px 10px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem;flex:1;min-width:200px' });
+    const listWrap = el('div', {});
+
+    const refresh = async () => {
+      listWrap.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
+      try {
+        const data = await api('/api/portal/bookings/blocks');
+        const blocks = data.blocks || [];
+        listWrap.replaceChildren();
+        if (!blocks.length) {
+          listWrap.appendChild(el('p', { class: 'muted' }, 'No upcoming days off scheduled.'));
+          return;
+        }
+        listWrap.appendChild(el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Date'),
+            el('th', {}, 'Window'),
+            el('th', {}, 'Reason'),
+            el('th', {}, '')
+          )),
+          el('tbody', {}, ...blocks.map(b => {
+            const dateLabel = new Date(b.blocked_date + 'T12:00:00').toLocaleDateString(undefined, {
+              weekday: 'short', month: 'short', day: 'numeric', year: 'numeric'
+            });
+            const window = (!b.start_time && !b.end_time) ? 'All day'
+                         : `${(b.start_time || '').slice(0,5)} – ${(b.end_time || '').slice(0,5)}`;
+            return el('tr', {},
+              el('td', {}, dateLabel),
+              el('td', {}, window),
+              el('td', { class: 'muted' }, b.reason || '—'),
+              el('td', {}, el('button', {
+                class: 'btn sm danger',
+                onclick: async () => {
+                  if (!confirm(`Remove the ${dateLabel} block?\n\nThis date will become bookable again.`)) return;
+                  try {
+                    await api('/api/portal/bookings/blocks?id=' + encodeURIComponent(b.id), { method: 'DELETE' });
+                    toast('Day off removed'); refresh();
+                  } catch (e) { toast('Remove failed: ' + e.message, true); }
+                }
+              }, 'Remove'))
+            );
+          }))
+        ));
+      } catch (e) {
+        listWrap.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + e.message));
+      }
+    };
+
+    const addBtn = el('button', { class: 'btn primary', onclick: async () => {
+      const body = { blocked_date: dateIn.value };
+      if (startIn.value) body.start_time = startIn.value;
+      if (endIn.value)   body.end_time   = endIn.value;
+      if (reasonIn.value.trim()) body.reason = reasonIn.value.trim();
+      if (!body.blocked_date) { toast('Pick a date', true); return; }
+      if ((body.start_time && !body.end_time) || (!body.start_time && body.end_time)) {
+        toast('Provide both start and end, or leave both empty for full day', true);
+        return;
+      }
+      addBtn.disabled = true; addBtn.textContent = 'Adding…';
+      try {
+        await api('/api/portal/bookings/blocks', { method: 'POST', body });
+        toast('Day off added');
+        startIn.value = ''; endIn.value = ''; reasonIn.value = '';
+        refresh();
+      } catch (e) {
+        toast(e.message.includes('already_blocked')
+          ? 'That date and time window is already blocked.'
+          : 'Failed: ' + e.message, true);
+      } finally {
+        addBtn.disabled = false; addBtn.textContent = 'Add Day Off';
+      }
+    } }, 'Add Day Off');
+
+    panel.appendChild(el('div', {
+      style: 'display:flex;flex-wrap:wrap;gap:10px;align-items:end;padding:14px;background:rgba(99,179,237,0.05);border:1px solid rgba(99,179,237,0.18);border-radius:8px;margin-bottom:18px'
+    },
+      el('div', {}, el('div', { class: 'muted', style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px' }, 'Date'), dateIn),
+      el('div', {}, el('div', { class: 'muted', style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px' }, 'From (optional)'), startIn),
+      el('div', {}, el('div', { class: 'muted', style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px' }, 'To (optional)'), endIn),
+      el('div', { style: 'flex:1;min-width:200px' }, el('div', { class: 'muted', style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px' }, 'Reason'), reasonIn),
+      addBtn
+    ));
+
+    panel.appendChild(el('h3', { style: 'margin:0 0 10px;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted,#888)' }, 'Upcoming'));
+    panel.appendChild(listWrap);
+    content.appendChild(panel);
+    refresh();
   }
 
   // ----- Services sub-view -----

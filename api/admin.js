@@ -2790,7 +2790,42 @@ async function applyPendingMigrations(req, res) {
             'Lightweight beard oil with a smooth finish.',
             1999, NULL, true, 3
        FROM public.clients WHERE slug = 'islay-studios'
-     ON CONFLICT (client_id, product_key) DO NOTHING;`
+     ON CONFLICT (client_id, product_key) DO NOTHING;`,
+
+    // ----- booking_blocked_dates: one-off date blackouts -----
+    // Lets a client take a specific date (or date range) off without
+    // editing their recurring weekly availability templates. The
+    // booking widgets query this table and skip any blocked date
+    // when rendering the calendar.
+    //   start_time / end_time NULL  → entire day blocked
+    //   start_time / end_time set   → only that window blocked
+    `CREATE TABLE IF NOT EXISTS public.booking_blocked_dates (
+       id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id   uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       blocked_date date NOT NULL,
+       start_time  time,
+       end_time    time,
+       reason      text,
+       created_at  timestamptz NOT NULL DEFAULT now(),
+       created_by  uuid REFERENCES auth.users(id)
+     );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS booking_blocked_dates_client_date_window_uniq
+       ON public.booking_blocked_dates(client_id, blocked_date, COALESCE(start_time, '00:00:00'::time), COALESCE(end_time, '23:59:59'::time));`,
+    `CREATE INDEX IF NOT EXISTS booking_blocked_dates_client_date_idx
+       ON public.booking_blocked_dates(client_id, blocked_date);`,
+    `ALTER TABLE public.booking_blocked_dates ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS booking_blocked_dates_admin_all ON public.booking_blocked_dates;`,
+    `CREATE POLICY booking_blocked_dates_admin_all ON public.booking_blocked_dates
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS booking_blocked_dates_member_all ON public.booking_blocked_dates;`,
+    `CREATE POLICY booking_blocked_dates_member_all ON public.booking_blocked_dates
+       FOR ALL TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
+       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
