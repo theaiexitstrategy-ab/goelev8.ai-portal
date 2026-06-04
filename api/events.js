@@ -42,7 +42,10 @@ const DOMAIN_TO_SLUG = {
   'theflexfacility.com': 'flex-facility',
   'www.theflexfacility.com': 'flex-facility',
   'islaystudiosllc.com': 'islay-studios',
-  'www.islaystudiosllc.com': 'islay-studios'
+  'www.islaystudiosllc.com': 'islay-studios',
+  'willpowerfitnessfactory.com': 'willpower-fitness',
+  'www.willpowerfitnessfactory.com': 'willpower-fitness',
+  'book.willpowerfitnessfactory.com': 'willpower-fitness'
 };
 
 function readRaw(req) {
@@ -141,8 +144,34 @@ async function handleIngest(req, res) {
 
   const isNew = !!data?.id;
   let welcome = { sent: false, reason: 'duplicate_event' };
+  let lead = { created: false, id: null };
 
   if (isNew) {
+    // Lead-type events also get a corresponding `leads` row so the
+    // submission shows up in the portal's Leads tab — without this,
+    // events live only in `client_events` and are invisible to the
+    // standard CRM views. findOrUpsertLead handles dedupe across
+    // re-submissions from the same human.
+    const leadTypes = new Set(['lead', 'form_submission', 'booking']);
+    if (leadTypes.has(String(row.event_type).toLowerCase())) {
+      try {
+        const result = await findOrUpsertLead(clientId, {
+          name:   row.contact_name,
+          phone:  row.contact_phone,
+          email:  row.contact_email,
+          source: row.source,
+          funnel: row.payload?.funnel || row.source_path || null,
+          intent: row.payload?.intent || null,
+          notes:  row.payload?.goal || row.payload?.notes || null,
+          tags:   Array.isArray(row.payload?.tags) ? row.payload.tags : [],
+          payload: row.payload
+        });
+        lead = { created: result.created, id: result.id };
+      } catch (e) {
+        lead = { created: false, id: null, error: e.message };
+      }
+    }
+
     // Load full client (need balance, twilio creds, template) and try welcome.
     const { data: client } = await supabaseAdmin
       .from('clients')
@@ -161,7 +190,7 @@ async function handleIngest(req, res) {
     ]);
   }
 
-  return res.status(200).json({ ok: true, id: data?.id || null, is_new: isNew, welcome });
+  return res.status(200).json({ ok: true, id: data?.id || null, is_new: isNew, welcome, lead });
 }
 
 async function handleList(req, res) {

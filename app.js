@@ -1184,6 +1184,50 @@ async function openCustomerProfile(leadId) {
     } }, 'Delete')
   );
 
+  // Customer Info section — surfaces the contact details (especially
+  // email) front and center with one-tap copy + mailto/tel links so the
+  // operator can reach out directly without leaving the profile.
+  const copyBtn = (val, label = 'Copy') => el('button', {
+    class: 'btn sm ghost',
+    type: 'button',
+    title: 'Copy to clipboard',
+    style: 'padding:2px 8px;font-size:0.7rem',
+    onclick: async () => {
+      try { await navigator.clipboard.writeText(val); toast(label + ' copied'); }
+      catch { toast('Copy failed', true); }
+    }
+  }, '📋');
+  const infoRow = (label, value, actions) => el('div', {
+    style: 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border,rgba(255,255,255,0.06))'
+  },
+    el('div', { style: 'flex:0 0 90px;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted,#888);font-weight:600' }, label),
+    el('div', { style: 'flex:1;min-width:0;word-break:break-word;font-size:0.9rem' }, value || '—'),
+    actions || null
+  );
+
+  const emailLink = lead.email
+    ? el('a', { href: 'mailto:' + lead.email, style: 'color:#63b3ed;text-decoration:none' }, lead.email)
+    : '—';
+  const phoneLink = lead.phone
+    ? el('a', { href: 'tel:' + lead.phone, style: 'color:#63b3ed;text-decoration:none' }, lead.phone)
+    : '—';
+
+  const infoSection = el('div', { class: 'profile-section' });
+  infoSection.appendChild(el('h3', {}, 'Customer Info'));
+  infoSection.appendChild(infoRow('Email', emailLink,
+    lead.email ? el('div', { style: 'display:flex;gap:4px' }, copyBtn(lead.email, 'Email')) : null));
+  infoSection.appendChild(infoRow('Phone', phoneLink,
+    lead.phone ? el('div', { style: 'display:flex;gap:4px' }, copyBtn(lead.phone, 'Phone')) : null));
+  if (lead.source)        infoSection.appendChild(infoRow('Source', lead.source));
+  if (lead.funnel)        infoSection.appendChild(infoRow('Funnel', lead.funnel));
+  if (lead.intent)        infoSection.appendChild(infoRow('Intent', lead.intent));
+  if (lead.lead_status)   infoSection.appendChild(infoRow('Status', lead.lead_status));
+  if (lead.artist_selected) infoSection.appendChild(infoRow('Artist', lead.artist_selected));
+  if (lead.notes)         infoSection.appendChild(infoRow('Notes', lead.notes));
+  if (lead.payload?.goal) infoSection.appendChild(infoRow('Goal', lead.payload.goal));
+  if (lead.created_at)    infoSection.appendChild(infoRow('First contact', fmt(lead.created_at) + ' · ' + fmtAgo(lead.created_at)));
+  if (lead.last_contacted_at) infoSection.appendChild(infoRow('Last contact', fmt(lead.last_contacted_at) + ' · ' + fmtAgo(lead.last_contacted_at)));
+
   // Metric strip
   const metrics = el('div', { class: 'leads-metrics-strip', style: 'margin:14px 0' },
     el('div', { class: 'metric-stat' },
@@ -1300,7 +1344,7 @@ async function openCustomerProfile(leadId) {
     }, 'Done')
   );
 
-  sheet.append(header, tagsRow, actionBar, metrics, bookingsSection, callsSection, messagesSection, nudgesSection, doneBar);
+  sheet.append(header, tagsRow, actionBar, infoSection, metrics, bookingsSection, callsSection, messagesSection, nudgesSection, doneBar);
 }
 
 // Trash view — slide-over panel listing soft-deleted records from the
