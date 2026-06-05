@@ -2508,6 +2508,17 @@ async function viewBookings() {
         const data = await api('/api/portal/bookings/blocks');
         const blocks = data.blocks || [];
         listWrap.replaceChildren();
+        if (data.pending_migration) {
+          listWrap.appendChild(el('div', {
+            style: 'padding:14px;background:rgba(237,137,54,0.1);border:1px solid rgba(237,137,54,0.35);border-radius:8px;color:#fbd38d;font-size:0.85rem;line-height:1.5'
+          },
+            el('strong', { style: 'color:#f6ad55;display:block;margin-bottom:4px' }, 'One-time setup required'),
+            'The Days Off feature needs a database migration to run. Go to ',
+            el('strong', {}, 'Master Admin → Verify Migrations'),
+            ', then come back here. (You only need to do this once.)'
+          ));
+          return;
+        }
         if (!blocks.length) {
           listWrap.appendChild(el('p', { class: 'muted' }, 'No upcoming days off scheduled.'));
           return;
@@ -2564,9 +2575,14 @@ async function viewBookings() {
         startIn.value = ''; endIn.value = ''; reasonIn.value = '';
         refresh();
       } catch (e) {
-        toast(e.message.includes('already_blocked')
-          ? 'That date and time window is already blocked.'
-          : 'Failed: ' + e.message, true);
+        const msg = e.message || '';
+        if (msg.includes('pending_migration')) {
+          toast('Setup needed: Master Admin → Verify Migrations, then try again.', true, 8000);
+        } else if (msg.includes('already_blocked')) {
+          toast('That date and time window is already blocked.', true);
+        } else {
+          toast('Failed: ' + msg, true);
+        }
       } finally {
         addBtn.disabled = false; addBtn.textContent = 'Add Day Off';
       }

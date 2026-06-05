@@ -55,7 +55,15 @@ export default async function handler(req, res) {
       .gte('blocked_date', today)
       .order('blocked_date', { ascending: true })
       .order('start_time', { ascending: true, nullsFirst: true });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      // Surface the pending-migration case so the UI can show a clear
+      // "Run Verify Migrations to enable Days Off" hint instead of a
+      // generic 500 the operator can't act on.
+      if (/booking_blocked_dates|does not exist|schema cache/i.test(error.message || '')) {
+        return res.status(200).json({ blocks: [], pending_migration: true });
+      }
+      return res.status(500).json({ error: error.message });
+    }
     return res.status(200).json({ blocks: data || [] });
   }
 
@@ -97,6 +105,12 @@ export default async function handler(req, res) {
     if (error) {
       if (/duplicate key|unique/i.test(error.message)) {
         return res.status(409).json({ error: 'already_blocked' });
+      }
+      if (/booking_blocked_dates|does not exist|schema cache/i.test(error.message || '')) {
+        return res.status(503).json({
+          error: 'pending_migration',
+          hint: 'Run Verify Migrations in Master Admin to enable Days Off.'
+        });
       }
       return res.status(500).json({ error: error.message });
     }
