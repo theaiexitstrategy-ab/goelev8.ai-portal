@@ -2792,6 +2792,23 @@ async function applyPendingMigrations(req, res) {
        FROM public.clients WHERE slug = 'islay-studios'
      ON CONFLICT (client_id, product_key) DO NOTHING;`,
 
+    // ----- clients.processing_fee_cents: flat per-order fee -----
+    // Override the platform default ($3 = 300¢) for an individual
+    // tenant. Null means "use the env / code default".
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS processing_fee_cents integer
+       CHECK (processing_fee_cents IS NULL OR processing_fee_cents >= 0);`,
+    `COMMENT ON COLUMN public.clients.processing_fee_cents IS
+       'Flat per-order processing fee (cents) charged to the customer and routed to GoElev8 alongside platform_fee_pct. NULL = use the platform default (PROCESSING_FEE_DEFAULT_CENTS, currently 300 = $3).';`,
+
+    // ----- merch_orders.processing_fee_cents: per-order recorded fee -----
+    // Mirrors the value the storefront passed in. Needed so the
+    // Orders dashboard can show the full breakdown and so refunds
+    // know exactly how much of the customer total was the platform's.
+    `ALTER TABLE public.merch_orders
+       ADD COLUMN IF NOT EXISTS processing_fee_cents integer NOT NULL DEFAULT 0
+       CHECK (processing_fee_cents >= 0);`,
+
     // ----- booking_blocked_dates: one-off date blackouts -----
     // Lets a client take a specific date (or date range) off without
     // editing their recurring weekly availability templates. The

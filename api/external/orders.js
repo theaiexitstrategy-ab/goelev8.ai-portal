@@ -106,12 +106,14 @@ export default async function handler(req, res) {
     shipping_cents:        Number.isFinite(+body?.shipping_cents) ? +body.shipping_cents : 0,
     discount_cents:        Number.isFinite(+body?.discount_cents) ? +body.discount_cents : 0,
     total_cents:           Number.isFinite(+body?.total_cents)    ? +body.total_cents    : 0,
-    // Platform fee + Stripe pass-through fee, both reported by the
-    // storefront after it quoted /api/external/fees/quote. The portal
-    // uses these to surface a per-order ledger and (with Stripe Connect)
-    // to reconcile application_fee_amount against actual takes.
-    platform_fee_cents:    Number.isFinite(+body?.platform_fee_cents) ? +body.platform_fee_cents : 0,
-    stripe_fee_cents:      Number.isFinite(+body?.stripe_fee_cents)   ? +body.stripe_fee_cents   : 0,
+    // Platform fee + flat processing fee + Stripe pass-through, all
+    // reported by the storefront after it quoted /api/external/fees/quote.
+    // The portal uses these to surface a per-order ledger and (with
+    // Stripe Connect) to reconcile application_fee_amount against
+    // actual takes.
+    platform_fee_cents:    Number.isFinite(+body?.platform_fee_cents)   ? +body.platform_fee_cents   : 0,
+    processing_fee_cents:  Number.isFinite(+body?.processing_fee_cents) ? +body.processing_fee_cents : 0,
+    stripe_fee_cents:      Number.isFinite(+body?.stripe_fee_cents)     ? +body.stripe_fee_cents     : 0,
     coupon_code:           body?.coupon_code ? String(body.coupon_code).toUpperCase() : null,
     stripe_payment_id:     stripePaymentId,
     printify_order_id:     body?.printify_order_id || null,
@@ -127,9 +129,10 @@ export default async function handler(req, res) {
     const r = await supabaseAdmin.from('merch_orders').insert(orderRow).select('id').single();
     inserted = r.data; insErr = r.error;
   }
-  if (insErr && /column .*(platform_fee_cents|stripe_fee_cents).* does not exist/i.test(insErr.message)) {
+  if (insErr && /column .*(platform_fee_cents|processing_fee_cents|stripe_fee_cents).* does not exist/i.test(insErr.message)) {
     const legacy = { ...orderRow };
     delete legacy.platform_fee_cents;
+    delete legacy.processing_fee_cents;
     delete legacy.stripe_fee_cents;
     const r2 = await supabaseAdmin.from('merch_orders').insert(legacy).select('id').single();
     inserted = r2.data; insErr = r2.error;
