@@ -3758,8 +3758,22 @@ async function renderMerchProducts(container) {
   const setupRequired = !!r.setup_required;
   container.replaceChildren();
 
+  // Storefront URL is rendered per-tenant so the subtitle matches
+  // whichever client is logged in (Nate sees islaystudiosllc.com,
+  // Will sees willpowerfitnessfactory.com, etc). Falls back to a
+  // generic message when we don't have a hardcoded mapping yet.
+  const STOREFRONT_URLS = {
+    'islay-studios':      'islaystudiosllc.com/merch',
+    'willpower-fitness':  'willpowerfitnessfactory.com/merch',
+    'flex-facility':      'theflexfacility.com/merch'
+  };
+  const storefrontUrl = STOREFRONT_URLS[state.client?.slug];
+  const subtitleText = storefrontUrl
+    ? `Edits here update ${storefrontUrl} within a minute. No deploy needed.`
+    : 'Edits here update your public storefront within a minute. No deploy needed.';
+
   const header = el('div', { class: 'row between', style: 'margin-bottom:12px' },
-    el('div', { class: 'muted' }, 'Prices Will sees on willpowerfitnessfactory.com/merch'),
+    el('div', { class: 'muted' }, subtitleText),
     el('button', { class: 'btn primary',
       disabled: setupRequired ? '' : false,
       onclick: () => openMerchProductModal(null, () => renderMerchProducts(container))
@@ -3837,7 +3851,7 @@ function openMerchProductModal(product, onSaved) {
   const drawer = el('div', { class: 'application-drawer' });
 
   const keyInput   = el('input', { type: 'text', value: product?.product_key || '', placeholder: 'e.g. tee, tank, hoodie' });
-  const nameInput  = el('input', { type: 'text', value: product?.name || '',        placeholder: 'WPFF Logo Tee' });
+  const nameInput  = el('input', { type: 'text', value: product?.name || '',        placeholder: 'Product name (e.g. Shampoo, Logo Tee)' });
   const descInput  = el('textarea', { rows: 3, placeholder: 'Short description shown on the storefront card' });
   if (product?.description) descInput.value = product.description;
   const priceInput   = el('input', { type: 'number', min: '0', step: '0.01', value: product ? ((product.base_price_cents || 0) / 100).toFixed(2) : '' });
