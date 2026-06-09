@@ -2801,6 +2801,18 @@ async function applyPendingMigrations(req, res) {
     `COMMENT ON COLUMN public.clients.processing_fee_cents IS
        'Flat per-order processing fee (cents) charged to the customer and routed to GoElev8 alongside platform_fee_pct. NULL = use the platform default (PROCESSING_FEE_DEFAULT_CENTS, currently 300 = $3).';`,
 
+    // ----- messages.blast_id: link outbound blast messages to their row -----
+    // Lets the blast throttle distinguish "this number got a blast in
+    // the last hour" from "the operator messaged them 1-on-1 in the
+    // Messages tab". Without this column, 1-on-1 replies from the
+    // operator would have blocked the next blast to that recipient.
+    `ALTER TABLE public.messages
+       ADD COLUMN IF NOT EXISTS blast_id uuid
+       REFERENCES public.blasts(id) ON DELETE SET NULL;`,
+    `CREATE INDEX IF NOT EXISTS messages_blast_id_idx
+       ON public.messages(client_id, blast_id, created_at)
+       WHERE blast_id IS NOT NULL;`,
+
     // ----- merch_orders.processing_fee_cents: per-order recorded fee -----
     // Mirrors the value the storefront passed in. Needed so the
     // Orders dashboard can show the full breakdown and so refunds

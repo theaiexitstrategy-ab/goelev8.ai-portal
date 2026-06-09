@@ -5806,12 +5806,20 @@ function openBlastModal(wrap) {
   const previewText = el('div', { style: 'color:var(--text,#e0e0e0)' });
   previewBox.append(previewLabel, previewText);
 
+  // Carrier policy + TCPA require every blast to carry an opt-out
+  // instruction. We mirror the server's regex here so the preview
+  // shows the operator exactly what will be sent — they see the
+  // "Reply STOP to opt out." line auto-appear when they haven't added
+  // one of their own. If their message already includes STOP /
+  // UNSUBSCRIBE / etc., we leave it alone.
+  const OPT_OUT_RE = /\b(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT|OPT[\s-]?OUT)\b/i;
   const updatePreview = () => {
     const sample = { first_name: 'Sarah', name: 'Sarah Johnson', last_name: 'Johnson', business_name: sampleBusinessName, phone: '+15555550123', email: 'sarah@example.com' };
     const body = msgIn.value.trim();
     if (!body) { previewText.textContent = '(start typing your message…)'; previewText.style.fontStyle = 'italic'; previewText.style.color = 'var(--muted,#888)'; return; }
     let rendered = previewMergeTags(body, sample);
     if (promoIn.value.trim()) rendered += `\n\nUse code: ${promoIn.value.trim()}`;
+    if (!OPT_OUT_RE.test(rendered)) rendered += '\n\nReply STOP to opt out.';
     previewText.textContent = rendered;
     previewText.style.fontStyle = '';
     previewText.style.color = '';
@@ -5835,7 +5843,7 @@ function openBlastModal(wrap) {
     chip('Business Name', '[business name]')
   );
 
-  msgIn.addEventListener('input', updatePreview);
+  msgIn.addEventListener('input', () => { updatePreview(); updateComplianceNote(); });
   promoIn.addEventListener('input', updatePreview);
   // Tag-based recipient filters. Layered on top of the segment dropdown:
   //   - Include tags = recipient must have at least one of these
@@ -5948,15 +5956,28 @@ function openBlastModal(wrap) {
         const parts = [`${data.sent || 0} delivered`];
         if (data.failed) parts.push(`${data.failed} failed`);
         if (data.skipped_recent) parts.push(`${data.skipped_recent} skipped (texted within last hour)`);
-        toast(`Blast complete — ${parts.join(', ')}`);
+        const optNote = data.opt_out_appended ? ' · "Reply STOP" auto-added' : '';
+        toast(`Blast complete — ${parts.join(', ')}${optNote}`);
       }
       bg.remove();
       state.view = 'blasts'; render();
     } catch (e) {
       stopped = true; if (pollTimer) clearTimeout(pollTimer);
       progressOverlay.remove();
-      result.textContent = 'Error: ' + e.message;
-      result.style.color = 'var(--error)';
+      // Tenant-level throttle errors are not bugs — they're guardrails
+      // doing their job. Surface them in plain English so the operator
+      // sees WHY the blast is blocked, not a raw error string.
+      const raw = String(e.message || '');
+      if (/tenant_hour_throttle/.test(raw)) {
+        result.innerHTML = '<strong style="color:#fbd38d">Blast blocked — daily limit</strong><br><span style="color:#a0aec0;font-size:0.85rem">You\'ve already sent a blast within the last hour. The limit is 1 blast per hour to protect your contacts from over-messaging.</span>';
+        toast('Blocked: only 1 blast per hour allowed.', true, 6000);
+      } else if (/tenant_day_throttle/.test(raw)) {
+        result.innerHTML = '<strong style="color:#fbd38d">Blast blocked — daily limit</strong><br><span style="color:#a0aec0;font-size:0.85rem">You\'ve hit the daily cap of 2 blasts per 24 hours. The cap resets rolling on the oldest send.</span>';
+        toast('Blocked: 2 blasts/day limit reached.', true, 6000);
+      } else {
+        result.textContent = 'Error: ' + raw;
+        result.style.color = 'var(--error)';
+      }
       inFlight = false;
       sendBtn.disabled = false; sendBtn.textContent = 'Send Blast';
     }
@@ -5968,12 +5989,40 @@ function openBlastModal(wrap) {
   // rows get. This is the reliable sticky-footer pattern — the
   // previous position:sticky bottom:-24px hid the buttons because
   // the negative offset put them past the scroll edge.
+  // Sending-limit banner — populated by the limits payload returned
+  // alongside GET /api/portal/blasts. Tells the operator up front
+  // how many of their daily blasts they've used and when the next
+  // one is available. Also disables the Send button when over limit
+  // so they can't even attempt a blocked send.
+  const limitsBanner = el('div', {
+    style: 'padding:10px 12px;border-radius:6px;font-size:0.78rem;line-height:1.45;margin-bottom:12px;' +
+           'background:rgba(99,179,237,0.08);border:1px solid rgba(99,179,237,0.22);color:#cbd5e1;'
+  }, 'Checking your send limits…');
+
+  // Compliance note + opt-out reminder rendered right below the
+  // message field. Mirrors what the server enforces so the operator
+  // can see why "Reply STOP to opt out." will (or won't) be added.
+  const complianceNote = el('div', {
+    style: 'font-size:0.7rem;color:#a0aec0;margin-top:4px;line-height:1.45'
+  });
+  const updateComplianceNote = () => {
+    const body = msgIn.value.trim();
+    if (!body) { complianceNote.textContent = ''; return; }
+    if (OPT_OUT_RE.test(body)) {
+      complianceNote.innerHTML = '<span style="color:#86efac">✓ Opt-out instruction detected in your copy.</span>';
+    } else {
+      complianceNote.innerHTML = '<span style="color:#fbd38d">⚠ No opt-out wording detected — we\'ll auto-append <strong>"Reply STOP to opt out."</strong> to stay carrier-compliant.</span>';
+    }
+  };
+
   const blastBody = el('div', {
     style: 'flex:1 1 auto;overflow-y:auto;padding:24px 24px 8px;'
   },
     el('h2', { style: 'margin:0 0 12px' }, 'New SMS Blast'),
+    limitsBanner,
     el('label', {}, 'Blast Name'), nameIn,
     el('label', {}, 'Message Body'), msgIn,
+    complianceNote,
     chipsRow,
     previewBox,
     el('label', {}, 'Promo Code'), promoIn,
@@ -6033,6 +6082,50 @@ function openBlastModal(wrap) {
   });
   modal.querySelectorAll('label').forEach(l => l.style.cssText = 'font-size:0.8rem;color:var(--muted,#888)');
   document.body.appendChild(bg);
+
+  // Load the sending-limit status and surface it in the banner +
+  // disable the Send button if we're already at the cap. Falls back
+  // to a neutral hint if the GET fails so the modal stays usable.
+  (async () => {
+    try {
+      const d = await api('/api/portal/blasts');
+      const lim = d.limits || null;
+      if (!lim) {
+        limitsBanner.textContent = 'Limit: 1 blast per hour · 2 per day · Each message ends with "Reply STOP to opt out."';
+        return;
+      }
+      const hourLeft = Math.max(0, lim.max_per_hour - lim.count_hour);
+      const dayLeft  = Math.max(0, lim.max_per_day  - lim.count_day);
+      const overLimit = (lim.count_hour >= lim.max_per_hour) || (lim.count_day >= lim.max_per_day);
+      const nextAvailMins = lim.next_available_at
+        ? Math.max(1, Math.ceil((new Date(lim.next_available_at).getTime() - Date.now()) / 60000))
+        : 0;
+      if (overLimit) {
+        const reason = (lim.count_day >= lim.max_per_day)
+          ? `You've used ${lim.count_day} of ${lim.max_per_day} blasts in the last 24 hours.`
+          : `You've already sent a blast in the last hour.`;
+        const whenLabel = nextAvailMins >= 60
+          ? `${Math.ceil(nextAvailMins / 60)} hour${Math.ceil(nextAvailMins / 60) === 1 ? '' : 's'}`
+          : `${nextAvailMins} minute${nextAvailMins === 1 ? '' : 's'}`;
+        limitsBanner.style.background = 'rgba(245,101,101,0.10)';
+        limitsBanner.style.borderColor = 'rgba(245,101,101,0.35)';
+        limitsBanner.style.color = '#fbd38d';
+        limitsBanner.innerHTML = `<strong>Sending paused — limit reached.</strong><br>${reason} Next blast available in <strong>${whenLabel}</strong>. Each message ends with “Reply STOP to opt out.”`;
+        sendBtn.disabled = true;
+        sendBtn.title = 'Limit reached — wait until the cooldown ends.';
+      } else {
+        limitsBanner.innerHTML =
+          `<strong>Sending limits</strong> — ` +
+          `<strong>${hourLeft}</strong> of <strong>${lim.max_per_hour}</strong> blasts left this hour · ` +
+          `<strong>${dayLeft}</strong> of <strong>${lim.max_per_day}</strong> left in the next 24h. ` +
+          `Each message ends with “Reply STOP to opt out.”`;
+      }
+    } catch {
+      limitsBanner.textContent = 'Limit: 1 blast per hour · 2 per day · Each message ends with "Reply STOP to opt out."';
+    }
+  })();
+  // Run the compliance check once in case there's prefilled text.
+  updateComplianceNote();
 }
 
 // ============================================================
