@@ -7,7 +7,13 @@
 //
 // GET /api/external/products?slug=willpower-fitness
 //   → { products: [{ key, name, description, price_cents,
-//                    compare_at_price_cents, image_url, sort_order }, ...] }
+//                    compare_at_price_cents, image_url, payment_link,
+//                    sort_order }, ...] }
+//
+// `payment_link` is an optional Stripe Payment Link URL the operator
+// pastes via the portal merch admin. When present, the tenant's
+// storefront routes the Buy button straight to Stripe-hosted checkout
+// instead of any in-house cart.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
 
@@ -32,7 +38,7 @@ export default async function handler(req, res) {
 
   const { data, error } = await supabaseAdmin
     .from('merch_products')
-    .select('product_key, name, description, base_price_cents, compare_at_price_cents, image_url, sort_order')
+    .select('product_key, name, description, base_price_cents, compare_at_price_cents, image_url, payment_link, sort_order')
     .eq('client_id', client.id)
     .eq('is_active', true)
     .order('sort_order', { ascending: true })
@@ -52,6 +58,7 @@ export default async function handler(req, res) {
       price_cents:            p.base_price_cents,
       compare_at_price_cents: p.compare_at_price_cents,
       image_url:              p.image_url,
+      payment_link:           p.payment_link,
       sort_order:             p.sort_order
     }))
   });

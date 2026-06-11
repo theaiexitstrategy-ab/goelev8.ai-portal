@@ -3931,6 +3931,8 @@ function openMerchProductModal(product, onSaved) {
     })();
     return uploadingPromise;
   });
+  const paymentLinkInput = el('input', { type: 'url', value: product?.payment_link || '',
+    placeholder: 'https://buy.stripe.com/…' });
   const activeInput  = el('input', { type: 'checkbox' });
   if (!product || product.is_active) activeInput.checked = true;
   const sortInput    = el('input', { type: 'number', value: product?.sort_order ?? 0 });
@@ -3960,6 +3962,7 @@ function openMerchProductModal(product, onSaved) {
       base_price_cents:       Math.round(parseFloat(priceInput.value || '0') * 100),
       compare_at_price_cents: compareInput.value ? Math.round(parseFloat(compareInput.value) * 100) : null,
       image_url:              imageInput.value.trim() || null,
+      payment_link:           paymentLinkInput.value.trim() || null,
       is_active:              activeInput.checked,
       sort_order:             parseInt(sortInput.value, 10) || 0
     };
@@ -4014,6 +4017,12 @@ function openMerchProductModal(product, onSaved) {
       ),
       imageInput,
       fileStatus
+    ),
+    el('div', { class: 'field' },
+      el('label', {}, 'Stripe Payment Link'),
+      paymentLinkInput,
+      el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' },
+        'Paste the Stripe Payment Link URL (e.g. https://buy.stripe.com/…). When set, the storefront Buy button routes shoppers straight to Stripe-hosted checkout.')
     ),
     el('div', { class: 'row', style: 'gap:12px;align-items:center' },
       el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px' },

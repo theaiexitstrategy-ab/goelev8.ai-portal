@@ -140,6 +140,7 @@ async function upsertProduct(res, clientId, body) {
     if (body.compare_at_price_cents === null)          patch.compare_at_price_cents = null;
     else if (Number.isFinite(+body.compare_at_price_cents)) patch.compare_at_price_cents = +body.compare_at_price_cents;
     if (typeof body.image_url === 'string')            patch.image_url = body.image_url || null;
+    if (typeof body.payment_link === 'string')         patch.payment_link = body.payment_link.trim() || null;
     if (typeof body.printify_product_id === 'string')  patch.printify_product_id = body.printify_product_id || null;
     if (typeof body.is_active === 'boolean')           patch.is_active = body.is_active;
     if (Number.isFinite(+body.sort_order))             patch.sort_order = +body.sort_order;
@@ -165,6 +166,7 @@ async function upsertProduct(res, clientId, body) {
     base_price_cents:       price,
     compare_at_price_cents: Number.isFinite(+body?.compare_at_price_cents) ? +body.compare_at_price_cents : null,
     image_url:              body?.image_url || null,
+    payment_link:           (typeof body?.payment_link === 'string' ? body.payment_link.trim() : '') || null,
     printify_product_id:    body?.printify_product_id || null,
     is_active:              typeof body?.is_active === 'boolean' ? body.is_active : true,
     sort_order:             Number.isFinite(+body?.sort_order) ? +body.sort_order : 0
