@@ -18,19 +18,30 @@
 //   }
 //   Response: { url: "https://checkout.stripe.com/c/pay/…" }
 //
-// The session is created against the *client's own* Stripe account
-// using clients.stripe_secret_key — money flows to the tenant, not to
-// the platform. If the tenant hasn't configured a Stripe key yet, we
-// return a clear 400 so the storefront can surface a useful error
-// (instead of a cryptic Stripe 401).
+// Money flow — Stripe Connect direct charges:
+//   - The session is created on the platform's Stripe API key but
+//     scoped to the tenant's connected account via the second arg
+//     `{ stripeAccount: <acct_xxx> }`. Funds settle into the tenant's
+//     Stripe balance.
+//   - application_fee_amount routes the platform's cut (10% by default,
+//     overridable per tenant via clients.platform_fee_pct — see
+//     lib/platform-fee.js) to GoElev8 in the same charge.
+//   - The tenant connects their Stripe in the portal Integrations
+//     panel (api/portal/connect.js OAuth flow); their account id is
+//     persisted as clients.stripe_connected_account_id. Storefront
+//     never sees that id.
 //
 // CORS is open — storefronts call this from the browser. The endpoint
 // validates the slug + product_key against our own DB and uses *our*
 // stored price (not anything the caller sent), so a hostile caller
 // can't fabricate a $0 line item.
 
-import Stripe from 'stripe';
+import { stripe } from '../../lib/stripe.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import {
+  resolvePlatformFeePct,
+  calcPlatformFeeCents
+} from '../../lib/platform-fee.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -81,21 +92,21 @@ export default async function handler(req, res) {
   if (quantity < 1)  quantity = 1;
   if (quantity > 99) quantity = 99;
 
-  // Resolve tenant + their Stripe key.
+  // Resolve tenant + their Connect account + per-tenant fee override.
+  // platform_fee_pct may be NULL → resolvePlatformFeePct falls back to
+  // the env default (10% as of writing).
   const { data: client, error: clientErr } = await supabaseAdmin
-    .from('clients').select('id, slug, name, stripe_secret_key').eq('slug', slug).maybeSingle();
+    .from('clients')
+    .select('id, slug, name, stripe_connected_account_id, platform_fee_pct')
+    .eq('slug', slug)
+    .maybeSingle();
   if (clientErr) return res.status(500).json({ error: clientErr.message });
   if (!client)   return res.status(404).json({ error: 'tenant_not_found' });
-  if (!client.stripe_secret_key) {
-    return res.status(400).json({
-      error: 'stripe_not_configured',
-      message: 'This storefront is not connected to Stripe yet. The operator needs to set a Stripe secret key in the portal before checkout will work.'
-    });
-  }
 
-  // Resolve product. We deliberately read the current row at click
-  // time so the price the customer pays is whatever's in the portal
-  // right now — that's the whole point of this endpoint.
+  // Resolve product BEFORE the Connect gate. Order matters — a stale
+  // storefront still pointing at a removed/inactive SKU should get
+  // the specific 404 product_not_found, not a misleading
+  // stripe_not_configured.
   const { data: product, error: productErr } = await supabaseAdmin
     .from('merch_products')
     .select('id, name, description, base_price_cents, image_url, is_active')
@@ -108,8 +119,29 @@ export default async function handler(req, res) {
   }
   const unitAmount = Number(product.base_price_cents);
   if (!Number.isFinite(unitAmount) || unitAmount < 1) {
-    return res.status(400).json({ error: 'invalid_price', message: 'Product price is not set in the portal.' });
+    return res.status(400).json({
+      error: 'invalid_price',
+      message: 'Product price is not set in the portal.'
+    });
   }
+
+  // Now the Connect gate. The tenant must have completed the OAuth
+  // flow in the portal Integrations panel before any direct charge
+  // can be routed to their account.
+  if (!client.stripe_connected_account_id) {
+    return res.status(400).json({
+      error: 'stripe_not_configured',
+      message: 'This storefront has not connected its Stripe account yet. The operator needs to open the portal Integrations panel and click Connect Stripe before checkout will work.'
+    });
+  }
+
+  // Platform fee. Subtotal here is what the customer will pay for the
+  // line item; we don't add shipping or processing fee surcharges on
+  // top — those land in the destination charge as additional line
+  // items if the storefront opts in (out of scope for this endpoint).
+  const subtotalCents = unitAmount * quantity;
+  const platformFeePct = resolvePlatformFeePct(client);
+  const applicationFeeCents = calcPlatformFeeCents(subtotalCents, platformFeePct);
 
   // success_url / cancel_url — caller's choice when provided, with a
   // sane fallback derived from the request Origin (or, failing that,
@@ -122,10 +154,24 @@ export default async function handler(req, res) {
     ? body.cancel_url
     : (origin ? origin + '/merch' : 'https://example.com/');
 
-  const tenantStripe = new Stripe(client.stripe_secret_key, { apiVersion: '2024-06-20' });
+  // Shared metadata, mirrored onto the Checkout Session AND the
+  // underlying PaymentIntent so:
+  //   - /api/external/orders (the storefront-side post-purchase POST)
+  //     can resolve which portal tenant + product this charge came from
+  //   - sync-sales (which iterates PaymentIntents on the connected
+  //     account, not Sessions) can reconcile without re-loading anything
+  // Values must be strings — Stripe rejects non-string metadata.
+  const sharedMetadata = {
+    portal_client_id:   String(client.id),
+    portal_product_id:  String(product.id),
+    client_slug:        String(client.slug),
+    product_key:        productKey,
+    platform_fee_cents: String(applicationFeeCents),
+    source:             'portal_external_checkout'
+  };
 
   try {
-    const session = await tenantStripe.checkout.sessions.create({
+    const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       // Ad-hoc line item: no Stripe Product or Price object required.
       // Name, description, and image come from the portal so the
@@ -151,14 +197,12 @@ export default async function handler(req, res) {
       allow_promotion_codes: true,
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata: {
-        portal_client_id:  client.id,
-        portal_product_id: product.id,
-        client_slug:       client.slug,
-        product_key:       productKey,
-        source:            'portal_external_checkout'
-      }
-    });
+      payment_intent_data: {
+        application_fee_amount: applicationFeeCents,
+        metadata: sharedMetadata
+      },
+      metadata: sharedMetadata
+    }, { stripeAccount: client.stripe_connected_account_id });
     return res.status(200).json({ url: session.url });
   } catch (e) {
     // Stripe's own error messages are usually clear enough for the

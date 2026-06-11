@@ -26,6 +26,11 @@
 // added so the customer's actual paid amount covers everything.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
+import {
+  PLATFORM_FEE_DEFAULT_PCT,
+  resolvePlatformFeePct,
+  calcPlatformFeeCents
+} from '../../lib/platform-fee.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -37,7 +42,6 @@ const CORS_HEADERS = {
 // platform-wide via env if your account negotiated different rates.
 const STRIPE_FEE_PCT  = parseFloat(process.env.STRIPE_FEE_PCT  || '2.9');
 const STRIPE_FEE_FIXED_CENTS = parseInt(process.env.STRIPE_FEE_FIXED_CENTS || '30', 10);
-const DEFAULT_PLATFORM_FEE_PCT = parseFloat(process.env.PLATFORM_FEE_DEFAULT_PCT || '10');
 
 // Flat platform processing fee charged on every order. Goes to the
 // platform (GoElev8) alongside the percent-based platform fee — covers
@@ -90,7 +94,7 @@ export default async function handler(req, res) {
   // Resolve the tenant's fee config + Stripe Connect account in one
   // hit. Tolerant if the optional columns aren't migrated yet — falls
   // back to env defaults / null account.
-  let feePct = DEFAULT_PLATFORM_FEE_PCT;
+  let feePct = PLATFORM_FEE_DEFAULT_PCT;
   let processingFeeCents = DEFAULT_PROCESSING_FEE_CENTS;
   let passStripeFees = true;
   let connectedAccountId = null;
@@ -105,7 +109,7 @@ export default async function handler(req, res) {
       'platform_fee_pct, processing_fee_cents, pass_stripe_fees_to_customer, stripe_connected_account_id'
     );
     if (client) {
-      if (client.platform_fee_pct != null) feePct = parseFloat(client.platform_fee_pct);
+      feePct = resolvePlatformFeePct(client);
       if (client.processing_fee_cents != null) {
         processingFeeCents = Math.max(0, parseInt(client.processing_fee_cents, 10));
       }
@@ -123,7 +127,7 @@ export default async function handler(req, res) {
     if (/column .*(processing_fee_cents|stripe_connected_account_id).* does not exist/i.test(e?.message || '')) {
       try {
         const c2 = await loadClient('platform_fee_pct, pass_stripe_fees_to_customer');
-        if (c2?.platform_fee_pct != null) feePct = parseFloat(c2.platform_fee_pct);
+        feePct = resolvePlatformFeePct(c2);
         if (typeof c2?.pass_stripe_fees_to_customer === 'boolean') {
           passStripeFees = c2.pass_stripe_fees_to_customer;
         }
@@ -133,8 +137,9 @@ export default async function handler(req, res) {
   }
 
   // Platform fee = pct of subtotal (NOT of subtotal + shipping, so
-  // we don't take a cut of pass-through shipping costs).
-  const platformFeeCents = Math.round(subtotalCents * feePct / 100);
+  // we don't take a cut of pass-through shipping costs). Math from
+  // the shared helper so /api/external/checkout.js can't disagree.
+  const platformFeeCents = calcPlatformFeeCents(subtotalCents, feePct);
 
   // Target the storefront's destination charge must receive BEFORE
   // Stripe takes its cut. The customer pays this + any Stripe pass-
