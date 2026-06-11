@@ -4019,10 +4019,10 @@ function openMerchProductModal(product, onSaved) {
       fileStatus
     ),
     el('div', { class: 'field' },
-      el('label', {}, 'Stripe Payment Link'),
+      el('label', {}, 'Stripe Payment Link (optional)'),
       paymentLinkInput,
       el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' },
-        'Paste the Stripe Payment Link URL (e.g. https://buy.stripe.com/…). When set, the storefront Buy button routes shoppers straight to Stripe-hosted checkout.')
+        'Leave blank for normal use — the storefront mints a Stripe Checkout Session at the current Price set above on every Buy click (edit the price here and it takes effect on the next purchase, no Stripe sync needed). Only paste a Payment Link URL if you want to override that flow for this product.')
     ),
     el('div', { class: 'row', style: 'gap:12px;align-items:center' },
       el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px' },
