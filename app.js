@@ -7306,6 +7306,37 @@ async function viewAdmin() {
   migPanel.appendChild(dedupeContactsBtn);
   migPanel.appendChild(dedupeContactsOut);
 
+  // ─── Backfill external merch orders ───────────────────────────────
+  // Scans recent Stripe Checkout Sessions on every connected account
+  // and writes any that completed before the webhook fix shipped
+  // (or before the Connect webhook was subscribed) into merch_orders.
+  // Idempotent on stripe_payment_id — safe to re-run.
+  const backfillOrdersOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:300px;margin-top:8px' });
+  const backfillOrdersBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    if (!confirm('Scan recent Stripe sessions on every connected account and ingest any portal-external-checkout orders into the Merch → Orders tab?\n\nIdempotent — duplicate calls are no-ops.')) return;
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Scanning Stripe…';
+    try {
+      const r = await api('/api/admin?action=backfill-external-merch-orders', {
+        method: 'POST',
+        body: { hours_back: 168, max_sessions: 100 }
+      });
+      const t = r.totals || {};
+      toast(`Scanned ${t.scanned || 0} sessions · ingested ${t.ingested || 0} new · ${t.idempotent || 0} already present`);
+      backfillOrdersOut.style.display = 'block';
+      backfillOrdersOut.textContent = JSON.stringify(r, null, 2);
+    } catch (err) {
+      toast('Backfill failed: ' + err.message, true);
+      backfillOrdersOut.style.display = 'block';
+      backfillOrdersOut.textContent = 'Error: ' + err.message;
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Backfill Merch Orders';
+    }
+  } }, 'Backfill Merch Orders');
+  migPanel.appendChild(backfillOrdersBtn);
+  migPanel.appendChild(backfillOrdersOut);
+
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
   // tab into every tenant's sidebar without per-tenant SQL.
