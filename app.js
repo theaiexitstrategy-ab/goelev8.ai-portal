@@ -7537,6 +7537,38 @@ async function viewAdmin() {
   migPanel.appendChild(inspectBtn);
   migPanel.appendChild(inspectOut);
 
+  // ─── Per-tenant Pickup Configuration ──────────────────────────────
+  // Sets clients.pickup_enabled + pickup_location for a single tenant
+  // so the Stripe Checkout shipping picker shows the custom label
+  // ("Pick up at iSlay Studios — free") instead of the generic one.
+  const pickupOut = el('div', { style: 'display:none;margin-top:8px' });
+  const pickupBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    const slug = prompt('Which tenant? (slug, e.g. islay-studios)');
+    if (!slug) return;
+    const loc = prompt('Pickup location? (shown on Stripe Checkout, e.g. "iSlay Studios, Springfield MO"). Leave blank for generic "Pick up in person".');
+    if (loc === null) return;
+    const enabled = confirm('Enable pickup option for this tenant? Click OK for ON, Cancel for OFF.\n\n(Default is ON. Click Cancel to hide pickup from the checkout picker.)');
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Saving…';
+    pickupOut.style.display = 'block';
+    pickupOut.innerHTML = '<div class="muted" style="font-size:0.75rem;padding:8px">Updating…</div>';
+    try {
+      const r = await api('/api/admin?action=set-pickup', {
+        method: 'POST',
+        body: { slug: slug.trim(), pickup_enabled: enabled, pickup_location: loc.trim() }
+      });
+      toast(`Pickup config updated for ${r.client?.name || slug}`);
+      pickupOut.innerHTML = '<pre style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto">' + JSON.stringify(r.client, null, 2) + '</pre>';
+    } catch (err) {
+      pickupOut.innerHTML = '<div class="err" style="padding:8px">Failed: ' + err.message + '</div>';
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Pickup Config';
+    }
+  } }, 'Pickup Config');
+  migPanel.appendChild(pickupBtn);
+  migPanel.appendChild(pickupOut);
+
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
   // tab into every tenant's sidebar without per-tenant SQL.

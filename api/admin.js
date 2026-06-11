@@ -925,6 +925,43 @@ async function dedupeLeads(req, res) {
 // Tolerant of tables that don't exist in a given environment
 // (catches per-table errors and continues).
 // ──────────────────────────────────────────────────────────────
+// Per-tenant pickup config. Body: { slug, pickup_enabled, pickup_location }.
+// pickup_enabled toggles whether the $0 'Pick up in person' option
+// shows on the Stripe Checkout rate picker. pickup_location is the
+// rate's display name suffix ("Pick up at iSlay Studios"); pass null
+// or empty string to fall back to the generic label.
+async function setPickup(req, res) {
+  const body = await readJson(req).catch(() => ({}));
+  const slug = body?.slug ? String(body.slug).trim() : null;
+  if (!slug) return res.status(400).json({ error: 'slug required' });
+
+  const patch = {};
+  if (typeof body.pickup_enabled === 'boolean') patch.pickup_enabled = body.pickup_enabled;
+  if (body.pickup_location !== undefined) {
+    const loc = String(body.pickup_location || '').trim();
+    patch.pickup_location = loc ? loc.slice(0, 80) : null;
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: 'nothing to update' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('clients').update(patch).eq('slug', slug)
+    .select('slug, name, pickup_enabled, pickup_location').maybeSingle();
+  if (error) {
+    if (/column .*(pickup_enabled|pickup_location).* does not exist/i.test(error.message || '')) {
+      return res.status(503).json({
+        error: 'pending_migration',
+        hint: 'Run Master Admin → Verify Migrations first.'
+      });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+  if (!data) return res.status(404).json({ error: 'tenant_not_found' });
+  return res.status(200).json({ ok: true, client: data });
+}
+
+// ──────────────────────────────────────────────────────────────
 // Stripe webhook health check. Answers "why isn't my order showing up
 // in the portal" by listing every webhook endpoint configured on the
 // platform Stripe account, with the URL, enabled events, and crucially
@@ -3106,6 +3143,22 @@ async function applyPendingMigrations(req, res) {
     `COMMENT ON COLUMN public.clients.processing_fee_cents IS
        'Flat per-order processing fee (cents) charged to the customer and routed to GoElev8 alongside platform_fee_pct. NULL = use the platform default (PROCESSING_FEE_DEFAULT_CENTS, currently 300 = $3).';`,
 
+    // ----- clients.pickup_enabled + clients.pickup_location -----
+    // Lets a tenant offer in-person pickup as a $0 shipping option on
+    // Stripe Checkout. Default enabled because Flex, WPFF, and iSlay
+    // all have physical locations and want pickup as an option. Set
+    // pickup_enabled=false on a pure-dropship tenant to hide it.
+    // pickup_location is shown as the rate display name when set
+    // ("Pick up at iSlay Studios"); falls back to a generic label.
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS pickup_enabled boolean NOT NULL DEFAULT true;`,
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS pickup_location text;`,
+    `COMMENT ON COLUMN public.clients.pickup_enabled IS
+       'When true, Stripe Checkout shows a $0 "Pick up in person" shipping option alongside the paid rates. Default true.';`,
+    `COMMENT ON COLUMN public.clients.pickup_location IS
+       'Public-facing pickup location shown on Stripe Checkout (e.g. "iSlay Studios, Springfield MO"). Null = generic "Pick up in person" label.';`,
+
     // ----- messages.blast_id: link outbound blast messages to their row -----
     // Lets the blast throttle distinguish "this number got a blast in
     // the last hour" from "the operator messaged them 1-on-1 in the
@@ -3355,6 +3408,7 @@ export default async function handler(req, res) {
       case 'dedupe-contacts':           return await dedupeContacts(req, res);
       case 'backfill-external-merch-orders': return await backfillExternalMerchOrdersAction(req, res);
       case 'connect-status-all':         return await connectStatusAll(req, res);
+      case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);
       case 'inspect-recent-stripe-sessions': return await inspectRecentStripeSessions(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);

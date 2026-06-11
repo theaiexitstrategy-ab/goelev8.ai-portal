@@ -80,8 +80,29 @@ const PROCESSING_FEE_CENTS = parseInt(process.env.PROCESSING_FEE_DEFAULT_CENTS |
 // of computing two separate session shapes.
 const FREE_SHIPPING_THRESHOLD_CENTS = parseInt(process.env.FREE_SHIPPING_THRESHOLD_CENTS || '7500', 10);
 
-function buildShippingOptions(subtotalCents) {
+function buildShippingOptions(subtotalCents, { pickupEnabled, pickupLocation } = {}) {
   const options = [];
+
+  // In-person pickup at the tenant's location. $0 — customer skips
+  // shipping entirely. Listed first so it's the most visible option
+  // for tenants whose buyers are usually local (Flex gym, iSlay
+  // studio, WPFF gym). Default-on; tenants without a physical
+  // location can set clients.pickup_enabled=false to hide it.
+  if (pickupEnabled !== false) {
+    options.push({
+      shipping_rate_data: {
+        type: 'fixed_amount',
+        fixed_amount: { amount: 0, currency: 'usd' },
+        display_name: pickupLocation
+          ? `Pick up at ${String(pickupLocation).slice(0, 60)} (free)`
+          : 'Pick up in person (free)',
+        delivery_estimate: {
+          minimum: { unit: 'hour', value: 24 },
+          maximum: { unit: 'business_day', value: 3 }
+        }
+      }
+    });
+  }
 
   if (subtotalCents >= FREE_SHIPPING_THRESHOLD_CENTS) {
     options.push({
@@ -220,14 +241,27 @@ export default async function handler(req, res) {
   if (norm.error) return res.status(norm.error.status).json(norm.error.body);
   const requestedItems = norm.items;
 
-  // Resolve tenant + their Connect account + per-tenant fee override.
-  // platform_fee_pct may be NULL → resolvePlatformFeePct falls back to
-  // the env default (10% as of writing).
-  const { data: client, error: clientErr } = await supabaseAdmin
+  // Resolve tenant + their Connect account + per-tenant fee override
+  // + pickup config. platform_fee_pct may be NULL → resolvePlatformFeePct
+  // falls back to the env default (10%). pickup_enabled defaults to
+  // true at the schema level. Tolerant SELECT in case the migration
+  // hasn't run yet on this project.
+  let { data: client, error: clientErr } = await supabaseAdmin
     .from('clients')
-    .select('id, slug, name, stripe_connected_account_id, platform_fee_pct')
+    .select('id, slug, name, stripe_connected_account_id, platform_fee_pct, pickup_enabled, pickup_location')
     .eq('slug', slug)
     .maybeSingle();
+  if (clientErr && /column .*(pickup_enabled|pickup_location).* does not exist/i.test(clientErr.message || '')) {
+    const retry = await supabaseAdmin
+      .from('clients')
+      .select('id, slug, name, stripe_connected_account_id, platform_fee_pct')
+      .eq('slug', slug).maybeSingle();
+    client = retry.data; clientErr = retry.error;
+    // Pre-migration projects default to pickup_enabled=true so the
+    // feature ships immediately for tenants whose schema is up to
+    // date and is silently inert on those that aren't.
+    if (client) client.pickup_enabled = true;
+  }
   if (clientErr) return res.status(500).json({ error: clientErr.message });
   if (!client)   return res.status(404).json({ error: 'tenant_not_found' });
 
@@ -387,7 +421,10 @@ export default async function handler(req, res) {
       // free shipping over $75); whichever they pick is added to the
       // total and captured into session.total_details.amount_shipping.
       shipping_address_collection: { allowed_countries: ['US'] },
-      shipping_options: buildShippingOptions(subtotalCents),
+      shipping_options: buildShippingOptions(subtotalCents, {
+        pickupEnabled:  client.pickup_enabled,
+        pickupLocation: client.pickup_location
+      }),
       phone_number_collection: { enabled: true },
       allow_promotion_codes: true,
       success_url: successUrl,
