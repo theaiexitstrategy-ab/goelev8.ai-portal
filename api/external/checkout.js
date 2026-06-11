@@ -63,6 +63,71 @@ import {
   calcPlatformFeeCents
 } from '../../lib/platform-fee.js';
 
+// Flat processing fee charged to every customer on top of subtotal.
+// Mirrors PROCESSING_FEE_DEFAULT_CENTS in api/external/fees.js. Falls
+// back to $3 if the env var isn't set. This goes to GoElev8 via the
+// application_fee_amount, not to the tenant.
+const PROCESSING_FEE_CENTS = parseInt(process.env.PROCESSING_FEE_DEFAULT_CENTS || '300', 10);
+
+// Shipping rate menu shown on the Stripe Checkout page. Stripe
+// renders these as radio buttons under the customer's shipping
+// address; whichever they pick is added to the session total and
+// captured into session.total_details.amount_shipping (which the
+// portal webhook → merch_orders → shipping_cents flow records).
+//
+// Free shipping is enabled automatically when subtotal >= the
+// threshold below — we pass the conditional rate to Stripe instead
+// of computing two separate session shapes.
+const FREE_SHIPPING_THRESHOLD_CENTS = parseInt(process.env.FREE_SHIPPING_THRESHOLD_CENTS || '7500', 10);
+
+function buildShippingOptions(subtotalCents) {
+  const options = [];
+
+  if (subtotalCents >= FREE_SHIPPING_THRESHOLD_CENTS) {
+    options.push({
+      shipping_rate_data: {
+        type: 'fixed_amount',
+        fixed_amount: { amount: 0, currency: 'usd' },
+        display_name: 'Free Standard Shipping',
+        delivery_estimate: {
+          minimum: { unit: 'business_day', value: 3 },
+          maximum: { unit: 'business_day', value: 7 }
+        }
+      }
+    });
+  } else {
+    options.push({
+      shipping_rate_data: {
+        type: 'fixed_amount',
+        fixed_amount: { amount: 700, currency: 'usd' },
+        display_name: 'USPS Priority (3–5 business days)',
+        delivery_estimate: {
+          minimum: { unit: 'business_day', value: 3 },
+          maximum: { unit: 'business_day', value: 5 }
+        }
+      }
+    });
+  }
+
+  // Expedited tier — always available as a paid upgrade so customers
+  // who need it sooner have a choice. Customer's actual address gets
+  // captured in session.shipping_details.address so the tenant can
+  // print whatever label they want at fulfillment time.
+  options.push({
+    shipping_rate_data: {
+      type: 'fixed_amount',
+      fixed_amount: { amount: 1900, currency: 'usd' },
+      display_name: 'USPS Express (1–3 business days)',
+      delivery_estimate: {
+        minimum: { unit: 'business_day', value: 1 },
+        maximum: { unit: 'business_day', value: 3 }
+      }
+    }
+  });
+
+  return options;
+}
+
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -214,7 +279,17 @@ export default async function handler(req, res) {
   }
 
   const platformFeePct = resolvePlatformFeePct(client);
-  const applicationFeeCents = calcPlatformFeeCents(subtotalCents, platformFeePct);
+  const platformFeeCents = calcPlatformFeeCents(subtotalCents, platformFeePct);
+
+  // application_fee_amount = the share that goes to GoElev8 instead of
+  // the tenant. We collect:
+  //   - platform_fee_cents (10% of subtotal, configurable per-tenant)
+  //   - PROCESSING_FEE_CENTS ($3 flat, customer-visible line item)
+  // Shipping is NOT in here — whatever the customer picks for shipping
+  // settles into the tenant's Stripe balance so they can pay for the
+  // actual label/box at fulfillment time.
+  const processingFeeCents = PROCESSING_FEE_CENTS;
+  const applicationFeeCents = platformFeeCents + processingFeeCents;
 
   // success_url / cancel_url — caller's choice when provided, with a
   // sane fallback derived from the request Origin (or, failing that,
@@ -242,6 +317,25 @@ export default async function handler(req, res) {
     }
   }));
 
+  // Customer-visible processing fee line. Shown on the Stripe Checkout
+  // summary so there's no surprise total — the buyer can see exactly
+  // what they're paying for. application_fee_amount above already
+  // routes this $3 to GoElev8, so adding it as a line item just makes
+  // the breakdown transparent (Stripe doesn't care about the split).
+  if (processingFeeCents > 0) {
+    stripeLineItems.push({
+      quantity: 1,
+      price_data: {
+        currency: 'usd',
+        unit_amount: processingFeeCents,
+        product_data: {
+          name: 'Processing fee',
+          description: 'Covers card processing and platform overhead.'
+        }
+      }
+    });
+  }
+
   // Compact per-line payload for the webhook. Stripe metadata values
   // are capped at 500 chars each, so we omit anything non-essential
   // (name/description — re-derivable from product_id at ingest time).
@@ -264,17 +358,23 @@ export default async function handler(req, res) {
   // Values must be strings — Stripe rejects non-string metadata.
   const isMulti = lineRows.length > 1;
   const sharedMetadata = {
-    portal_client_id:   String(client.id),
-    portal_product_id:  isMulti ? '' : String(lineRows[0].product.id),
-    client_slug:        String(client.slug),
-    product_key:        isMulti ? '' : lineRows[0].product_key,
-    platform_fee_cents: String(applicationFeeCents),
-    source:             'portal_external_checkout',
-    items_json:         JSON.stringify(itemsManifest).slice(0, 480),
+    portal_client_id:     String(client.id),
+    portal_product_id:    isMulti ? '' : String(lineRows[0].product.id),
+    client_slug:          String(client.slug),
+    product_key:          isMulti ? '' : lineRows[0].product_key,
+    // Split the GoElev8 cut so the webhook can persist each piece
+    // separately to merch_orders.platform_fee_cents +
+    // merch_orders.processing_fee_cents and reconciliation reports
+    // can tell them apart.
+    platform_fee_cents:   String(platformFeeCents),
+    processing_fee_cents: String(processingFeeCents),
+    application_fee_cents: String(applicationFeeCents),
+    source:               'portal_external_checkout',
+    items_json:           JSON.stringify(itemsManifest).slice(0, 480),
     // Variant breakout for the single-item path so consumers that
     // don't parse items_json still see the variant the buyer picked.
-    variant_size:       isMulti ? '' : (lineRows[0].variant?.size  || ''),
-    variant_color:      isMulti ? '' : (lineRows[0].variant?.color || '')
+    variant_size:         isMulti ? '' : (lineRows[0].variant?.size  || ''),
+    variant_color:        isMulti ? '' : (lineRows[0].variant?.color || '')
   };
 
   try {
@@ -282,10 +382,12 @@ export default async function handler(req, res) {
       mode: 'payment',
       line_items: stripeLineItems,
       // Physical merch — collect shipping address and a phone number
-      // so the tenant can fulfill. Shipping rates are not configured
-      // here; the operator can wire them up in Stripe later or layer
-      // a flat per-tenant rate on top of this endpoint.
+      // so the tenant can fulfill. shipping_options below presents the
+      // customer with the rate picker (USPS Priority / Express, plus
+      // free shipping over $75); whichever they pick is added to the
+      // total and captured into session.total_details.amount_shipping.
       shipping_address_collection: { allowed_countries: ['US'] },
+      shipping_options: buildShippingOptions(subtotalCents),
       phone_number_collection: { enabled: true },
       allow_promotion_codes: true,
       success_url: successUrl,
