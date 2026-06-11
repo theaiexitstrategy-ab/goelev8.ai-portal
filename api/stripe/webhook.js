@@ -2,6 +2,7 @@ import { stripe } from '../../lib/stripe.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getPack } from '../../lib/credits.js';
 import { sendPushToClient, sendPushToAdmins } from '../../lib/push.js';
+import { ingestExternalMerchOrder } from '../../lib/merch-ingest.js';
 
 // Disable Vercel body parsing — Stripe needs the raw body for signature verification
 export const config = { api: { bodyParser: false } };
@@ -27,6 +28,22 @@ export default async function handler(req, res) {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object;
+
+        // Portal-managed external checkout (api/external/checkout.js
+        // direct-charge sessions from tenant storefronts like
+        // islaystudiosllc.com/merch). Recognized by the source marker
+        // on metadata. Writes a merch_orders row + line items so the
+        // order shows up in the portal Merch → Orders tab. Idempotent
+        // on stripe_payment_id so replays + backfills are safe.
+        if (session.metadata?.source === 'portal_external_checkout') {
+          try {
+            await ingestExternalMerchOrder({ session, connectAccount: event.account });
+          } catch (e) {
+            console.error('[webhook] merch ingest failed:', e?.message);
+          }
+          break;
+        }
+
         const clientId = session.metadata?.client_id;
         const packId = session.metadata?.pack;
         const pack = getPack(packId);

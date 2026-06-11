@@ -20,6 +20,7 @@ import { requireAdmin, methodGuard, readJson } from '../lib/auth.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../lib/twilio.js';
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
+import { backfillExternalMerchOrders } from '../lib/merch-ingest.js';
 
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
@@ -922,6 +923,65 @@ async function dedupeLeads(req, res) {
 // Idempotent — re-running finds zero groups once the table is clean.
 // Tolerant of tables that don't exist in a given environment
 // (catches per-table errors and continues).
+// ──────────────────────────────────────────────────────────────
+// Backfill paid external-checkout sessions into merch_orders.
+//
+// Body: { slug?, hours_back? = 72, max_sessions? = 100 }
+//   slug omitted → scan every tenant that has a connected account.
+//   slug present → scan just that one tenant.
+//
+// Use cases:
+//   - First paid order on a tenant where the Stripe webhook didn't
+//     yet have the merch-ingest branch (the iSlay shampoo test).
+//   - The Connect webhook subscription wasn't created in Stripe
+//     Dashboard at the time of purchase, so the event never reached
+//     the portal.
+// Safe to re-run — ingestExternalMerchOrder() is idempotent on
+// stripe_payment_id.
+async function backfillExternalMerchOrdersAction(req, res) {
+  const body = await readJson(req).catch(() => ({}));
+  const slug       = body?.slug ? String(body.slug).trim() : null;
+  const hoursBack  = Number.isFinite(+body?.hours_back) ? +body.hours_back : 72;
+  const maxSessions = Number.isFinite(+body?.max_sessions) ? +body.max_sessions : 100;
+
+  let query = supabaseAdmin
+    .from('clients')
+    .select('id, slug, name, stripe_connected_account_id')
+    .not('stripe_connected_account_id', 'is', null);
+  if (slug) query = query.eq('slug', slug);
+  const { data: tenants, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  if (!tenants?.length) {
+    return res.status(404).json({
+      error: 'no_connected_tenants',
+      hint: slug
+        ? `Tenant ${slug} has no stripe_connected_account_id set — connect Stripe in the portal first.`
+        : 'No tenants have completed Stripe Connect yet.'
+    });
+  }
+
+  const results = [];
+  for (const t of tenants) {
+    const r = await backfillExternalMerchOrders({
+      stripeAccount: t.stripe_connected_account_id,
+      hoursBack,
+      maxSessions
+    });
+    results.push({
+      slug: t.slug, name: t.name,
+      account: t.stripe_connected_account_id,
+      ...r
+    });
+  }
+  const totals = results.reduce((acc, r) => ({
+    scanned:    acc.scanned    + (r.scanned    || 0),
+    ingested:   acc.ingested   + (r.ingested   || 0),
+    idempotent: acc.idempotent + (r.idempotent || 0),
+    skipped:    acc.skipped    + (r.skipped    || 0)
+  }), { scanned: 0, ingested: 0, idempotent: 0, skipped: 0 });
+  return res.status(200).json({ totals, results });
+}
+
 // ──────────────────────────────────────────────────────────────
 async function dedupeContacts(req, res) {
   const { data: clients } = await supabaseAdmin
@@ -3048,6 +3108,7 @@ export default async function handler(req, res) {
       case 'sales-dashboard':           return await salesDashboard(req, res);
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'dedupe-contacts':           return await dedupeContacts(req, res);
+      case 'backfill-external-merch-orders': return await backfillExternalMerchOrdersAction(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);
