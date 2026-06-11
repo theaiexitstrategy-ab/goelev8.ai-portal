@@ -925,6 +925,145 @@ async function dedupeLeads(req, res) {
 // Tolerant of tables that don't exist in a given environment
 // (catches per-table errors and continues).
 // ──────────────────────────────────────────────────────────────
+// Stripe webhook health check. Answers "why isn't my order showing up
+// in the portal" by listing every webhook endpoint configured on the
+// platform Stripe account, with the URL, enabled events, and crucially
+// whether it's set up to receive events from connected accounts.
+//
+// Without `connect: true` on a webhook endpoint, NO checkout.session.completed
+// events from connected accounts (Will, Kenny, Nate's Stripe) ever
+// reach the portal — so the new ingest path can't fire and orders
+// silently disappear. This check tells the operator which endpoint
+// needs the toggle flipped in Stripe Dashboard.
+async function stripeWebhookHealth(req, res) {
+  const targetUrl = `${(process.env.PORTAL_BASE_URL || 'https://portal.goelev8.ai').replace(/\/$/, '')}/api/stripe/webhook`;
+  try {
+    const list = await stripe.webhookEndpoints.list({ limit: 100 });
+    const endpoints = (list.data || []).map(ep => ({
+      id:             ep.id,
+      url:            ep.url,
+      status:         ep.status,
+      // 'connect' on a webhook endpoint means it RECEIVES events from
+      // connected accounts. This is THE bit that matters for the merch
+      // ingest flow.
+      receives_connect_events: !!ep.connect,
+      enabled_events: ep.enabled_events || [],
+      created:        ep.created,
+      is_portal_url:  ep.url === targetUrl
+    }));
+
+    const portalEps = endpoints.filter(e => e.is_portal_url);
+    const portalEpConnect = portalEps.find(e => e.receives_connect_events) || null;
+    const portalEpPlatform = portalEps.find(e => !e.receives_connect_events) || null;
+
+    const subscribesCheckoutCompleted = (ep) =>
+      Array.isArray(ep?.enabled_events) &&
+      (ep.enabled_events.includes('*') || ep.enabled_events.includes('checkout.session.completed'));
+
+    // Verdict: do we have an endpoint at the portal URL that is
+    // (a) subscribed to checkout.session.completed AND
+    // (b) configured to receive connect events?
+    const ready = !!portalEpConnect && subscribesCheckoutCompleted(portalEpConnect);
+
+    let diagnosis;
+    if (!portalEps.length) {
+      diagnosis = `No webhook endpoint pointing at ${targetUrl} exists in Stripe. Add one in Stripe Dashboard → Developers → Webhooks → Add endpoint → URL=${targetUrl}, listen to events on "Connected accounts", subscribe to checkout.session.completed.`;
+    } else if (!portalEpConnect) {
+      diagnosis = `A webhook endpoint at ${targetUrl} exists but it does NOT listen on connected accounts — so iSlay / Will / Kenny's payments never trigger the order-ingest path. In Stripe Dashboard, EITHER edit the existing endpoint and flip "Listen to events on Connected accounts" on, OR add a second endpoint at the same URL with the connect toggle on.`;
+    } else if (!subscribesCheckoutCompleted(portalEpConnect)) {
+      diagnosis = `The connect-mode webhook at ${targetUrl} doesn't subscribe to checkout.session.completed. Edit it in Stripe Dashboard and add that event (or just use "Send all events" / *).`;
+    } else {
+      diagnosis = `Webhook at ${targetUrl} is set up correctly to receive checkout.session.completed events from connected accounts. If orders still aren't appearing, check Vercel logs for the function /api/stripe/webhook to see if Stripe is actually delivering and what the handler is doing — and run "Backfill Merch Orders" to pull recent ones.`;
+    }
+
+    return res.status(200).json({
+      target_webhook_url: targetUrl,
+      ready,
+      diagnosis,
+      portal_endpoint_connect:  portalEpConnect,
+      portal_endpoint_platform: portalEpPlatform,
+      all_endpoints: endpoints
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'stripe_error' });
+  }
+}
+
+// Inspect what's actually happening on a tenant's connected account
+// right now. For each recent Checkout Session (last 7 days by default),
+// reports: session_id, status, payment_status, amount, source metadata,
+// whether the matching merch_orders row exists.
+//
+// Body: { slug, hours_back?=168, limit?=20 }
+//
+// This is the "why isn't this order appearing" debugger. If you see a
+// session with payment_status='paid' AND source='portal_external_checkout'
+// but no matching merch_orders row, the webhook isn't delivering or
+// the ingest helper rejected it.
+async function inspectRecentStripeSessions(req, res) {
+  const body = await readJson(req).catch(() => ({}));
+  const slug = body?.slug ? String(body.slug).trim() : null;
+  if (!slug) return res.status(400).json({ error: 'slug required' });
+  const hoursBack = Number.isFinite(+body?.hours_back) ? +body.hours_back : 168;
+  const limit     = Number.isFinite(+body?.limit) ? Math.min(100, +body.limit) : 20;
+
+  const { data: tenant, error: tenantErr } = await supabaseAdmin
+    .from('clients').select('id, slug, name, stripe_connected_account_id')
+    .eq('slug', slug).maybeSingle();
+  if (tenantErr) return res.status(500).json({ error: tenantErr.message });
+  if (!tenant) return res.status(404).json({ error: 'tenant_not_found' });
+  if (!tenant.stripe_connected_account_id) {
+    return res.status(400).json({ error: 'tenant_not_connected', hint: 'Tenant has not OAuthed Stripe yet — no connected account to inspect.' });
+  }
+
+  const since = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000);
+  const out = [];
+  try {
+    const sessions = await stripe.checkout.sessions.list(
+      { limit, created: { gte: since } },
+      { stripeAccount: tenant.stripe_connected_account_id }
+    );
+    for (const s of sessions.data || []) {
+      // Cross-check against merch_orders to spot ingestion gaps.
+      let merchOrderExists = false;
+      const stripePaymentId = s.payment_intent || s.id;
+      if (stripePaymentId) {
+        const { data } = await supabaseAdmin
+          .from('merch_orders').select('id').eq('stripe_payment_id', stripePaymentId).maybeSingle();
+        merchOrderExists = !!data;
+      }
+      out.push({
+        session_id:        s.id,
+        created:           new Date(s.created * 1000).toISOString(),
+        status:            s.status,
+        payment_status:    s.payment_status,
+        amount_total:      s.amount_total,
+        currency:          s.currency,
+        customer_email:    s.customer_details?.email,
+        customer_phone:    s.customer_details?.phone,
+        metadata_source:   s.metadata?.source || null,
+        client_slug_meta:  s.metadata?.client_slug || null,
+        payment_intent:    s.payment_intent || null,
+        merch_order_exists: merchOrderExists,
+        verdict: !merchOrderExists && s.payment_status === 'paid' && s.metadata?.source === 'portal_external_checkout'
+          ? 'NEEDS_BACKFILL: paid + correct source + no merch_orders row'
+          : merchOrderExists
+            ? 'OK: order is in portal'
+            : 'IGNORED: not paid, or not from portal external checkout'
+      });
+    }
+  } catch (e) {
+    return res.status(500).json({ error: 'stripe_error: ' + e.message });
+  }
+  return res.status(200).json({
+    tenant: { slug: tenant.slug, name: tenant.name, account_id: tenant.stripe_connected_account_id },
+    scanned: out.length,
+    needs_backfill: out.filter(o => o.verdict.startsWith('NEEDS_BACKFILL')).length,
+    sessions: out
+  });
+}
+
+// ──────────────────────────────────────────────────────────────
 // Per-tenant Stripe Connect status. Returns a row for every client
 // with a quick read on what's wired up:
 //   - stripe_connected_account_id (the canonical "connected?" flag)
@@ -3181,6 +3320,8 @@ export default async function handler(req, res) {
       case 'dedupe-contacts':           return await dedupeContacts(req, res);
       case 'backfill-external-merch-orders': return await backfillExternalMerchOrdersAction(req, res);
       case 'connect-status-all':         return await connectStatusAll(req, res);
+      case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);
+      case 'inspect-recent-stripe-sessions': return await inspectRecentStripeSessions(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);

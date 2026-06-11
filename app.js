@@ -7400,6 +7400,123 @@ async function viewAdmin() {
   migPanel.appendChild(connectBtn);
   migPanel.appendChild(connectOut);
 
+  // ─── Stripe Webhook Health ────────────────────────────────────────
+  // Lists every webhook endpoint configured on the platform Stripe
+  // account and verifies the one pointing at portal.goelev8.ai is
+  // (a) subscribed to checkout.session.completed AND (b) toggled to
+  // listen on connected accounts. Without (b), iSlay / Will / Kenny's
+  // payments never reach the ingest path and orders silently vanish.
+  const webhookOut = el('div', { style: 'display:none;margin-top:8px' });
+  const webhookBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Checking Stripe…';
+    webhookOut.style.display = 'block';
+    webhookOut.innerHTML = '<div class="muted" style="font-size:0.75rem;padding:8px">Loading webhook config…</div>';
+    try {
+      const r = await api('/api/admin?action=stripe-webhook-health');
+      const verdictColor = r.ready ? '#86efac' : '#fbd38d';
+      const verdictBg    = r.ready ? 'rgba(34,197,94,0.10)' : 'rgba(237,137,54,0.10)';
+      const verdictBorder = r.ready ? 'rgba(34,197,94,0.35)' : 'rgba(237,137,54,0.35)';
+      const verdictIcon  = r.ready ? '✓' : '⚠';
+      const summary = r.ready ? 'Webhook is correctly configured' : 'Webhook needs attention';
+      const endpointRows = (r.all_endpoints || []).map(ep => {
+        const isPortal = ep.is_portal_url;
+        const connectIcon = ep.receives_connect_events ? '<span style="color:#86efac">●</span>' : '<span style="color:#fca5a5">○</span>';
+        const eventCount = ep.enabled_events.length;
+        const hasCompleted = ep.enabled_events.includes('*') || ep.enabled_events.includes('checkout.session.completed');
+        return `<tr style="border-top:1px solid rgba(255,255,255,0.05)${isPortal ? ';background:rgba(99,179,237,0.04)' : ''}">
+          <td style="padding:6px 10px;font-size:11px"><span class="mono" style="font-size:10px">${ep.url}</span>${isPortal ? ' <span style="color:#63b3ed;font-size:9px">(portal)</span>' : ''}</td>
+          <td style="padding:6px 10px;font-size:11px;text-align:center">${connectIcon}</td>
+          <td style="padding:6px 10px;font-size:11px">${hasCompleted ? '<span style="color:#86efac">checkout ✓</span>' : '<span style="color:#fca5a5">checkout ✗</span>'} <span class="muted">· ${eventCount} events</span></td>
+          <td style="padding:6px 10px;font-size:10px;color:${ep.status === 'enabled' ? '#86efac' : 'var(--muted,#888)'}">${ep.status}</td>
+        </tr>`;
+      }).join('');
+      webhookOut.innerHTML = `
+        <div style="padding:14px;background:${verdictBg};border:1px solid ${verdictBorder};border-radius:8px;font-size:0.85rem;line-height:1.5;color:${verdictColor};margin-bottom:10px">
+          <div style="font-weight:600;margin-bottom:4px">${verdictIcon} ${summary}</div>
+          <div style="color:#cbd5e1;font-size:0.78rem;line-height:1.5">${r.diagnosis}</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:10px;font-size:12px">
+          <div style="margin-bottom:6px;color:var(--muted,#888);font-size:11px">
+            Connect column: ● = receives connected account events · ○ = platform-only
+          </div>
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="font-size:10px;color:var(--muted,#888);text-transform:uppercase;letter-spacing:0.06em">
+              <th style="padding:6px 10px;text-align:left">URL</th>
+              <th style="padding:6px 10px;text-align:center">Connect</th>
+              <th style="padding:6px 10px;text-align:left">Events</th>
+              <th style="padding:6px 10px;text-align:left">Status</th>
+            </tr></thead>
+            <tbody>${endpointRows || '<tr><td colspan="4" style="padding:10px;text-align:center;color:var(--muted,#888)">No webhooks configured</td></tr>'}</tbody>
+          </table>
+        </div>
+      `;
+    } catch (err) {
+      webhookOut.innerHTML = '<div class="err" style="padding:8px">Failed: ' + err.message + '</div>';
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Stripe Webhook Health';
+    }
+  } }, 'Stripe Webhook Health');
+  migPanel.appendChild(webhookBtn);
+  migPanel.appendChild(webhookOut);
+
+  // ─── Inspect Recent Stripe Sessions ────────────────────────────────
+  // For a specific tenant, list recent Checkout Sessions on their
+  // connected account with a verdict on whether each one made it into
+  // merch_orders. Use this when "Backfill" reports zero scanned but
+  // you know a customer paid — tells you exactly what Stripe thinks
+  // happened.
+  const inspectOut = el('div', { style: 'display:none;margin-top:8px' });
+  const inspectBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    const slug = prompt('Which tenant? (slug, e.g. islay-studios / flex-facility / willpower-fitness)');
+    if (!slug) return;
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Inspecting…';
+    inspectOut.style.display = 'block';
+    inspectOut.innerHTML = '<div class="muted" style="font-size:0.75rem;padding:8px">Loading…</div>';
+    try {
+      const r = await api('/api/admin?action=inspect-recent-stripe-sessions', {
+        method: 'POST',
+        body: { slug: slug.trim(), hours_back: 168 }
+      });
+      const sessions = r.sessions || [];
+      const rowsHtml = sessions.map(s => {
+        const verdictColor = s.verdict.startsWith('OK') ? '#86efac'
+          : s.verdict.startsWith('NEEDS_BACKFILL') ? '#fbd38d' : 'var(--muted,#888)';
+        return `<tr style="border-top:1px solid rgba(255,255,255,0.05)">
+          <td style="padding:6px 10px;font-size:10px"><span class="mono">${s.session_id.slice(-12)}</span><br><span class="muted" style="font-size:9px">${s.created.slice(0,16).replace('T',' ')}</span></td>
+          <td style="padding:6px 10px;font-size:11px">$${((s.amount_total || 0) / 100).toFixed(2)}<br><span class="muted" style="font-size:9px">${s.payment_status}</span></td>
+          <td style="padding:6px 10px;font-size:11px">${s.metadata_source || '<span class="muted">—</span>'}</td>
+          <td style="padding:6px 10px;font-size:10px;color:${verdictColor}">${s.verdict}</td>
+        </tr>`;
+      }).join('');
+      inspectOut.innerHTML = `
+        <div style="margin-bottom:8px;color:#cbd5e1;font-size:0.8rem">
+          Tenant: <strong>${r.tenant?.name || slug}</strong> · scanned ${r.scanned} session(s) · <strong style="color:#fbd38d">${r.needs_backfill}</strong> need backfill
+        </div>
+        <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:10px;font-size:12px">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="font-size:10px;color:var(--muted,#888);text-transform:uppercase;letter-spacing:0.06em">
+              <th style="padding:6px 10px;text-align:left">Session</th>
+              <th style="padding:6px 10px;text-align:left">Amount</th>
+              <th style="padding:6px 10px;text-align:left">Source</th>
+              <th style="padding:6px 10px;text-align:left">Verdict</th>
+            </tr></thead>
+            <tbody>${rowsHtml || '<tr><td colspan="4" style="padding:10px;text-align:center;color:var(--muted,#888)">No recent sessions</td></tr>'}</tbody>
+          </table>
+        </div>
+      `;
+    } catch (err) {
+      inspectOut.innerHTML = '<div class="err" style="padding:8px">Failed: ' + err.message + '</div>';
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Inspect Stripe Sessions';
+    }
+  } }, 'Inspect Stripe Sessions');
+  migPanel.appendChild(inspectBtn);
+  migPanel.appendChild(inspectOut);
+
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
   // tab into every tenant's sidebar without per-tenant SQL.
