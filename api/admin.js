@@ -1032,16 +1032,51 @@ async function inspectRecentStripeSessions(req, res) {
           .from('merch_orders').select('id').eq('stripe_payment_id', stripePaymentId).maybeSingle();
         merchOrderExists = !!data;
       }
+
+      // Pull the actual line items + shipping so the operator can see
+      // exactly what Stripe charged for. This is what answers "is Stripe
+      // billing the sale price or the compare price?" — if line[0].unit
+      // matches base_price_cents the wiring is fine, otherwise we've
+      // got a real bug.
+      let lineItemsBrief = null, shippingBrief = null;
+      try {
+        const li = await stripe.checkout.sessions.listLineItems(
+          s.id, { limit: 20 },
+          { stripeAccount: tenant.stripe_connected_account_id }
+        );
+        lineItemsBrief = (li.data || []).map(x => ({
+          description: x.description,
+          quantity:    x.quantity,
+          unit_amount: x.price?.unit_amount ?? null,
+          amount_subtotal: x.amount_subtotal,
+          amount_total:    x.amount_total
+        }));
+      } catch { /* line items might fail on legacy session — non-fatal */ }
+      if (s.shipping_cost) {
+        shippingBrief = {
+          amount_total:  s.shipping_cost.amount_total,
+          shipping_rate: s.shipping_cost.shipping_rate || null
+        };
+      }
+
       out.push({
         session_id:        s.id,
         created:           new Date(s.created * 1000).toISOString(),
         status:            s.status,
         payment_status:    s.payment_status,
+        amount_subtotal:   s.amount_subtotal,
         amount_total:      s.amount_total,
+        amount_shipping:   s.total_details?.amount_shipping || 0,
         currency:          s.currency,
         customer_email:    s.customer_details?.email,
         customer_phone:    s.customer_details?.phone,
+        customer_name:     s.customer_details?.name,
+        shipping_address:  s.shipping_details?.address || null,
+        line_items:        lineItemsBrief,
+        shipping:          shippingBrief,
         metadata_source:   s.metadata?.source || null,
+        metadata_platform_fee:   s.metadata?.platform_fee_cents || null,
+        metadata_processing_fee: s.metadata?.processing_fee_cents || null,
         client_slug_meta:  s.metadata?.client_slug || null,
         payment_intent:    s.payment_intent || null,
         merch_order_exists: merchOrderExists,

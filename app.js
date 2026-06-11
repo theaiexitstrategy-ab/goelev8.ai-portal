@@ -4004,8 +4004,16 @@ function openMerchProductModal(product, onSaved) {
     ),
     el('div', { class: 'field' }, el('label', {}, 'Description'), descInput),
     el('div', { class: 'row', style: 'gap:12px' },
-      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Price (USD)'), priceInput),
-      el('div', { class: 'field', style: 'flex:1' }, el('label', {}, 'Compare-at (optional)'), compareInput)
+      el('div', { class: 'field', style: 'flex:1' },
+        el('label', {}, 'Sale Price (USD)'),
+        priceInput,
+        el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:2px' }, 'What the customer is actually charged. Goes to Stripe.')
+      ),
+      el('div', { class: 'field', style: 'flex:1' },
+        el('label', {}, 'Original Price (optional)'),
+        compareInput,
+        el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:2px' }, 'Shown struck-through next to the sale price. Leave blank for no strikethrough.')
+      )
     ),
     el('div', { class: 'field' },
       el('label', {}, 'Product image'),
@@ -7484,10 +7492,21 @@ async function viewAdmin() {
       const rowsHtml = sessions.map(s => {
         const verdictColor = s.verdict.startsWith('OK') ? '#86efac'
           : s.verdict.startsWith('NEEDS_BACKFILL') ? '#fbd38d' : 'var(--muted,#888)';
-        return `<tr style="border-top:1px solid rgba(255,255,255,0.05)">
+        const lineItemsHtml = (s.line_items || []).map(li =>
+          `<div style="font-size:10px;color:#cbd5e1"><strong>${li.description || '?'}</strong> ×${li.quantity} @ $${((li.unit_amount || 0) / 100).toFixed(2)}</div>`
+        ).join('') || '<span class="muted" style="font-size:10px">—</span>';
+        const shippingHtml = s.amount_shipping
+          ? `$${(s.amount_shipping / 100).toFixed(2)}`
+          : '<span class="muted">no shipping</span>';
+        return `<tr style="border-top:1px solid rgba(255,255,255,0.05);vertical-align:top">
           <td style="padding:6px 10px;font-size:10px"><span class="mono">${s.session_id.slice(-12)}</span><br><span class="muted" style="font-size:9px">${s.created.slice(0,16).replace('T',' ')}</span></td>
-          <td style="padding:6px 10px;font-size:11px">$${((s.amount_total || 0) / 100).toFixed(2)}<br><span class="muted" style="font-size:9px">${s.payment_status}</span></td>
-          <td style="padding:6px 10px;font-size:11px">${s.metadata_source || '<span class="muted">—</span>'}</td>
+          <td style="padding:6px 10px;font-size:11px">${lineItemsHtml}</td>
+          <td style="padding:6px 10px;font-size:11px">
+            <div><span class="muted" style="font-size:9px">subtotal</span> $${((s.amount_subtotal || 0) / 100).toFixed(2)}</div>
+            <div><span class="muted" style="font-size:9px">shipping</span> ${shippingHtml}</div>
+            <div style="font-weight:600"><span class="muted" style="font-size:9px;font-weight:normal">total</span> $${((s.amount_total || 0) / 100).toFixed(2)}</div>
+          </td>
+          <td style="padding:6px 10px;font-size:11px">${s.metadata_source || '<span class="muted">—</span>'}<br><span class="muted" style="font-size:9px">${s.payment_status}</span></td>
           <td style="padding:6px 10px;font-size:10px;color:${verdictColor}">${s.verdict}</td>
         </tr>`;
       }).join('');
@@ -7499,7 +7518,8 @@ async function viewAdmin() {
           <table style="width:100%;border-collapse:collapse">
             <thead><tr style="font-size:10px;color:var(--muted,#888);text-transform:uppercase;letter-spacing:0.06em">
               <th style="padding:6px 10px;text-align:left">Session</th>
-              <th style="padding:6px 10px;text-align:left">Amount</th>
+              <th style="padding:6px 10px;text-align:left">Line items</th>
+              <th style="padding:6px 10px;text-align:left">Amounts</th>
               <th style="padding:6px 10px;text-align:left">Source</th>
               <th style="padding:6px 10px;text-align:left">Verdict</th>
             </tr></thead>
