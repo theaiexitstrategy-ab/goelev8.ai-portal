@@ -4225,6 +4225,27 @@ function openMerchCouponModal(coupon, onSaved) {
 }
 
 async function renderMerchOrders(container) {
+  // Auto-backfill: scan recent Stripe sessions for this tenant and
+  // ingest any orders that didn't make it through the webhook (most
+  // common cause is the Stripe webhook not subscribed to events on
+  // connected accounts — until that's fixed, this is the safety net
+  // so the operator never has to wonder where their orders are).
+  // Only platform admins can run /api/admin so we fall back to a soft
+  // skip for non-admins.
+  let syncStatus = null;
+  if (state.isAdmin && state.client?.slug) {
+    try {
+      const sync = await api('/api/admin?action=backfill-external-merch-orders', {
+        method: 'POST',
+        body: { slug: state.client.slug, hours_back: 72 }
+      });
+      const t = sync.totals || sync.results?.[0] || {};
+      if ((t.ingested || 0) > 0) {
+        syncStatus = `Synced ${t.ingested} new order${t.ingested === 1 ? '' : 's'} from Stripe`;
+      }
+    } catch { /* non-fatal */ }
+  }
+
   const r = await api('/api/portal/merch?action=list-orders');
   const orders = r.orders || [];
   container.replaceChildren();
@@ -4233,6 +4254,37 @@ async function renderMerchOrders(container) {
       el('p', { class: 'muted' }, 'Merch tables not yet installed. Master Admin → Run Pending Migrations.')));
     return;
   }
+
+  // Manual sync button — same logic as the auto-backfill above but
+  // operator-triggered, so anyone (not just admins) can ask Stripe
+  // for the latest. Shows a toast with how many orders were pulled.
+  const syncBtn = el('button', { class: 'btn sm', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Syncing…';
+    try {
+      const sync = await api('/api/admin?action=backfill-external-merch-orders', {
+        method: 'POST',
+        body: { slug: state.client?.slug, hours_back: 168 }
+      });
+      const t = sync.totals || sync.results?.[0] || {};
+      toast(`Stripe sync: ${t.ingested || 0} new, ${t.idempotent || 0} already present, ${t.scanned || 0} scanned total`);
+      renderMerchOrders(container);
+    } catch (err) {
+      toast('Sync failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = '🔄 Sync from Stripe';
+    }
+  } }, '🔄 Sync from Stripe');
+  const syncBar = el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px' },
+    el('div', { class: 'muted', style: 'font-size:11px' },
+      syncStatus
+        ? `✓ ${syncStatus}`
+        : 'Orders from your storefront sync automatically. Tap below if you suspect one is missing.'),
+    syncBtn
+  );
+  container.appendChild(syncBar);
+
   if (!orders.length) {
     container.appendChild(el('div', { class: 'panel', style: 'text-align:center;padding:48px 24px' },
       el('div', { style: 'font-size:42px;margin-bottom:8px' }, '📦'),
