@@ -1,7 +1,8 @@
 // © 2026 GoElev8.ai | Aaron Bryant. All rights reserved.
 //
 // Public Stripe Checkout Session creator. Lets a tenant's marketing
-// site (e.g. islaystudiosllc.com/merch) hand off "Buy" clicks to a
+// site (e.g. islaystudiosllc.com/merch, theflexfacility.com/merch,
+// willpowerfitnessfactory.com/merch) hand off "Buy" clicks to a
 // fully Stripe-hosted checkout without standing up its own cart, AND
 // without the operator having to create products / Payment Links in
 // the Stripe dashboard. The price comes straight from the portal's
@@ -9,13 +10,32 @@
 // admin takes effect on the next purchase — no Stripe-side sync.
 //
 // POST /api/external/checkout
-//   Body: {
-//     slug:         "islay-studios",          // required
-//     product_key:  "shampoo",                // required (must be is_active=true)
-//     quantity:     1,                        // optional, default 1, max 99
-//     success_url:  "https://…/merch?paid=1", // optional
-//     cancel_url:   "https://…/merch"         // optional
-//   }
+//
+// Two body shapes are supported:
+//
+//   Single-item (backward-compatible with islaystudiosllc.com):
+//     {
+//       slug:         "islay-studios",          // required
+//       product_key:  "shampoo",                // required (must be is_active=true)
+//       quantity:     1,                        // optional, default 1, max 99
+//       variant:      { size: "M", color: "Black" },  // optional
+//       success_url:  "https://…/merch?paid=1", // optional
+//       cancel_url:   "https://…/merch"         // optional
+//     }
+//
+//   Multi-item (theflexfacility.com / willpowerfitnessfactory.com carts):
+//     {
+//       slug:       "flex-facility",
+//       items: [
+//         { product_key: "hoodie-black-cyan", quantity: 1, variant: { size: "L" } },
+//         { product_key: "snapback",          quantity: 2 }
+//       ],
+//       success_url, cancel_url
+//     }
+//
+//   When `items` is provided it takes precedence. When only product_key
+//   is provided we synthesize a single-element array internally.
+//
 //   Response: { url: "https://checkout.stripe.com/c/pay/…" }
 //
 // Money flow — Stripe Connect direct charges:
@@ -32,8 +52,8 @@
 //     never sees that id.
 //
 // CORS is open — storefronts call this from the browser. The endpoint
-// validates the slug + product_key against our own DB and uses *our*
-// stored price (not anything the caller sent), so a hostile caller
+// validates the slug + product_keys against our own DB and uses *our*
+// stored prices (not anything the caller sent), so a hostile caller
 // can't fabricate a $0 line item.
 
 import { stripe } from '../../lib/stripe.js';
@@ -71,6 +91,54 @@ function isHttpUrl(s) {
   } catch { return false; }
 }
 
+// Normalize either body shape into a single internal array.
+// Returns { items, error } — error is a { status, body } for early
+// 400s; items is an array of { product_key, quantity, variant }.
+function normalizeRequestedItems(body) {
+  if (Array.isArray(body?.items) && body.items.length) {
+    if (body.items.length > 20) return { error: { status: 400, body: { error: 'too_many_items' } } };
+    const out = [];
+    for (const raw of body.items) {
+      const key = String(raw?.product_key || '').trim();
+      if (!key) return { error: { status: 400, body: { error: 'item_product_key_required' } } };
+      let qty = Number.isFinite(+raw?.quantity) ? Math.floor(+raw.quantity) : 1;
+      if (qty < 1)  qty = 1;
+      if (qty > 99) qty = 99;
+      out.push({ product_key: key, quantity: qty, variant: sanitizeVariant(raw?.variant) });
+    }
+    return { items: out };
+  }
+  // Single-item legacy shape
+  const key = String(body?.product_key || '').trim();
+  if (!key) return { error: { status: 400, body: { error: 'product_key required' } } };
+  let qty = Number.isFinite(+body?.quantity) ? Math.floor(+body.quantity) : 1;
+  if (qty < 1)  qty = 1;
+  if (qty > 99) qty = 99;
+  return { items: [{ product_key: key, quantity: qty, variant: sanitizeVariant(body?.variant) }] };
+}
+
+// Variant must be plain { size?, color? } strings — strip everything
+// else so a hostile caller can't smuggle huge metadata payloads
+// through the Stripe 500-char limit.
+function sanitizeVariant(v) {
+  if (!v || typeof v !== 'object') return null;
+  const size  = v.size  != null ? String(v.size).trim().slice(0, 24)  : null;
+  const color = v.color != null ? String(v.color).trim().slice(0, 32) : null;
+  if (!size && !color) return null;
+  return { size: size || null, color: color || null };
+}
+
+// Build the visible name shown in Stripe Checkout. Includes variant
+// pieces in a "Product — Size M · Black" suffix so the customer sees
+// exactly what they're paying for.
+function buildLineName(productName, variant) {
+  if (!variant) return productName;
+  const parts = [];
+  if (variant.size)  parts.push(`Size ${variant.size}`);
+  if (variant.color) parts.push(variant.color);
+  return parts.length ? `${productName} — ${parts.join(' · ')}` : productName;
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -80,17 +148,12 @@ export default async function handler(req, res) {
   try { body = await readJson(req); }
   catch { return res.status(400).json({ error: 'invalid_json' }); }
 
-  const slug       = String(body?.slug || '').trim();
-  const productKey = String(body?.product_key || '').trim();
-  if (!slug)       return res.status(400).json({ error: 'slug required' });
-  if (!productKey) return res.status(400).json({ error: 'product_key required' });
+  const slug = String(body?.slug || '').trim();
+  if (!slug) return res.status(400).json({ error: 'slug required' });
 
-  // Quantity — accept 1..99 (an upper cap that's plenty for retail
-  // merch and stops a hostile caller from generating a $$$ line item
-  // that ties up a Stripe session id).
-  let quantity = Number.isFinite(+body?.quantity) ? Math.floor(+body.quantity) : 1;
-  if (quantity < 1)  quantity = 1;
-  if (quantity > 99) quantity = 99;
+  const norm = normalizeRequestedItems(body);
+  if (norm.error) return res.status(norm.error.status).json(norm.error.body);
+  const requestedItems = norm.items;
 
   // Resolve tenant + their Connect account + per-tenant fee override.
   // platform_fee_pct may be NULL → resolvePlatformFeePct falls back to
@@ -103,26 +166,41 @@ export default async function handler(req, res) {
   if (clientErr) return res.status(500).json({ error: clientErr.message });
   if (!client)   return res.status(404).json({ error: 'tenant_not_found' });
 
-  // Resolve product BEFORE the Connect gate. Order matters — a stale
-  // storefront still pointing at a removed/inactive SKU should get
-  // the specific 404 product_not_found, not a misleading
+  // Resolve every requested product against merch_products. Order
+  // matters — product lookup runs BEFORE the Connect gate so a stale
+  // storefront still pointing at a removed/inactive SKU gets the
+  // specific 404 product_not_found, not a misleading
   // stripe_not_configured.
-  const { data: product, error: productErr } = await supabaseAdmin
+  const productKeys = requestedItems.map(it => it.product_key);
+  const { data: products, error: productErr } = await supabaseAdmin
     .from('merch_products')
-    .select('id, name, description, base_price_cents, image_url, is_active')
+    .select('id, product_key, name, description, base_price_cents, image_url, is_active')
     .eq('client_id', client.id)
-    .eq('product_key', productKey)
-    .maybeSingle();
+    .in('product_key', productKeys);
   if (productErr) return res.status(500).json({ error: productErr.message });
-  if (!product || !product.is_active) {
-    return res.status(404).json({ error: 'product_not_found' });
-  }
-  const unitAmount = Number(product.base_price_cents);
-  if (!Number.isFinite(unitAmount) || unitAmount < 1) {
-    return res.status(400).json({
-      error: 'invalid_price',
-      message: 'Product price is not set in the portal.'
-    });
+
+  const productByKey = new Map();
+  for (const p of (products || [])) productByKey.set(p.product_key, p);
+
+  // Hydrate each requested item with its resolved product row. Bail
+  // on the first miss so the caller gets a precise error.
+  const lineRows = [];
+  let subtotalCents = 0;
+  for (const it of requestedItems) {
+    const p = productByKey.get(it.product_key);
+    if (!p || !p.is_active) {
+      return res.status(404).json({ error: 'product_not_found', product_key: it.product_key });
+    }
+    const unit = Number(p.base_price_cents);
+    if (!Number.isFinite(unit) || unit < 1) {
+      return res.status(400).json({
+        error: 'invalid_price',
+        product_key: it.product_key,
+        message: 'Product price is not set in the portal.'
+      });
+    }
+    lineRows.push({ ...it, product: p, unit_amount: unit });
+    subtotalCents += unit * it.quantity;
   }
 
   // Now the Connect gate. The tenant must have completed the OAuth
@@ -135,11 +213,6 @@ export default async function handler(req, res) {
     });
   }
 
-  // Platform fee. Subtotal here is what the customer will pay for the
-  // line item; we don't add shipping or processing fee surcharges on
-  // top — those land in the destination charge as additional line
-  // items if the storefront opts in (out of scope for this endpoint).
-  const subtotalCents = unitAmount * quantity;
   const platformFeePct = resolvePlatformFeePct(client);
   const applicationFeeCents = calcPlatformFeeCents(subtotalCents, platformFeePct);
 
@@ -154,40 +227,60 @@ export default async function handler(req, res) {
     ? body.cancel_url
     : (origin ? origin + '/merch' : 'https://example.com/');
 
+  // Stripe line_items — one per requested item. Variant shows in the
+  // product name suffix so the customer sees it on the checkout page.
+  const stripeLineItems = lineRows.map(it => ({
+    quantity: it.quantity,
+    price_data: {
+      currency: 'usd',
+      unit_amount: it.unit_amount,
+      product_data: {
+        name: buildLineName(it.product.name, it.variant),
+        description: it.product.description || undefined,
+        images: it.product.image_url ? [it.product.image_url] : []
+      }
+    }
+  }));
+
+  // Compact per-line payload for the webhook. Stripe metadata values
+  // are capped at 500 chars each, so we omit anything non-essential
+  // (name/description — re-derivable from product_id at ingest time).
+  const itemsManifest = lineRows.map(it => ({
+    k: it.product_key,
+    p: String(it.product.id),
+    q: it.quantity,
+    s: it.variant?.size  || null,
+    c: it.variant?.color || null
+  }));
+
   // Shared metadata, mirrored onto the Checkout Session AND the
   // underlying PaymentIntent so:
-  //   - /api/external/orders (the storefront-side post-purchase POST)
-  //     can resolve which portal tenant + product this charge came from
-  //   - sync-sales (which iterates PaymentIntents on the connected
-  //     account, not Sessions) can reconcile without re-loading anything
+  //   - lib/merch-ingest.js (the Stripe webhook → merch_orders path)
+  //     can resolve which portal tenant + product + variant produced
+  //     each line item without re-loading the session
+  //   - api/external/orders (the legacy storefront-side POST path) can
+  //     still reconcile against the same keys it always has
+  //   - sync-sales (PaymentIntent iteration) sees the breakdown too
   // Values must be strings — Stripe rejects non-string metadata.
+  const isMulti = lineRows.length > 1;
   const sharedMetadata = {
     portal_client_id:   String(client.id),
-    portal_product_id:  String(product.id),
+    portal_product_id:  isMulti ? '' : String(lineRows[0].product.id),
     client_slug:        String(client.slug),
-    product_key:        productKey,
+    product_key:        isMulti ? '' : lineRows[0].product_key,
     platform_fee_cents: String(applicationFeeCents),
-    source:             'portal_external_checkout'
+    source:             'portal_external_checkout',
+    items_json:         JSON.stringify(itemsManifest).slice(0, 480),
+    // Variant breakout for the single-item path so consumers that
+    // don't parse items_json still see the variant the buyer picked.
+    variant_size:       isMulti ? '' : (lineRows[0].variant?.size  || ''),
+    variant_color:      isMulti ? '' : (lineRows[0].variant?.color || '')
   };
 
   try {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
-      // Ad-hoc line item: no Stripe Product or Price object required.
-      // Name, description, and image come from the portal so the
-      // checkout page matches what the customer just clicked.
-      line_items: [{
-        quantity,
-        price_data: {
-          currency: 'usd',
-          unit_amount: unitAmount,
-          product_data: {
-            name: product.name,
-            description: product.description || undefined,
-            images: product.image_url ? [product.image_url] : []
-          }
-        }
-      }],
+      line_items: stripeLineItems,
       // Physical merch — collect shipping address and a phone number
       // so the tenant can fulfill. Shipping rates are not configured
       // here; the operator can wire them up in Stripe later or layer

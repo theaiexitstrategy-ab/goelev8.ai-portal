@@ -21,6 +21,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { twilioForClient, estimateSegments } from '../lib/twilio.js';
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 import { backfillExternalMerchOrders } from '../lib/merch-ingest.js';
+import { stripe } from '../lib/stripe.js';
 
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
@@ -923,6 +924,76 @@ async function dedupeLeads(req, res) {
 // Idempotent — re-running finds zero groups once the table is clean.
 // Tolerant of tables that don't exist in a given environment
 // (catches per-table errors and continues).
+// ──────────────────────────────────────────────────────────────
+// Per-tenant Stripe Connect status. Returns a row for every client
+// with a quick read on what's wired up:
+//   - stripe_connected_account_id (the canonical "connected?" flag)
+//   - charges_enabled / payouts_enabled (live from Stripe.accounts.retrieve)
+//   - merch_products count + active count (storefront-ready?)
+//   - twilio_phone_number set (order-received SMS can fire?)
+//   - portal_api_key set (legacy /api/external/orders sync available?)
+//
+// Used by the Master Admin → Connect Status button to answer "why
+// isn't Will's checkout working" without digging into Stripe Dashboard.
+async function connectStatusAll(req, res) {
+  const { data: tenants, error } = await supabaseAdmin
+    .from('clients')
+    .select('id, slug, name, stripe_connected_account_id, portal_api_key, twilio_phone_number, platform_fee_pct')
+    .order('name', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+
+  const rows = [];
+  for (const t of tenants || []) {
+    let chargesEnabled = null, payoutsEnabled = null, accountErr = null;
+    if (t.stripe_connected_account_id) {
+      try {
+        const acct = await stripe.accounts.retrieve(t.stripe_connected_account_id);
+        chargesEnabled = !!acct.charges_enabled;
+        payoutsEnabled = !!acct.payouts_enabled;
+      } catch (e) {
+        accountErr = e?.message || 'stripe_account_unreachable';
+      }
+    }
+
+    // Merch catalog counts — separate query per tenant so a missing
+    // table doesn't poison the whole loop.
+    let merchTotal = 0, merchActive = 0;
+    try {
+      const { count: total } = await supabaseAdmin
+        .from('merch_products').select('id', { count: 'exact', head: true })
+        .eq('client_id', t.id);
+      const { count: active } = await supabaseAdmin
+        .from('merch_products').select('id', { count: 'exact', head: true })
+        .eq('client_id', t.id).eq('is_active', true);
+      merchTotal  = total  ?? 0;
+      merchActive = active ?? 0;
+    } catch { /* table missing */ }
+
+    rows.push({
+      slug:                t.slug,
+      name:                t.name,
+      connected_account:   t.stripe_connected_account_id || null,
+      charges_enabled:     chargesEnabled,
+      payouts_enabled:     payoutsEnabled,
+      stripe_error:        accountErr,
+      merch_products:      merchTotal,
+      merch_products_active: merchActive,
+      twilio_configured:   !!t.twilio_phone_number,
+      portal_api_key_set:  !!t.portal_api_key,
+      platform_fee_pct:    t.platform_fee_pct
+    });
+  }
+
+  // Quick rollup so the UI can flag "X of Y connected" at a glance.
+  const totals = {
+    tenants:        rows.length,
+    connected:      rows.filter(r => !!r.connected_account).length,
+    charges_live:   rows.filter(r => r.charges_enabled === true).length,
+    storefront_ready: rows.filter(r => r.connected_account && r.charges_enabled && r.merch_products_active > 0).length
+  };
+  return res.status(200).json({ totals, tenants: rows });
+}
+
 // ──────────────────────────────────────────────────────────────
 // Backfill paid external-checkout sessions into merch_orders.
 //
@@ -3109,6 +3180,7 @@ export default async function handler(req, res) {
       case 'dedupe-leads':              return await dedupeLeads(req, res);
       case 'dedupe-contacts':           return await dedupeContacts(req, res);
       case 'backfill-external-merch-orders': return await backfillExternalMerchOrdersAction(req, res);
+      case 'connect-status-all':         return await connectStatusAll(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);

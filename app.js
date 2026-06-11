@@ -7337,6 +7337,69 @@ async function viewAdmin() {
   migPanel.appendChild(backfillOrdersBtn);
   migPanel.appendChild(backfillOrdersOut);
 
+  // ─── Stripe Connect status across every tenant ────────────────────
+  // Quick read on which tenants have OAuthed Stripe in their Settings
+  // panel and which haven't. Verifies charges_enabled live against
+  // Stripe so a "connected but restricted" account is visible at a
+  // glance — that's the same trap iSlay almost hit when the
+  // stripe_secret_key gate was wrong.
+  const connectOut = el('div', { style: 'display:none;margin-top:8px' });
+  const connectBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Checking Stripe…';
+    connectOut.style.display = 'block';
+    connectOut.innerHTML = '<div class="muted" style="font-size:0.75rem;padding:8px">Loading tenant connection statuses…</div>';
+    try {
+      const r = await api('/api/admin?action=connect-status-all');
+      const t = r.totals || {};
+      toast(`${t.charges_live || 0} of ${t.tenants || 0} tenants charge-enabled · ${t.storefront_ready || 0} fully storefront-ready`);
+
+      const cell = (text, color) => `<td style="padding:6px 10px;font-size:11px;color:${color || 'var(--text,#e0e0e0)'}">${text}</td>`;
+      const yes = `<span style="color:#86efac">●</span>`;
+      const no  = `<span style="color:#fca5a5">○</span>`;
+      const warn = `<span style="color:#fbd38d">◐</span>`;
+      const rows = (r.tenants || []).map(t => {
+        let stripeIcon, stripeLabel;
+        if (!t.connected_account) { stripeIcon = no; stripeLabel = 'Not connected'; }
+        else if (t.stripe_error)   { stripeIcon = warn; stripeLabel = 'Connected · ' + t.stripe_error.slice(0, 40); }
+        else if (t.charges_enabled === true) { stripeIcon = yes; stripeLabel = 'Charges live'; }
+        else                       { stripeIcon = warn; stripeLabel = 'Onboarding incomplete'; }
+        return `<tr style="border-top:1px solid rgba(255,255,255,0.05)">
+          ${cell(`<strong>${t.name || t.slug}</strong><br><span class="muted" style="font-size:10px">${t.slug}</span>`)}
+          ${cell(`${stripeIcon} ${stripeLabel}` + (t.connected_account ? `<br><span class="muted mono" style="font-size:9px">${t.connected_account}</span>` : ''))}
+          ${cell(`${t.merch_products_active}/${t.merch_products}`, t.merch_products_active > 0 ? '#86efac' : 'var(--muted,#888)')}
+          ${cell(t.twilio_configured ? yes + ' SMS' : no + ' No Twilio')}
+          ${cell((t.platform_fee_pct ?? '—') + '%')}
+        </tr>`;
+      }).join('');
+      connectOut.innerHTML = `
+        <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:10px;font-size:12px">
+          <div style="margin-bottom:8px;color:var(--muted,#888);font-size:11px">
+            ● = charges live · ◐ = needs attention · ○ = not set
+          </div>
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="font-size:10px;color:var(--muted,#888);text-transform:uppercase;letter-spacing:0.06em">
+                ${cell('Tenant')}
+                ${cell('Stripe Connect')}
+                ${cell('Active/Total Products')}
+                ${cell('SMS')}
+                ${cell('Fee %')}
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    } catch (err) {
+      connectOut.innerHTML = '<div class="err" style="padding:8px">Failed: ' + err.message + '</div>';
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Connect Status';
+    }
+  } }, 'Connect Status');
+  migPanel.appendChild(connectBtn);
+  migPanel.appendChild(connectOut);
+
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
   // tab into every tenant's sidebar without per-tenant SQL.

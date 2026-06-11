@@ -121,19 +121,30 @@ export default async function handler(req, res) {
       }
     }
   } catch (e) {
-    // Retry without the optional columns if Postgres complained about
-    // a missing one. Keeps us forward-compatible on projects mid-
-    // migration.
-    if (/column .*(processing_fee_cents|stripe_connected_account_id).* does not exist/i.test(e?.message || '')) {
-      try {
-        const c2 = await loadClient('platform_fee_pct, pass_stripe_fees_to_customer');
-        feePct = resolvePlatformFeePct(c2);
-        if (typeof c2?.pass_stripe_fees_to_customer === 'boolean') {
-          passStripeFees = c2.pass_stripe_fees_to_customer;
-        }
-      } catch { /* keep defaults */ }
-    }
-    /* otherwise keep defaults */
+    // Retry without the optional column the project hasn't migrated
+    // yet. Keep stripe_connected_account_id in every fallback select
+    // — the storefronts depend on that field to issue destination
+    // charges, so dropping it on retry was hiding live Connect
+    // accounts behind a column-missing error.
+    const msg = e?.message || '';
+    const missingProcessingFee = /column .*processing_fee_cents.* does not exist/i.test(msg);
+    const missingConnect       = /column .*stripe_connected_account_id.* does not exist/i.test(msg);
+    try {
+      let cols = 'platform_fee_pct, pass_stripe_fees_to_customer';
+      if (!missingProcessingFee) cols += ', processing_fee_cents';
+      if (!missingConnect)       cols += ', stripe_connected_account_id';
+      const c2 = await loadClient(cols);
+      feePct = resolvePlatformFeePct(c2);
+      if (c2?.processing_fee_cents != null) {
+        processingFeeCents = Math.max(0, parseInt(c2.processing_fee_cents, 10));
+      }
+      if (typeof c2?.pass_stripe_fees_to_customer === 'boolean') {
+        passStripeFees = c2.pass_stripe_fees_to_customer;
+      }
+      if (c2?.stripe_connected_account_id) {
+        connectedAccountId = c2.stripe_connected_account_id;
+      }
+    } catch { /* keep defaults */ }
   }
 
   // Platform fee = pct of subtotal (NOT of subtotal + shipping, so
