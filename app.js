@@ -6337,38 +6337,80 @@ async function loadIntegrationStatus(container) {
     }
   } catch { ga4Status.textContent = 'Error checking GA4'; }
 
-  // Fetch Stripe Connect
-  try {
-    const sc = await api('/api/portal/connect?action=status');
-    stripeStatus.innerHTML = '';
-    if (!sc.connected) {
-      stripeStatus.appendChild(el('span', { class: 'badge red' }, 'Not connected'));
-      const connectErr = el('div', { style: 'margin-left:8px;font-size:11px;color:#fca5a5;display:inline-block' });
-      const connectBtn = el('button', { class: 'btn sm', style: 'margin-left:8px', onclick: async () => {
-        connectErr.textContent = '';
-        connectBtn.disabled = true;
-        connectBtn.textContent = 'Opening…';
-        try {
-          const r = await api('/api/portal/connect?action=start', { method: 'POST' });
-          if (!r?.url) throw new Error('Stripe returned no URL.');
-          window.location.href = r.url;
-        } catch (e) {
-          connectErr.textContent = 'Setup failed: ' + e.message;
-          connectBtn.disabled = false;
-          connectBtn.textContent = 'Connect Stripe';
-        }
-      } }, 'Connect Stripe');
-      stripeStatus.appendChild(connectBtn);
-      stripeStatus.appendChild(connectErr);
-    } else {
-      const statusBadge = sc.charges_enabled
-        ? el('span', { class: 'badge green' }, 'Active')
-        : el('span', { class: 'badge warn' }, 'Onboarding incomplete');
-      stripeStatus.appendChild(statusBadge);
-      stripeStatus.appendChild(el('span', { class: 'muted', style: 'margin-left:8px;font-size:0.8rem' },
-        `Account ${sc.account_id}` + (sc.charges_enabled ? ' · Charges enabled' : '')));
-    }
-  } catch { stripeStatus.textContent = 'Error checking Stripe'; }
+  // Fetch + render Stripe Connect status. Wrapped so the Disconnect
+  // button below can call renderStripeStatus() to re-paint just this
+  // row instead of reloading the whole Settings tab.
+  async function renderStripeStatus() {
+    try {
+      const sc = await api('/api/portal/connect?action=status');
+      stripeStatus.innerHTML = '';
+      if (!sc.connected) {
+        stripeStatus.appendChild(el('span', { class: 'badge red' }, 'Not connected'));
+        const connectErr = el('div', { style: 'margin-left:8px;font-size:11px;color:#fca5a5;display:inline-block' });
+        const connectBtn = el('button', { class: 'btn sm', style: 'margin-left:8px', onclick: async () => {
+          connectErr.textContent = '';
+          connectBtn.disabled = true;
+          connectBtn.textContent = 'Opening…';
+          try {
+            const r = await api('/api/portal/connect?action=start', { method: 'POST' });
+            if (!r?.url) throw new Error('Stripe returned no URL.');
+            window.location.href = r.url;
+          } catch (e) {
+            connectErr.textContent = 'Setup failed: ' + e.message;
+            connectBtn.disabled = false;
+            connectBtn.textContent = 'Connect Stripe';
+          }
+        } }, 'Connect Stripe');
+        stripeStatus.appendChild(connectBtn);
+        stripeStatus.appendChild(connectErr);
+      } else {
+        const statusBadge = sc.charges_enabled
+          ? el('span', { class: 'badge green' }, 'Active')
+          : el('span', { class: 'badge warn' }, 'Onboarding incomplete');
+        stripeStatus.appendChild(statusBadge);
+        stripeStatus.appendChild(el('span', { class: 'muted', style: 'margin-left:8px;font-size:0.8rem' },
+          `Account ${sc.account_id}` + (sc.charges_enabled ? ' · Charges enabled' : '')));
+
+        // Disconnect button. Asks for confirmation because once
+        // disconnected, every /api/external/checkout call returns
+        // stripe_not_configured until the tenant re-OAuths — Buy
+        // buttons on their storefront error out for customers.
+        // Calls the existing /api/portal/connect?action=disconnect
+        // which nulls clients.stripe_connected_account_id.
+        const disconnectErr = el('div', { style: 'margin-left:8px;font-size:11px;color:#fca5a5;display:inline-block' });
+        const disconnectBtn = el('button', {
+          class: 'btn sm ghost',
+          style: 'margin-left:8px;color:#fca5a5;border-color:rgba(245,101,101,0.35)',
+          onclick: async () => {
+            if (!confirm(
+              'Disconnect your Stripe account?\n\n' +
+              'Your storefront will stop accepting payments immediately. ' +
+              'Any Buy buttons on your /merch page will show "not configured" ' +
+              'until you reconnect.\n\n' +
+              'This does NOT cancel pending Stripe payouts or refund anything — ' +
+              'it only removes the link between this portal and your Stripe ' +
+              'account. You can reconnect any time.'
+            )) return;
+            disconnectErr.textContent = '';
+            disconnectBtn.disabled = true;
+            disconnectBtn.textContent = 'Disconnecting…';
+            try {
+              await api('/api/portal/connect?action=disconnect', { method: 'POST' });
+              toast('Stripe account disconnected.');
+              await renderStripeStatus();
+            } catch (e) {
+              disconnectErr.textContent = 'Failed: ' + e.message;
+              disconnectBtn.disabled = false;
+              disconnectBtn.textContent = 'Disconnect';
+            }
+          }
+        }, 'Disconnect');
+        stripeStatus.appendChild(disconnectBtn);
+        stripeStatus.appendChild(disconnectErr);
+      }
+    } catch { stripeStatus.textContent = 'Error checking Stripe'; }
+  }
+  await renderStripeStatus();
 }
 
 async function viewSettings() {
