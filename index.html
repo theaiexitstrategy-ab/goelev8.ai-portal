@@ -33,7 +33,7 @@
 <script>
 // Force-clear stale service worker caches on every load
 (function(){
-  var APP_VERSION = 38;
+  var APP_VERSION = 39;
   var vKey = 'ge8_app_v';
   var lastV = parseInt(localStorage.getItem(vKey) || '0', 10);
   if (lastV < APP_VERSION) {
@@ -66,6 +66,6 @@
 })();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-<script type="module" src="/app.js?v=86"></script>
+<script type="module" src="/app.js?v=87"></script>
 </body>
 </html>

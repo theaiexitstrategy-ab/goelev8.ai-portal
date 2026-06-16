@@ -55,7 +55,16 @@ async function api(path, opts = {}, _retried = false) {
   }
   if (res.status === 401) { logout(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    // Throw the standard message string so existing call sites that
+    // read .message keep working, but attach the full response body
+    // as .data so callers (e.g. blast modal) can show segment counts
+    // / required credits / per-tenant context without re-fetching.
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.data = data;
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -6137,7 +6146,23 @@ function openBlastModal(wrap) {
   const previewBox = el('div', { style: 'font-size:0.8rem;padding:10px 12px;background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.15);border-radius:6px;margin-top:6px;white-space:pre-wrap;line-height:1.4' });
   const previewLabel = el('div', { style: 'font-size:0.65rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted,#888);margin-bottom:4px;font-weight:600' }, 'Preview (with sample contact "Sarah Johnson")');
   const previewText = el('div', { style: 'color:var(--text,#e0e0e0)' });
-  previewBox.append(previewLabel, previewText);
+  // Live segment + per-recipient credit cost counter so operators
+  // see what a long message will cost BEFORE they click Send. Matches
+  // the server math in lib/twilio.js estimateSegments() exactly.
+  const previewMeta = el('div', {
+    style: 'font-size:0.7rem;color:var(--muted,#888);margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06)'
+  });
+  previewBox.append(previewLabel, previewText, previewMeta);
+
+  // Same segment math as lib/twilio.js — keep in sync if the server
+  // ever switches to long-code GSM-7 / UCS-2 lengths.
+  function clientEstimateSegments(body) {
+    if (!body) return 0;
+    const isUnicode = /[^ -]/.test(body);
+    const len = body.length;
+    if (isUnicode) return len <= 70 ? 1 : Math.ceil(len / 67);
+    return len <= 160 ? 1 : Math.ceil(len / 153);
+  }
 
   // Carrier policy + TCPA require every blast to carry an opt-out
   // instruction. We mirror the server's regex here so the preview
@@ -6149,13 +6174,33 @@ function openBlastModal(wrap) {
   const updatePreview = () => {
     const sample = { first_name: 'Sarah', name: 'Sarah Johnson', last_name: 'Johnson', business_name: sampleBusinessName, phone: '+15555550123', email: 'sarah@example.com' };
     const body = msgIn.value.trim();
-    if (!body) { previewText.textContent = '(start typing your message…)'; previewText.style.fontStyle = 'italic'; previewText.style.color = 'var(--muted,#888)'; return; }
+    if (!body) {
+      previewText.textContent = '(start typing your message…)';
+      previewText.style.fontStyle = 'italic';
+      previewText.style.color = 'var(--muted,#888)';
+      previewMeta.textContent = '';
+      return;
+    }
     let rendered = previewMergeTags(body, sample);
     if (promoIn.value.trim()) rendered += `\n\nUse code: ${promoIn.value.trim()}`;
     if (!OPT_OUT_RE.test(rendered)) rendered += '\n\nReply STOP to opt out.';
     previewText.textContent = rendered;
     previewText.style.fontStyle = '';
     previewText.style.color = '';
+
+    const segs = clientEstimateSegments(rendered);
+    const cost = segs;
+    const segLabel = segs === 1 ? '1 segment' : segs + ' segments';
+    const creditLabel = cost === 1 ? '1 credit' : cost + ' credits';
+    // Warning color when the message would cost more than 1 credit
+    // per recipient — that's a real spend signal at higher recipient
+    // counts and worth flagging before Send.
+    const overage = segs > 1;
+    previewMeta.innerHTML =
+      `<strong style="color:${overage ? '#fbd38d' : '#86efac'}">${rendered.length} chars · ${segLabel} · ${creditLabel} per recipient</strong>` +
+      (overage
+        ? '<br><span>Multi-segment messages charge the segment count per recipient. Shorter messages = fewer credits.</span>'
+        : '');
   };
 
   const insertAtCursor = (token) => {
@@ -6290,7 +6335,13 @@ function openBlastModal(wrap) {
         if (data.failed) parts.push(`${data.failed} failed`);
         if (data.skipped_recent) parts.push(`${data.skipped_recent} skipped (texted within last hour)`);
         const optNote = data.opt_out_appended ? ' · "Reply STOP" auto-added' : '';
-        toast(`Blast complete — ${parts.join(', ')}${optNote}`);
+        // Surface segment-aware billing when the message cost more
+        // than 1 credit per recipient — operators want to know.
+        const seg = data.segments_per_recipient || 1;
+        const billNote = seg > 1
+          ? ` · ${data.credits_charged} credits charged (${seg}/recipient)`
+          : '';
+        toast(`Blast complete — ${parts.join(', ')}${optNote}${billNote}`);
       }
       bg.remove();
       state.view = 'blasts'; render();
@@ -6301,7 +6352,24 @@ function openBlastModal(wrap) {
       // doing their job. Surface them in plain English so the operator
       // sees WHY the blast is blocked, not a raw error string.
       const raw = String(e.message || '');
-      if (/tenant_hour_throttle/.test(raw)) {
+      if (/insufficient_credits/.test(raw)) {
+        // Server returned the segment-aware breakdown — surface it
+        // so the operator understands why their balance fell short.
+        const d = e.data || {};
+        const seg = d.segments_per_recipient || 1;
+        const need = d.required || 0;
+        const avail = d.available || 0;
+        const recips = d.recipients || 0;
+        const explain = seg > 1
+          ? `Your message is ${seg} segments long, so this blast costs ${seg} credits per recipient — ${recips} recipients × ${seg} = ${need} credits needed.`
+          : `${recips} recipients × 1 credit each = ${need} credits needed.`;
+        result.innerHTML =
+          `<strong style="color:#fbd38d">Out of credits</strong><br>` +
+          `<span style="color:#a0aec0;font-size:0.85rem">${explain} You have ${avail}. ` +
+          (seg > 1 ? 'Shorten the message to fit in 1 segment (≤160 chars) to cut the cost.' : 'Top up to send.') +
+          `</span>`;
+        toast(`Need ${need} credits — you have ${avail}.`, true, 6000);
+      } else if (/tenant_hour_throttle/.test(raw)) {
         result.innerHTML = '<strong style="color:#fbd38d">Blast blocked — daily limit</strong><br><span style="color:#a0aec0;font-size:0.85rem">You\'ve already sent a blast within the last hour. The limit is 1 blast per hour to protect your contacts from over-messaging.</span>';
         toast('Blocked: only 1 blast per hour allowed.', true, 6000);
       } else if (/tenant_day_throttle/.test(raw)) {

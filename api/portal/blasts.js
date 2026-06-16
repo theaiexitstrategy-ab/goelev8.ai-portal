@@ -24,7 +24,7 @@
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilioForClient, estimateSegments, truncateForSms } from '../../lib/twilio.js';
+import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
 import { renderTemplate, firstName } from '../../lib/merge-tags.js';
 import { toE164 } from '../../lib/phone.js';
 import { getBillingClient } from '../../lib/credits.js';
@@ -281,7 +281,12 @@ export default async function handler(req, res) {
     });
   }
 
-  // Credit gate: check balance BEFORE sending
+  // Credit gate: check balance BEFORE sending. Blasts are billed per
+  // SEGMENT × recipient — a 161-char message ships as 2 segments and
+  // costs 2 credits per recipient. The per-message cap that the
+  // global 160-char ceiling enforces on every OTHER outbound path
+  // is intentionally NOT applied here: operators expect blasts to
+  // ship the full message and pay the multi-segment cost.
   const { data: clientRow } = await supabaseAdmin
     .from('clients').select('id, business_name, name, parent_client_id, credit_balance, twilio_phone_number, twilio_subaccount_sid, twilio_auth_token').eq('id', clientId).single();
 
@@ -290,17 +295,31 @@ export default async function handler(req, res) {
   const billingClient = await getBillingClient(supabaseAdmin, clientRow);
   const billingId = billingClient.id;
 
+  // Estimate segments from the template (with opt-out + promo
+  // pre-baked). Per-recipient personalization adds a few chars for
+  // first_name etc, which can occasionally push a borderline message
+  // over a segment boundary — the per-send credit_ledger row below
+  // records the ACTUAL segment count for that recipient so the
+  // ledger stays honest. The upfront deduction is the conservative
+  // estimate, refunded on failure or under-charge.
+  let estimateBody = String(message);
+  if (promoCode) estimateBody += `\n\nUse code: ${promoCode}`;
+  const segmentsPerRecipient = Math.max(1, estimateSegments(estimateBody));
+
+  const totalCreditsNeeded = recipients.length * segmentsPerRecipient;
   const balance = billingClient?.credit_balance ?? 0;
-  if (balance < recipients.length) {
+  if (balance < totalCreditsNeeded) {
     return res.status(402).json({
       error: 'insufficient_credits',
-      required: recipients.length,
-      available: balance
+      required: totalCreditsNeeded,
+      available: balance,
+      segments_per_recipient: segmentsPerRecipient,
+      recipients: recipients.length
     });
   }
 
   // Deduct credits BEFORE firing SMS — debit hits the billing client.
-  const newBalance = balance - recipients.length;
+  const newBalance = balance - totalCreditsNeeded;
   await supabaseAdmin.from('clients')
     .update({ credit_balance: newBalance }).eq('id', billingId);
 
@@ -351,12 +370,16 @@ export default async function handler(req, res) {
       phone: toE,
       email: r.email || ''
     });
+    // Blasts intentionally bypass the global 160-char truncation —
+    // operators expect their full message to ship and are billed by
+    // segment in the credit math above. The recipient receives the
+    // full personalized body verbatim.
     const segments = estimateSegments(personalized);
     try {
       const twilioMsg = await tw.messages.create({
         to: toE,
         from: fromNumber,
-        body: truncateForSms(personalized),
+        body: personalized,
         statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
       });
       sent++;
@@ -384,7 +407,7 @@ export default async function handler(req, res) {
         status: twilioMsg.status,
         to_number: toE,
         from_number: fromNumber,
-        credits_charged: 1,
+        credits_charged: segments,
         // Stamping blast_id is what makes the per-number throttle
         // distinguish blast messages from 1-on-1 messages the
         // operator sent in the Messages tab.
@@ -396,7 +419,7 @@ export default async function handler(req, res) {
         await supabaseAdmin.from('messages').insert(legacy);
       }
       await supabaseAdmin.from('credit_ledger').insert({
-        client_id: billingId, delta: -1, reason: 'sms_blast', ref_id: twilioMsg.sid
+        client_id: billingId, delta: -segments, reason: 'sms_blast', ref_id: twilioMsg.sid
       });
     } catch {
       failed++;
@@ -411,9 +434,12 @@ export default async function handler(req, res) {
   }
 
   // Refund any failed sends so the operator isn't double-charged.
-  if (failed > 0) {
+  // Each failure refunds segmentsPerRecipient (matches what was
+  // deducted up front).
+  const refunded = failed * segmentsPerRecipient;
+  if (refunded > 0) {
     await supabaseAdmin.from('clients')
-      .update({ credit_balance: newBalance + failed }).eq('id', billingId);
+      .update({ credit_balance: newBalance + refunded }).eq('id', billingId);
   }
 
   // Finalize the blast row: status reflects outcome.
@@ -429,7 +455,9 @@ export default async function handler(req, res) {
     skipped_recent: skippedRecent,
     blast_id: blastId,
     status: finalStatus,
-    credits_remaining: newBalance + failed,
+    credits_remaining: newBalance + refunded,
+    segments_per_recipient: segmentsPerRecipient,
+    credits_charged: totalCreditsNeeded - refunded,
     opt_out_appended: optOutAutoAppended
   });
 }
