@@ -1,7 +1,8 @@
 {
   "version": 2,
   "crons": [
-    { "path": "/api/cron/process-nudges", "schedule": "*/5 * * * *" }
+    { "path": "/api/cron/process-nudges",     "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/sync-stripe-orders", "schedule": "*/5 * * * *" }
   ],
   "rewrites": [
     { "source": "/api/webhooks/lead", "destination": "/api/events?action=lead" },

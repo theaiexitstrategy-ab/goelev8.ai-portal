@@ -21,6 +21,7 @@
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { backfillExternalMerchOrders } from '../../lib/merch-ingest.js';
 
 const VALID_DISCOUNT_TYPES = ['percent', 'fixed'];
 
@@ -49,6 +50,7 @@ export default async function handler(req, res) {
     if (action === 'delete-coupon')  return await deleteCoupon(res, ctx.clientId, body);
     if (action === 'refund-order')   return await refundOrder(res, ctx.clientId, body);
     if (action === 'upload-image')   return await uploadImage(res, ctx.clientId, body);
+    if (action === 'sync-from-stripe') return await syncFromStripe(res, ctx.clientId);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -104,6 +106,33 @@ async function listCoupons(res, clientId) {
   if (tableMissing(error, 'merch_coupons')) return res.status(200).json({ coupons: [], setup_required: true });
   if (error) return res.status(500).json({ error: error.message });
   return res.status(200).json({ coupons: data || [] });
+}
+
+// Tenant-scoped Stripe-order sync. Any tenant operator (not just
+// platform admins) can hit this on their OWN tenant to pull recent
+// Stripe Checkout Sessions into merch_orders. Fires the same
+// notifications + order-received SMS as the webhook path.
+//
+// Scoped strictly to clientId from the auth context — operators
+// cannot scan another tenant's account.
+async function syncFromStripe(res, clientId) {
+  if (!clientId) return res.status(403).json({ error: 'no_client_assigned' });
+  const { data: tenant, error: tenantErr } = await supabaseAdmin
+    .from('clients').select('stripe_connected_account_id')
+    .eq('id', clientId).maybeSingle();
+  if (tenantErr) return res.status(500).json({ error: tenantErr.message });
+  if (!tenant?.stripe_connected_account_id) {
+    return res.status(400).json({
+      error: 'stripe_not_connected',
+      hint: 'Connect Stripe in Settings → Integrations first.'
+    });
+  }
+  const result = await backfillExternalMerchOrders({
+    stripeAccount: tenant.stripe_connected_account_id,
+    hoursBack:     168,   // one-week window when the operator clicks
+    maxSessions:   100
+  });
+  return res.status(200).json({ ok: true, ...result });
 }
 
 async function listOrders(res, clientId) {

@@ -4377,19 +4377,21 @@ async function renderMerchOrders(container) {
   // so the operator never has to wonder where their orders are).
   // Only platform admins can run /api/admin so we fall back to a soft
   // skip for non-admins.
+  // Auto-sync runs for every operator (not just admins) via the
+  // tenant-scoped /api/portal/merch?action=sync-from-stripe endpoint.
+  // The endpoint is locked to the caller's own tenant by auth — they
+  // can't scan anyone else's account. The cron at /api/cron/sync-
+  // stripe-orders does this same scan every 5 min in the background,
+  // so even an operator who never opens the Merch tab still gets
+  // their orders + push notification + order-received SMS within
+  // minutes of the customer paying.
   let syncStatus = null;
-  if (state.isAdmin && state.client?.slug) {
-    try {
-      const sync = await api('/api/admin?action=backfill-external-merch-orders', {
-        method: 'POST',
-        body: { slug: state.client.slug, hours_back: 72 }
-      });
-      const t = sync.totals || sync.results?.[0] || {};
-      if ((t.ingested || 0) > 0) {
-        syncStatus = `Synced ${t.ingested} new order${t.ingested === 1 ? '' : 's'} from Stripe`;
-      }
-    } catch { /* non-fatal */ }
-  }
+  try {
+    const sync = await api('/api/portal/merch?action=sync-from-stripe', { method: 'POST' });
+    if ((sync.ingested || 0) > 0) {
+      syncStatus = `Synced ${sync.ingested} new order${sync.ingested === 1 ? '' : 's'} from Stripe`;
+    }
+  } catch { /* non-fatal — empty state still rendered below */ }
 
   const r = await api('/api/portal/merch?action=list-orders');
   const orders = r.orders || [];
@@ -4407,12 +4409,8 @@ async function renderMerchOrders(container) {
     e.currentTarget.disabled = true;
     e.currentTarget.textContent = 'Syncing…';
     try {
-      const sync = await api('/api/admin?action=backfill-external-merch-orders', {
-        method: 'POST',
-        body: { slug: state.client?.slug, hours_back: 168 }
-      });
-      const t = sync.totals || sync.results?.[0] || {};
-      toast(`Stripe sync: ${t.ingested || 0} new, ${t.idempotent || 0} already present, ${t.scanned || 0} scanned total`);
+      const sync = await api('/api/portal/merch?action=sync-from-stripe', { method: 'POST' });
+      toast(`Stripe sync: ${sync.ingested || 0} new, ${sync.idempotent || 0} already present, ${sync.scanned || 0} scanned total`);
       renderMerchOrders(container);
     } catch (err) {
       toast('Sync failed: ' + err.message, true);
