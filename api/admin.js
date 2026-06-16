@@ -991,6 +991,77 @@ function parseWallClockInTz(input, tz) {
   return new Date(naiveUtc + offsetMs).toISOString();
 }
 
+// Backfill: every lead that doesn't have a matching contacts row gets
+// one. Fixes the legacy gap where lead-form submissions before commit
+// 'feat(events): auto-create contacts row from lead intake' wrote to
+// leads but never to contacts, so they never showed up in the SMS
+// Blast → Contacts segment.
+//
+// Body: { slug?, limit? }
+//   slug omitted → backfill across every tenant
+//   limit defaults to 5000 (max)
+//
+// Idempotent: a lead whose phone already matches a contact is skipped.
+async function backfillLeadsToContacts(req, res) {
+  const body = await readJson(req).catch(() => ({}));
+  const slug = body?.slug ? String(body.slug).trim() : null;
+  const limit = Math.min(5000, Number.isFinite(+body?.limit) ? +body.limit : 5000);
+
+  let clientIds = null;
+  if (slug) {
+    const { data: c } = await supabaseAdmin
+      .from('clients').select('id, slug').eq('slug', slug).maybeSingle();
+    if (!c) return res.status(404).json({ error: 'tenant_not_found' });
+    clientIds = [c.id];
+  }
+
+  let leadQuery = supabaseAdmin
+    .from('leads')
+    .select('id, client_id, name, phone, email, source, created_at')
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (clientIds) leadQuery = leadQuery.in('client_id', clientIds);
+
+  // Tolerant of deleted_at column being missing on the leads table.
+  let { data: leads, error } = await leadQuery;
+  if (error && /column .*deleted_at.* does not exist/i.test(error.message || '')) {
+    let retry = supabaseAdmin
+      .from('leads').select('id, client_id, name, phone, email, source, created_at')
+      .order('created_at', { ascending: false }).limit(limit);
+    if (clientIds) retry = retry.in('client_id', clientIds);
+    const r2 = await retry;
+    leads = r2.data; error = r2.error;
+  }
+  if (error) return res.status(500).json({ error: error.message });
+
+  let inserted = 0, alreadyPresent = 0, skipped = 0;
+  for (const l of leads || []) {
+    if (!l.phone && !l.email) { skipped++; continue; }
+    // Dedupe on phone (primary key for contacts), fall back to email.
+    const matchCol = l.phone ? 'phone' : 'email';
+    const matchVal = l.phone || l.email;
+    const { data: existing } = await supabaseAdmin
+      .from('contacts').select('id')
+      .eq('client_id', l.client_id).eq(matchCol, matchVal).maybeSingle();
+    if (existing) { alreadyPresent++; continue; }
+    const { error: insErr } = await supabaseAdmin.from('contacts').insert({
+      client_id: l.client_id,
+      phone:     l.phone || null,
+      name:      l.name  || null,
+      email:     l.email || null,
+      source:    l.source || 'lead_intake'
+    });
+    if (insErr) { skipped++; continue; }
+    inserted++;
+  }
+
+  return res.status(200).json({
+    inspected: leads?.length || 0,
+    inserted, already_present: alreadyPresent, skipped
+  });
+}
+
 async function backfillBookingTimes(req, res) {
   const body = await readJson(req).catch(() => ({}));
   const slug    = body?.slug ? String(body.slug).trim() : null;
@@ -1048,11 +1119,11 @@ async function backfillBookingTimes(req, res) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Per-tenant pickup config. Body: { slug, pickup_enabled, pickup_location }.
+// Per-tenant pickup config. Body: { slug, pickup_enabled, pickup_location, pickup_instructions }.
 // pickup_enabled toggles whether the $0 'Pick up in person' option
 // shows on the Stripe Checkout rate picker. pickup_location is the
-// rate's display name suffix ("Pick up at iSlay Studios"); pass null
-// or empty string to fall back to the generic label.
+// rate's display name suffix ("Pick up at iSlay Studios"). pickup_instructions
+// gets appended to the order-received SMS for pickup orders.
 async function setPickup(req, res) {
   const body = await readJson(req).catch(() => ({}));
   const slug = body?.slug ? String(body.slug).trim() : null;
@@ -1064,15 +1135,19 @@ async function setPickup(req, res) {
     const loc = String(body.pickup_location || '').trim();
     patch.pickup_location = loc ? loc.slice(0, 80) : null;
   }
+  if (body.pickup_instructions !== undefined) {
+    const ins = String(body.pickup_instructions || '').trim();
+    patch.pickup_instructions = ins ? ins.slice(0, 400) : null;
+  }
   if (!Object.keys(patch).length) {
     return res.status(400).json({ error: 'nothing to update' });
   }
 
   const { data, error } = await supabaseAdmin
     .from('clients').update(patch).eq('slug', slug)
-    .select('slug, name, pickup_enabled, pickup_location').maybeSingle();
+    .select('slug, name, pickup_enabled, pickup_location, pickup_instructions').maybeSingle();
   if (error) {
-    if (/column .*(pickup_enabled|pickup_location).* does not exist/i.test(error.message || '')) {
+    if (/column .*(pickup_enabled|pickup_location|pickup_instructions).* does not exist/i.test(error.message || '')) {
       return res.status(503).json({
         error: 'pending_migration',
         hint: 'Run Master Admin → Verify Migrations first.'
@@ -3293,6 +3368,16 @@ async function applyPendingMigrations(req, res) {
     `COMMENT ON COLUMN public.clients.pickup_location IS
        'Public-facing pickup location shown on Stripe Checkout (e.g. "iSlay Studios, Springfield MO"). Null = generic "Pick up in person" label.';`,
 
+    // ----- clients.pickup_instructions -----
+    // Free-text instructions appended to the order-received SMS when
+    // the customer picked the in-person pickup shipping option. Use
+    // it for hours ("M-F 9-5"), a code ("text us when you arrive"),
+    // anything the buyer needs to actually collect the order.
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS pickup_instructions text;`,
+    `COMMENT ON COLUMN public.clients.pickup_instructions IS
+       'Pickup instructions appended to the order-received SMS for pickup orders. Keep short — long values can push the SMS into multiple segments.';`,
+
     // ----- messages.blast_id: link outbound blast messages to their row -----
     // Lets the blast throttle distinguish "this number got a blast in
     // the last hour" from "the operator messaged them 1-on-1 in the
@@ -3543,6 +3628,7 @@ export default async function handler(req, res) {
       case 'backfill-external-merch-orders': return await backfillExternalMerchOrdersAction(req, res);
       case 'connect-status-all':         return await connectStatusAll(req, res);
       case 'backfill-booking-times':     return await backfillBookingTimes(req, res);
+      case 'backfill-leads-to-contacts': return await backfillLeadsToContacts(req, res);
       case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);
       case 'inspect-recent-stripe-sessions': return await inspectRecentStripeSessions(req, res);

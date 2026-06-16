@@ -40,6 +40,7 @@ export default async function handler(req, res) {
       if (action === 'list-coupons')    return await listCoupons(res, ctx.clientId);
       if (action === 'list-orders')     return await listOrders(res, ctx.clientId);
       if (action === 'order-detail')    return await orderDetail(res, ctx.clientId, url.searchParams.get('id'));
+      if (action === 'pickup-config')   return await getPickupConfig(res, ctx.clientId);
       return res.status(400).json({ error: 'unknown_action' });
     }
 
@@ -51,6 +52,7 @@ export default async function handler(req, res) {
     if (action === 'refund-order')   return await refundOrder(res, ctx.clientId, body);
     if (action === 'upload-image')   return await uploadImage(res, ctx.clientId, body);
     if (action === 'sync-from-stripe') return await syncFromStripe(res, ctx.clientId);
+    if (action === 'set-pickup-config') return await setPickupConfig(res, ctx.clientId, body);
     return res.status(400).json({ error: 'unknown_action' });
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -133,6 +135,61 @@ async function syncFromStripe(res, clientId) {
     maxSessions:   100
   });
   return res.status(200).json({ ok: true, ...result });
+}
+
+// GET the pickup config for the caller's own tenant. Used by the
+// Merch → Pickup sub-tab to populate the form on load. Tolerant of
+// pre-migration projects (columns missing → returns defaults).
+async function getPickupConfig(res, clientId) {
+  if (!clientId) return res.status(403).json({ error: 'no_client_assigned' });
+  let { data, error } = await supabaseAdmin
+    .from('clients')
+    .select('pickup_enabled, pickup_location, pickup_instructions')
+    .eq('id', clientId).maybeSingle();
+  if (error && /column .*(pickup_enabled|pickup_location|pickup_instructions).* does not exist/i.test(error.message || '')) {
+    return res.status(200).json({
+      pickup_enabled: true, pickup_location: null, pickup_instructions: null,
+      setup_required: true
+    });
+  }
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(200).json({
+    pickup_enabled:      data?.pickup_enabled ?? true,
+    pickup_location:     data?.pickup_location ?? null,
+    pickup_instructions: data?.pickup_instructions ?? null
+  });
+}
+
+// Tenant-scoped pickup config update. Same validation rules as the
+// admin endpoint but locked to the caller's own clientId — operators
+// can only edit their own pickup setup.
+async function setPickupConfig(res, clientId, body) {
+  if (!clientId) return res.status(403).json({ error: 'no_client_assigned' });
+  const patch = {};
+  if (typeof body?.pickup_enabled === 'boolean') patch.pickup_enabled = body.pickup_enabled;
+  if (body?.pickup_location !== undefined) {
+    const loc = String(body.pickup_location || '').trim();
+    patch.pickup_location = loc ? loc.slice(0, 80) : null;
+  }
+  if (body?.pickup_instructions !== undefined) {
+    const ins = String(body.pickup_instructions || '').trim();
+    patch.pickup_instructions = ins ? ins.slice(0, 400) : null;
+  }
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing_to_update' });
+
+  const { data, error } = await supabaseAdmin
+    .from('clients').update(patch).eq('id', clientId)
+    .select('pickup_enabled, pickup_location, pickup_instructions').maybeSingle();
+  if (error) {
+    if (/column .*(pickup_enabled|pickup_location|pickup_instructions).* does not exist/i.test(error.message || '')) {
+      return res.status(503).json({
+        error: 'pending_migration',
+        hint: 'Ask Aaron to run Master Admin → Verify Migrations first.'
+      });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+  return res.status(200).json({ ok: true, ...data });
 }
 
 async function listOrders(res, clientId) {

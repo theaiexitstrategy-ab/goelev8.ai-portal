@@ -170,6 +170,46 @@ async function handleIngest(req, res) {
       } catch (e) {
         lead = { created: false, id: null, error: e.message };
       }
+
+      // ALSO upsert into contacts so the lead shows up in the SMS
+      // Blasts → Contacts list (the unified blast surface). Previously
+      // contacts only got created from CSV imports or from
+      // sendWelcomeForEvent, which is gated on welcome_sms_enabled.
+      // Tenants without that flag were missing their lead-form
+      // submissions from the Contacts blast list. Idempotent:
+      // dedupes on (client_id, phone).
+      try {
+        const phoneE = toE164(row.contact_phone) || row.contact_phone || null;
+        if (phoneE || row.contact_email) {
+          const { data: existing } = phoneE
+            ? await supabaseAdmin.from('contacts').select('id, name, email')
+                .eq('client_id', clientId).eq('phone', phoneE).maybeSingle()
+            : await supabaseAdmin.from('contacts').select('id, name, email')
+                .eq('client_id', clientId).eq('email', row.contact_email).maybeSingle();
+          if (existing) {
+            // Fill in fields the original contact left blank — don't
+            // stomp existing data the operator may have edited.
+            const patch = {};
+            if (row.contact_name  && !existing.name)  patch.name  = row.contact_name;
+            if (row.contact_email && !existing.email) patch.email = row.contact_email;
+            if (Object.keys(patch).length) {
+              await supabaseAdmin.from('contacts').update(patch).eq('id', existing.id);
+            }
+          } else {
+            await supabaseAdmin.from('contacts').insert({
+              client_id: clientId,
+              phone:     phoneE,
+              name:      row.contact_name  || null,
+              email:     row.contact_email || null,
+              source:    row.source || 'lead_intake'
+            });
+          }
+        }
+      } catch (e) {
+        // Non-fatal — the lead is already saved; the contact row is
+        // just for the unified blast list.
+        console.warn('[events] contacts upsert failed (non-fatal):', e?.message);
+      }
     }
 
     // Load full client (need balance, twilio creds, template) and try welcome.

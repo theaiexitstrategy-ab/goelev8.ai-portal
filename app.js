@@ -3699,7 +3699,8 @@ async function viewMerch() {
   const SUBTABS = [
     { id: 'products', label: 'Products' },
     { id: 'coupons',  label: 'Promos'   },
-    { id: 'orders',   label: 'Orders'   }
+    { id: 'orders',   label: 'Orders'   },
+    { id: 'pickup',   label: 'Pickup'   }
   ];
 
   function renderSubTabBar() {
@@ -3721,6 +3722,7 @@ async function viewMerch() {
     try {
       if (active === 'products') await renderMerchProducts(content);
       else if (active === 'coupons') await renderMerchCoupons(content);
+      else if (active === 'pickup')  await renderMerchPickup(content);
       else await renderMerchOrders(content);
     } catch (e) {
       content.replaceChildren(el('div', { class: 'panel' },
@@ -4367,6 +4369,125 @@ function openMerchCouponModal(coupon, onSaved) {
 
   overlay.appendChild(drawer);
   document.body.appendChild(overlay);
+}
+
+// ─── Merch → Pickup sub-tab ───────────────────────────────────────
+// Lets a tenant operator (Nate/Will/Kenny) set their pickup
+// destination and instructions. Two outputs:
+//   1. clients.pickup_location populates the Stripe Checkout shipping
+//      option label: "Pick up at <location> (free)"
+//   2. clients.pickup_instructions is appended to the order-received
+//      SMS for any order whose customer picked the pickup rate, so
+//      the buyer knows exactly when/where to collect.
+// Plus a master enable toggle that hides the pickup option entirely
+// for tenants without a physical location (pure-dropship sellers).
+async function renderMerchPickup(container) {
+  container.replaceChildren();
+  const panel = el('div', { class: 'panel', style: 'max-width:640px' });
+
+  panel.appendChild(el('h2', { style: 'margin:0 0 4px' }, 'Pickup'));
+  panel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin:0 0 16px' },
+    'Set where customers pick up their orders and any instructions they need. ' +
+    'Appears as a free shipping option on the Stripe checkout page, and the instructions ' +
+    'get appended to the order-received SMS we send when someone picks pickup.'));
+
+  // Load current config + render form
+  let cfg;
+  try {
+    cfg = await api('/api/portal/merch?action=pickup-config');
+  } catch (e) {
+    panel.appendChild(el('p', { class: 'err' }, 'Failed to load: ' + e.message));
+    container.appendChild(panel);
+    return;
+  }
+  if (cfg.setup_required) {
+    panel.appendChild(el('div', {
+      style: 'padding:12px;background:rgba(237,137,54,0.10);border:1px solid rgba(237,137,54,0.35);border-radius:6px;font-size:0.85rem;color:#fbd38d;margin-bottom:16px'
+    }, 'One-time setup pending — ask Aaron to run Master Admin → Verify Migrations, then come back. You can fill in the form below now; it just won\'t save until the migration runs.'));
+  }
+
+  const enabledIn = el('input', { type: 'checkbox' });
+  if (cfg.pickup_enabled) enabledIn.checked = true;
+  const enabledLabel = el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:0.9rem;margin-bottom:14px' },
+    enabledIn,
+    el('span', {}, 'Offer in-person pickup at checkout'),
+    el('span', { class: 'muted', style: 'font-size:0.7rem' }, '(unchecking hides pickup from the rate picker)')
+  );
+
+  const locIn = el('input', {
+    type: 'text',
+    value: cfg.pickup_location || '',
+    placeholder: 'e.g. iSlay Studios, 1234 Main St, Springfield MO 65801'
+  });
+  locIn.style.cssText = 'width:100%;padding:10px 12px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.9rem;margin-top:4px';
+
+  const insIn = el('textarea', {
+    rows: '4',
+    placeholder: 'e.g. Available M–F 9am–5pm. Text us when you arrive — we\'ll bring your order out.'
+  });
+  insIn.value = cfg.pickup_instructions || '';
+  insIn.style.cssText = 'width:100%;padding:10px 12px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:6px;color:var(--text,#e0e0e0);font-size:0.85rem;margin-top:4px;resize:vertical;min-height:80px';
+
+  panel.appendChild(enabledLabel);
+
+  panel.appendChild(el('label', { style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted,#888);font-weight:600' }, 'Pickup location'));
+  panel.appendChild(el('div', { class: 'muted', style: 'font-size:0.7rem;margin:2px 0 4px' }, 'Shown on the Stripe checkout shipping picker AND in the customer\'s confirmation text.'));
+  panel.appendChild(locIn);
+
+  panel.appendChild(el('label', { style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted,#888);font-weight:600;display:block;margin-top:14px' }, 'Pickup instructions (optional)'));
+  panel.appendChild(el('div', { class: 'muted', style: 'font-size:0.7rem;margin:2px 0 4px' }, 'Hours, door code, "text us when you arrive" — anything the customer needs to actually collect. Keep it short so the SMS stays one segment.'));
+  panel.appendChild(insIn);
+
+  // Live SMS preview so the operator sees exactly what the buyer
+  // will get. Mirrors lib/transactional-sms.js sendOrderReceivedSms
+  // pickup branch. Updates as they type.
+  const previewBox = el('div', {
+    style: 'margin-top:16px;padding:12px;background:rgba(99,179,237,0.06);border:1px dashed rgba(99,179,237,0.25);border-radius:6px;font-size:0.78rem;color:#cbd5e1;line-height:1.5;white-space:pre-wrap'
+  });
+  const previewLabel = el('div', { style: 'font-size:0.65rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted,#888);font-weight:600;margin-bottom:4px' },
+    'Pickup SMS preview (with sample name "Sarah")');
+
+  const renderPreview = () => {
+    const tenant = state.client?.name || state.client?.business_name || 'the team';
+    const loc = locIn.value.trim() ? ` at ${locIn.value.trim()}` : '';
+    const ins = insIn.value.trim() ? ` ${insIn.value.trim()}` : ` We'll text you when it's ready.`;
+    previewBox.textContent =
+      `Hey Sarah, ${tenant} here — we got your order! Your order will be ready for pickup${loc}.${ins} Reply here with any questions. Reply STOP to opt out.`;
+  };
+  locIn.addEventListener('input', renderPreview);
+  insIn.addEventListener('input', renderPreview);
+  renderPreview();
+  panel.appendChild(previewLabel);
+  panel.appendChild(previewBox);
+
+  const errBox = el('div', { style: 'margin-top:8px' });
+  const saveBtn = el('button', { class: 'btn primary', style: 'margin-top:14px' }, 'Save pickup settings');
+  saveBtn.onclick = async () => {
+    errBox.innerHTML = '';
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    try {
+      await api('/api/portal/merch?action=set-pickup-config', {
+        method: 'POST',
+        body: {
+          pickup_enabled:      enabledIn.checked,
+          pickup_location:     locIn.value.trim() || null,
+          pickup_instructions: insIn.value.trim() || null
+        }
+      });
+      toast('Pickup settings saved');
+    } catch (e) {
+      const hint = e.message.includes('pending_migration')
+        ? 'One-time setup needed — ask Aaron to run Master Admin → Verify Migrations, then try again.'
+        : e.message;
+      errBox.innerHTML = '<div class="err">' + hint + '</div>';
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = 'Save pickup settings';
+    }
+  };
+  panel.appendChild(saveBtn);
+  panel.appendChild(errBox);
+
+  container.appendChild(panel);
 }
 
 async function renderMerchOrders(container) {
@@ -7861,6 +7982,33 @@ async function viewAdmin() {
   } }, 'Backfill Booking Times');
   migPanel.appendChild(tzBackfillBtn);
   migPanel.appendChild(tzBackfillOut);
+
+  // ─── Backfill Leads → Contacts ────────────────────────────────────
+  // Inserts a contacts row for every lead that doesn't already have
+  // one, so legacy leads (submitted before lead-intake started
+  // auto-creating contacts) show up in the SMS Blasts → Contacts list.
+  // Idempotent — leads with a matching contact are skipped.
+  const leadsToContactsOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:240px;margin-top:8px' });
+  const leadsToContactsBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    const slug = prompt('Tenant slug to backfill (leave blank for ALL tenants):') || '';
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Backfilling…';
+    try {
+      const body = {};
+      if (slug.trim()) body.slug = slug.trim();
+      const r = await api('/api/admin?action=backfill-leads-to-contacts', { method: 'POST', body });
+      toast(`Inserted ${r.inserted} contacts (${r.already_present} already there, ${r.skipped} skipped)`);
+      leadsToContactsOut.style.display = 'block';
+      leadsToContactsOut.textContent = JSON.stringify(r, null, 2);
+    } catch (err) {
+      toast('Backfill failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Backfill Leads → Contacts';
+    }
+  } }, 'Backfill Leads → Contacts');
+  migPanel.appendChild(leadsToContactsBtn);
+  migPanel.appendChild(leadsToContactsOut);
 
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
