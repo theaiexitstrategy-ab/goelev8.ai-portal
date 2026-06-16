@@ -3143,6 +3143,17 @@ async function applyPendingMigrations(req, res) {
     `COMMENT ON COLUMN public.clients.processing_fee_cents IS
        'Flat per-order processing fee (cents) charged to the customer and routed to GoElev8 alongside platform_fee_pct. NULL = use the platform default (PROCESSING_FEE_DEFAULT_CENTS, currently 300 = $3).';`,
 
+    // ----- merch_products.colors: per-color variant + image -----
+    // jsonb array of { name, image_url } so one product (e.g. "Stringer
+    // Tank") can carry multiple colorways without having to seed three
+    // separate product rows. Empty array = no color variants (legacy
+    // single-image behavior preserved). Validated at the API write
+    // path so unrelated keys can't sneak in.
+    `ALTER TABLE public.merch_products
+       ADD COLUMN IF NOT EXISTS colors jsonb NOT NULL DEFAULT '[]'::jsonb;`,
+    `COMMENT ON COLUMN public.merch_products.colors IS
+       'Array of color variants. Each entry: { name: string, image_url: string }. Empty array = no color variants.';`,
+
     // ----- clients.pickup_enabled + clients.pickup_location -----
     // Lets a tenant offer in-person pickup as a $0 shipping option on
     // Stripe Checkout. Default enabled because Flex, WPFF, and iSlay

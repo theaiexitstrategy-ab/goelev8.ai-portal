@@ -3931,6 +3931,131 @@ function openMerchProductModal(product, onSaved) {
     })();
     return uploadingPromise;
   });
+  // ─── Color variants ───
+  // Up to ~12 color rows, each { name, image_url }. When set, the
+  // storefront renders a row of swatches under the product image and
+  // swaps the displayed image when the customer taps one. The
+  // selected color flows through to Stripe Checkout as variant.color
+  // and lands in merch_order_items.color so the operator sees which
+  // color a buyer picked on each line item.
+  //
+  // colorRows is the live array; mutated in place by each row's input
+  // listeners + the Add/Remove buttons. saveBtn reads colorRows.
+  const colorRows = Array.isArray(product?.colors) ? product.colors.map(c => ({
+    name: c?.name || '',
+    image_url: c?.image_url || ''
+  })) : [];
+  const colorsHost = el('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:4px' });
+  const colorUploadingPromises = new Set();
+
+  function renderColors() {
+    colorsHost.innerHTML = '';
+    if (!colorRows.length) {
+      colorsHost.appendChild(el('div', { class: 'muted', style: 'font-size:11px;padding:6px 0' },
+        'No color variants. Click + Add color to offer the same product in multiple colors with different images.'));
+    }
+    colorRows.forEach((c, i) => {
+      const row = el('div', {
+        style: 'display:flex;gap:8px;align-items:center;padding:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05);border-radius:6px;flex-wrap:wrap'
+      });
+
+      const preview = el('img', {
+        src: c.image_url || '',
+        alt: '',
+        style: 'width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid rgba(255,255,255,0.08);' +
+               'display:' + (c.image_url ? 'block' : 'none') + ';flex:0 0 48px'
+      });
+
+      const nameIn = el('input', { type: 'text', value: c.name, placeholder: 'Color name (e.g. Black)' });
+      nameIn.style.cssText = 'width:100%;padding:6px 10px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:4px;color:var(--text,#e0e0e0);font-size:13px';
+      nameIn.addEventListener('input', () => { c.name = nameIn.value; });
+
+      const urlIn = el('input', { type: 'url', value: c.image_url, placeholder: 'Image URL or upload below' });
+      urlIn.style.cssText = 'width:100%;padding:6px 10px;background:#0d1117;border:1px solid var(--border,#2a3a5c);border-radius:4px;color:var(--text,#e0e0e0);font-size:12px;margin-top:4px;font-family:monospace';
+      urlIn.addEventListener('input', () => {
+        c.image_url = urlIn.value;
+        preview.src = urlIn.value;
+        preview.style.display = urlIn.value ? 'block' : 'none';
+      });
+
+      const fileIn = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
+      const fileStat = el('span', { class: 'muted', style: 'font-size:10px;margin-left:6px' });
+      const uploadBtn = el('button', {
+        type: 'button',
+        class: 'btn sm ghost',
+        style: 'font-size:11px',
+        onclick: () => fileIn.click()
+      }, '📷 Upload');
+      fileIn.addEventListener('change', async () => {
+        const f = fileIn.files?.[0];
+        if (!f) return;
+        if (!/^image\//.test(f.type)) {
+          fileStat.innerHTML = '<span style="color:#fca5a5">Pick an image.</span>';
+          return;
+        }
+        if (f.size > 10 * 1024 * 1024) {
+          fileStat.innerHTML = '<span style="color:#fca5a5">Max 10 MB.</span>';
+          return;
+        }
+        uploadBtn.disabled = true; uploadBtn.textContent = '…';
+        const p = (async () => {
+          try {
+            const dataUrl = await new Promise((resolve, reject) => {
+              const r = new FileReader();
+              r.onload = () => resolve(String(r.result || ''));
+              r.onerror = reject;
+              r.readAsDataURL(f);
+            });
+            const out = await api('/api/portal/merch?action=upload-image', {
+              method: 'POST',
+              body: { data_url: dataUrl, filename: f.name }
+            });
+            c.image_url = out.url || '';
+            urlIn.value = c.image_url;
+            preview.src = c.image_url;
+            preview.style.display = c.image_url ? 'block' : 'none';
+            fileStat.innerHTML = '<span style="color:#86efac">✓</span>';
+          } catch (e) {
+            fileStat.innerHTML = `<span style="color:#fca5a5">${e.message}</span>`;
+          } finally {
+            uploadBtn.disabled = false;
+            uploadBtn.textContent = '📷 Upload';
+            fileIn.value = '';
+          }
+        })();
+        colorUploadingPromises.add(p);
+        try { await p; } finally { colorUploadingPromises.delete(p); }
+      });
+
+      const removeBtn = el('button', {
+        type: 'button',
+        class: 'btn sm ghost',
+        style: 'color:#fca5a5;font-size:11px',
+        onclick: () => {
+          colorRows.splice(i, 1);
+          renderColors();
+        }
+      }, '× Remove');
+
+      row.appendChild(preview);
+      row.appendChild(el('div', { style: 'flex:1;min-width:180px' }, nameIn, urlIn));
+      row.appendChild(el('div', { style: 'display:flex;gap:4px;align-items:center;flex-wrap:wrap' },
+        uploadBtn, fileIn, fileStat, removeBtn
+      ));
+      colorsHost.appendChild(row);
+    });
+  }
+  renderColors();
+  const addColorBtn = el('button', {
+    type: 'button',
+    class: 'btn sm',
+    style: 'margin-top:8px;align-self:flex-start',
+    onclick: () => {
+      colorRows.push({ name: '', image_url: '' });
+      renderColors();
+    }
+  }, '+ Add color');
+
   const paymentLinkInput = el('input', { type: 'url', value: product?.payment_link || '',
     placeholder: 'https://buy.stripe.com/…' });
   const activeInput  = el('input', { type: 'checkbox' });
@@ -3946,12 +4071,19 @@ function openMerchProductModal(product, onSaved) {
       errBox.innerHTML = '<div class="err">Product key is required (e.g. "tee", "hoodie").</div>';
       return;
     }
-    // If an upload is still in flight, wait for it to land before
-    // submitting — otherwise we'd save the product with image_url
-    // null even though the operator picked a file.
-    if (uploadingPromise) {
+    // If an upload is still in flight (main image OR any color row),
+    // wait for it to land before submitting — otherwise we'd save the
+    // product with image_url null even though the operator picked a
+    // file, or save colors[] with missing image_url for a row whose
+    // upload was still spinning.
+    if (uploadingPromise || colorUploadingPromises.size) {
       saveBtn.disabled = true; saveBtn.textContent = 'Waiting for upload…';
-      try { await uploadingPromise; } catch { /* error already shown in fileStatus */ }
+      try {
+        await Promise.all([
+          uploadingPromise || Promise.resolve(),
+          ...colorUploadingPromises
+        ]);
+      } catch { /* errors surface in their respective status slots */ }
     }
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
     const body = {
@@ -3964,7 +4096,12 @@ function openMerchProductModal(product, onSaved) {
       image_url:              imageInput.value.trim() || null,
       payment_link:           paymentLinkInput.value.trim() || null,
       is_active:              activeInput.checked,
-      sort_order:             parseInt(sortInput.value, 10) || 0
+      sort_order:             parseInt(sortInput.value, 10) || 0,
+      // Strip blank rows on save so the operator can leave half-filled
+      // rows around mid-edit without those landing in the DB.
+      colors: colorRows
+        .map(c => ({ name: (c.name || '').trim(), image_url: (c.image_url || '').trim() }))
+        .filter(c => c.name)
     };
     try {
       await api('/api/portal/merch?action=upsert-product', { method: 'POST', body });
@@ -4025,6 +4162,14 @@ function openMerchProductModal(product, onSaved) {
       ),
       imageInput,
       fileStatus
+    ),
+    el('div', { class: 'field' },
+      el('label', {}, 'Color variants (optional)'),
+      el('div', { class: 'muted', style: 'font-size:11px;margin:2px 0 8px' },
+        'One product, multiple colorways. Each row needs a color name and (optionally) its own image — the storefront shows swatches under the product and swaps the image when the customer taps one. Leave blank to keep this product single-color.'
+      ),
+      colorsHost,
+      addColorBtn
     ),
     el('div', { class: 'field' },
       el('label', {}, 'Stripe Payment Link (optional)'),

@@ -36,13 +36,25 @@ export default async function handler(req, res) {
     .from('clients').select('id').eq('slug', slug).maybeSingle();
   if (!client) return res.status(404).json({ error: 'tenant_not_found' });
 
-  const { data, error } = await supabaseAdmin
+  let { data, error } = await supabaseAdmin
     .from('merch_products')
-    .select('product_key, name, description, base_price_cents, compare_at_price_cents, image_url, payment_link, sort_order')
+    .select('product_key, name, description, base_price_cents, compare_at_price_cents, image_url, payment_link, sort_order, colors')
     .eq('client_id', client.id)
     .eq('is_active', true)
     .order('sort_order', { ascending: true })
     .order('name', { ascending: true });
+  // Tolerant retry without `colors` for projects where the migration
+  // hasn't been applied yet.
+  if (error && /column .*colors.* does not exist/i.test(error.message || '')) {
+    const retry = await supabaseAdmin
+      .from('merch_products')
+      .select('product_key, name, description, base_price_cents, compare_at_price_cents, image_url, payment_link, sort_order')
+      .eq('client_id', client.id)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
+      .order('name', { ascending: true });
+    data = retry.data; error = retry.error;
+  }
   // Tolerant if migration hasn't been applied yet — empty list keeps
   // the storefront's existing hardcoded fallback usable.
   if (error && /relation .*merch_products.* does not exist/i.test(error.message)) {
@@ -58,6 +70,10 @@ export default async function handler(req, res) {
       price_cents:            p.base_price_cents,
       compare_at_price_cents: p.compare_at_price_cents,
       image_url:              p.image_url,
+      // Array of { name, image_url } when the operator set color
+      // variants in the portal; empty array otherwise. Storefronts
+      // render swatches when non-empty.
+      colors:                 Array.isArray(p.colors) ? p.colors : [],
       payment_link:           p.payment_link,
       sort_order:             p.sort_order
     }))

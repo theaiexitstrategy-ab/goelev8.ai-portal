@@ -129,6 +129,27 @@ function slugify(s) {
   return String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
+// Sanitize the incoming colors[] payload. Each entry must be a plain
+// object with name + image_url strings. Drops anything else so a
+// hostile caller can't smuggle weird keys into the jsonb column.
+// Returns `null` to signal 'don't write this field' on PATCH calls;
+// returns `[]` for an explicit clear.
+function sanitizeColors(input) {
+  if (input === undefined) return null;           // not provided → leave column alone
+  if (input === null) return [];                  // explicit clear
+  if (!Array.isArray(input)) return [];
+  const out = [];
+  for (const c of input) {
+    if (!c || typeof c !== 'object') continue;
+    const name = typeof c.name === 'string' ? c.name.trim().slice(0, 40) : '';
+    const image_url = typeof c.image_url === 'string' ? c.image_url.trim().slice(0, 600) : '';
+    if (!name) continue;                          // name is required; image optional
+    out.push({ name, image_url: image_url || null });
+    if (out.length >= 12) break;                  // cap so the jsonb column stays small
+  }
+  return out;
+}
+
 async function upsertProduct(res, clientId, body) {
   const id = body?.id || null;
   if (id) {
@@ -144,9 +165,19 @@ async function upsertProduct(res, clientId, body) {
     if (typeof body.printify_product_id === 'string')  patch.printify_product_id = body.printify_product_id || null;
     if (typeof body.is_active === 'boolean')           patch.is_active = body.is_active;
     if (Number.isFinite(+body.sort_order))             patch.sort_order = +body.sort_order;
+    const cleanColors = sanitizeColors(body.colors);
+    if (cleanColors !== null)                          patch.colors = cleanColors;
     if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing_to_update' });
-    const { data, error } = await supabaseAdmin.from('merch_products')
+    let { data, error } = await supabaseAdmin.from('merch_products')
       .update(patch).eq('id', id).eq('client_id', clientId).select('*').maybeSingle();
+    // Pre-migration tolerance: retry without colors if the column
+    // hasn't been added yet.
+    if (error && /column .*colors.* does not exist/i.test(error.message || '') && 'colors' in patch) {
+      const { colors: _drop, ...legacy } = patch;
+      const retry = await supabaseAdmin.from('merch_products')
+        .update(legacy).eq('id', id).eq('client_id', clientId).select('*').maybeSingle();
+      data = retry.data; error = retry.error;
+    }
     if (error) return res.status(500).json({ error: error.message });
     if (!data)  return res.status(404).json({ error: 'product_not_found' });
     return res.status(200).json({ product: data });
@@ -169,10 +200,16 @@ async function upsertProduct(res, clientId, body) {
     payment_link:           (typeof body?.payment_link === 'string' ? body.payment_link.trim() : '') || null,
     printify_product_id:    body?.printify_product_id || null,
     is_active:              typeof body?.is_active === 'boolean' ? body.is_active : true,
-    sort_order:             Number.isFinite(+body?.sort_order) ? +body.sort_order : 0
+    sort_order:             Number.isFinite(+body?.sort_order) ? +body.sort_order : 0,
+    colors:                 sanitizeColors(body.colors) || []
   };
-  const { data, error } = await supabaseAdmin.from('merch_products')
+  let { data, error } = await supabaseAdmin.from('merch_products')
     .insert(row).select('*').single();
+  if (error && /column .*colors.* does not exist/i.test(error.message || '')) {
+    const { colors: _drop, ...legacy } = row;
+    const retry = await supabaseAdmin.from('merch_products').insert(legacy).select('*').single();
+    data = retry.data; error = retry.error;
+  }
   if (error) {
     if (/duplicate key/i.test(error.message)) {
       return res.status(409).json({ error: 'product_key_already_exists' });
