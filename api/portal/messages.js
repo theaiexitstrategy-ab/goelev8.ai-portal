@@ -1,6 +1,6 @@
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
+import { twilioForClient, estimateSegments, truncateForSms } from '../../lib/twilio.js';
 import { toE164 } from '../../lib/phone.js';
 import { getBillingClient } from '../../lib/credits.js';
 
@@ -79,7 +79,7 @@ export default async function handler(req, res) {
     twilioMsg = await tw.messages.create({
       from: billingClient.twilio_phone_number,
       to: destNumber,
-      body: text,
+      body: truncateForSms(text),
       statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
     });
   } catch (err) {

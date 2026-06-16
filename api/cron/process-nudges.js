@@ -21,7 +21,7 @@
 // can also POST that header for testing.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
+import { twilioForClient, estimateSegments, truncateForSms } from '../../lib/twilio.js';
 import { toE164 } from '../../lib/phone.js';
 
 const BATCH_SIZE = 50;
@@ -183,7 +183,7 @@ export default async function handler(req, res) {
         twilioMsg = await tw.messages.create({
           from: client.twilio_phone_number,
           to: toE,
-          body: text,
+          body: truncateForSms(text),
           statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
         });
       } catch (err) {

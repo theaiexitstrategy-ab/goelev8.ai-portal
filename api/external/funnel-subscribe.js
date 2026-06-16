@@ -8,7 +8,7 @@
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilio } from '../../lib/twilio.js';
+import { twilio, truncateForSms } from '../../lib/twilio.js';
 import { methodGuard, readJson } from '../../lib/auth.js';
 
 function hashKey(raw) {
@@ -58,7 +58,7 @@ async function sendWelcomeSms(funnelId, toPhone) {
     return;
   }
   try {
-    await twilio.messages.create({ from, to: toPhone, body: config.body });
+    await twilio.messages.create({ from, to: toPhone, body: truncateForSms(config.body) });
   } catch (err) {
     // Best-effort — DB insert already succeeded, don't fail the request.
     console.error('[funnel-subscribe] welcome SMS failed:', err?.message || err);

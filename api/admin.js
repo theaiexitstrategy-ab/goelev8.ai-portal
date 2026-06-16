@@ -18,7 +18,7 @@
 
 import { requireAdmin, methodGuard, readJson } from '../lib/auth.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { twilioForClient, estimateSegments } from '../lib/twilio.js';
+import { twilioForClient, estimateSegments, truncateForSms } from '../lib/twilio.js';
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 import { backfillExternalMerchOrders } from '../lib/merch-ingest.js';
 import { stripe } from '../lib/stripe.js';
@@ -142,7 +142,7 @@ async function sendAsClient(req, res, ctx) {
     twilioMsg = await tw.messages.create({
       from: client.twilio_phone_number,
       to: destNumber,
-      body: text,
+      body: truncateForSms(text),
       statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
     });
   } catch (err) {

@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '../lib/supabase.js';
-import { estimateSegments } from '../lib/twilio.js';
+import { estimateSegments, truncateForSms } from '../lib/twilio.js';
 import { sendPushToClient, sendPushToAdmins } from '../lib/push.js';
 
 // Vapi handles SMS conversations on these numbers. After we log the
@@ -78,7 +78,7 @@ export default async function handler(req, res) {
       twilioMsg = await tw.messages.create({
         from: calledNumber,
         to: callerPhone,
-        body: smsBody,
+        body: truncateForSms(smsBody),
         statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
       });
     } catch (err) {
@@ -294,6 +294,9 @@ export default async function handler(req, res) {
     // STOP/START/HELP are TCPA-required responses — return them directly
     // instead of forwarding to Vapi, since compliance takes priority.
     if (reply) {
+      // Truncate even though TCPA replies are short — the validation
+      // rule applies to every outbound SMS regardless of source.
+      reply = truncateForSms(reply);
       // Log the auto-reply as an outbound message so it appears in the
       // Messages tab thread.
       await supabaseAdmin.from('messages').insert({
@@ -331,16 +334,35 @@ export default async function handler(req, res) {
       // Extract reply text from TwiML: <Message>...reply...</Message>
       // Simple regex — TwiML from Vapi is well-formed single-message.
       const msgMatch = vapiTwiml.match(/<Message(?:\s[^>]*)?>([\s\S]*?)<\/Message>/i);
+      // This is AI-generated SMS content (Vapi's assistant). Apply
+      // the same 160-char ceiling we enforce on every other outbound
+      // path. Decode TwiML entities → truncate → re-encode → rewrite
+      // the TwiML body before forwarding to Twilio so the customer
+      // sees the truncated version.
+      let outboundTwiml = vapiTwiml;
       if (msgMatch && msgMatch[1]) {
-        const replyText = msgMatch[1].trim();
-        if (replyText) {
+        const decodeXml = (s) => String(s)
+          .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+        const encodeXml = (s) => String(s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        const decoded = decodeXml(msgMatch[1]).trim();
+        const truncated = truncateForSms(decoded);
+        if (truncated !== decoded) {
+          outboundTwiml = vapiTwiml.replace(
+            /<Message(\s[^>]*)?>[\s\S]*?<\/Message>/i,
+            (_full, attrs) => `<Message${attrs || ''}>${encodeXml(truncated)}</Message>`
+          );
+        }
+        if (truncated) {
           await supabaseAdmin.from('messages').insert({
             client_id: client.id,
             contact_id: contact?.id || null,
             lead_id: leadId,
             direction: 'outbound',
-            body: replyText,
-            segments: estimateSegments(replyText),
+            body: truncated,
+            segments: estimateSegments(truncated),
             status: 'sent',
             to_number: from,
             from_number: to
@@ -349,7 +371,7 @@ export default async function handler(req, res) {
       }
 
       res.setHeader('Content-Type', 'text/xml');
-      return res.status(200).send(vapiTwiml);
+      return res.status(200).send(outboundTwiml);
     } catch (err) {
       console.error('[twilio/inbound] Vapi forward failed:', err.message);
       res.setHeader('Content-Type', 'text/xml');

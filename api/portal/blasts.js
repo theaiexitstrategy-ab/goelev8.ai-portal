@@ -24,7 +24,7 @@
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
+import { twilioForClient, estimateSegments, truncateForSms } from '../../lib/twilio.js';
 import { renderTemplate, firstName } from '../../lib/merge-tags.js';
 import { toE164 } from '../../lib/phone.js';
 import { getBillingClient } from '../../lib/credits.js';
@@ -356,7 +356,7 @@ export default async function handler(req, res) {
       const twilioMsg = await tw.messages.create({
         to: toE,
         from: fromNumber,
-        body: personalized,
+        body: truncateForSms(personalized),
         statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
       });
       sent++;
