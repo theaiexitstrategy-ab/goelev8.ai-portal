@@ -925,6 +925,129 @@ async function dedupeLeads(req, res) {
 // Tolerant of tables that don't exist in a given environment
 // (catches per-table errors and continues).
 // ──────────────────────────────────────────────────────────────
+// Backfill bookings whose starts_at was stored in the wrong timezone
+// before the wall-clock-to-UTC fix landed in the WPFF booking widget
+// on 2026-06-16. The bug was: api/bookings.js on the widget used
+// `new Date(date + ' ' + time).toISOString()`, which on Vercel (UTC
+// server) treated "3:00 PM" as 15:00 UTC. The portal then converted
+// that back to America/Chicago for display and showed 10:00 AM —
+// 5 hours off.
+//
+// Strategy:
+//   - Pull bookings.booking_date (the human-readable wall-time string,
+//     e.g. "MAY 8, 2026 3:00 PM") and bookings.starts_at.
+//   - For each row, re-parse booking_date in the calendar's tz to
+//     compute what starts_at SHOULD be.
+//   - If the stored starts_at differs from the computed value, write
+//     the correction.
+//
+// Idempotent: a correctly-stored booking computes the same starts_at
+// it already has and is skipped.
+//
+// Body: { slug?, tz?, dry_run?, limit? }
+//   slug    — restrict to one tenant; omit for every tenant with bookings
+//   tz      — IANA tz to interpret booking_date strings in (default
+//             'America/Chicago'). Override per-tenant if a calendar
+//             ever moves zones.
+//   dry_run — true to just report what would change
+//   limit   — max bookings to scan (default 500, max 5000)
+function parseWallClockInTz(input, tz) {
+  const MONTHS = {
+    JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
+    JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11
+  };
+  const m = String(input || '').toUpperCase().match(
+    /([A-Z]{3,9})\s+(\d{1,2}),?\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)?/
+  );
+  if (!m) return null;
+  const month = MONTHS[m[1].slice(0, 3)];
+  if (month == null) return null;
+  const day  = parseInt(m[2], 10);
+  const year = parseInt(m[3], 10);
+  let hour   = parseInt(m[4], 10);
+  const min  = parseInt(m[5], 10);
+  const mer  = m[6];
+  if (mer === 'PM' && hour < 12) hour += 12;
+  if (mer === 'AM' && hour === 12) hour = 0;
+  const naiveUtc = Date.UTC(year, month, day, hour, min, 0);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  });
+  const parts = {};
+  fmt.formatToParts(new Date(naiveUtc)).forEach(p => {
+    if (p.type !== 'literal') parts[p.type] = p.value;
+  });
+  const asTz = Date.UTC(
+    parseInt(parts.year, 10),
+    parseInt(parts.month, 10) - 1,
+    parseInt(parts.day, 10),
+    parseInt(parts.hour, 10) === 24 ? 0 : parseInt(parts.hour, 10),
+    parseInt(parts.minute, 10),
+    0
+  );
+  const offsetMs = naiveUtc - asTz;
+  return new Date(naiveUtc + offsetMs).toISOString();
+}
+
+async function backfillBookingTimes(req, res) {
+  const body = await readJson(req).catch(() => ({}));
+  const slug    = body?.slug ? String(body.slug).trim() : null;
+  const tz      = String(body?.tz || 'America/Chicago');
+  const dryRun  = !!body?.dry_run;
+  const limit   = Math.min(5000, Number.isFinite(+body?.limit) ? +body.limit : 500);
+
+  // Resolve target client_id(s).
+  let clientIds = null;
+  if (slug) {
+    const { data: c } = await supabaseAdmin
+      .from('clients').select('id, slug').eq('slug', slug).maybeSingle();
+    if (!c) return res.status(404).json({ error: 'tenant_not_found' });
+    clientIds = [c.id];
+  }
+
+  let query = supabaseAdmin
+    .from('bookings')
+    .select('id, client_id, booking_date, starts_at, lead_name')
+    .not('booking_date', 'is', null)
+    .not('starts_at', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (clientIds) query = query.in('client_id', clientIds);
+
+  const { data: rows, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const inspected = rows?.length || 0;
+  const samples = [];
+  let fixed = 0, skipped = 0, unparseable = 0;
+
+  for (const r of rows || []) {
+    const expected = parseWallClockInTz(r.booking_date, tz);
+    if (!expected) { unparseable++; continue; }
+    if (expected === r.starts_at) { skipped++; continue; }
+    if (samples.length < 10) {
+      samples.push({
+        id: r.id, lead_name: r.lead_name, booking_date: r.booking_date,
+        old_starts_at: r.starts_at, new_starts_at: expected
+      });
+    }
+    if (!dryRun) {
+      await supabaseAdmin.from('bookings')
+        .update({ starts_at: expected }).eq('id', r.id);
+    }
+    fixed++;
+  }
+
+  return res.status(200).json({
+    inspected, fixed, skipped, unparseable,
+    dry_run: dryRun, tz,
+    sample_corrections: samples
+  });
+}
+
+// ──────────────────────────────────────────────────────────────
 // Per-tenant pickup config. Body: { slug, pickup_enabled, pickup_location }.
 // pickup_enabled toggles whether the $0 'Pick up in person' option
 // shows on the Stripe Checkout rate picker. pickup_location is the
@@ -3419,6 +3542,7 @@ export default async function handler(req, res) {
       case 'dedupe-contacts':           return await dedupeContacts(req, res);
       case 'backfill-external-merch-orders': return await backfillExternalMerchOrdersAction(req, res);
       case 'connect-status-all':         return await connectStatusAll(req, res);
+      case 'backfill-booking-times':     return await backfillBookingTimes(req, res);
       case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);
       case 'inspect-recent-stripe-sessions': return await inspectRecentStripeSessions(req, res);

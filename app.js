@@ -7808,6 +7808,62 @@ async function viewAdmin() {
   migPanel.appendChild(pickupBtn);
   migPanel.appendChild(pickupOut);
 
+  // ─── Backfill Booking Times (timezone fix) ────────────────────────
+  // Re-derives bookings.starts_at from bookings.booking_date for any
+  // row where they disagree. Fixes the legacy WPFF widget bug where
+  // 'new Date(date+time).toISOString()' on a UTC Vercel server stored
+  // 3pm CDT as 15:00 UTC — the portal then displayed it as 10am.
+  // The fix landed in the widget on 2026-06-16, but bookings placed
+  // before that still need this backfill to round-trip correctly.
+  // Idempotent: rows already correct are skipped.
+  const tzBackfillOut = el('div', { style: 'display:none;margin-top:8px' });
+  const tzBackfillBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    const slug = prompt('Which tenant slug? (e.g. willpower-fitness — leave blank for ALL tenants)') || '';
+    const dryRun = confirm('Click OK for DRY RUN (preview without writing).\n\nClick Cancel to actually write the corrections.');
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Scanning…';
+    tzBackfillOut.style.display = 'block';
+    tzBackfillOut.innerHTML = '<div class="muted" style="font-size:0.75rem;padding:8px">Comparing each booking_date string against the stored UTC and computing corrections…</div>';
+    try {
+      const body = { dry_run: dryRun, limit: 5000 };
+      if (slug.trim()) body.slug = slug.trim();
+      const r = await api('/api/admin?action=backfill-booking-times', { method: 'POST', body });
+      toast(`${dryRun ? 'Dry run' : 'Fixed'} ${r.fixed} of ${r.inspected} bookings · ${r.skipped} already correct · ${r.unparseable} unparseable`);
+      const sampleRows = (r.sample_corrections || []).map(s =>
+        `<tr style="border-top:1px solid rgba(255,255,255,0.05)">
+          <td style="padding:4px 8px;font-size:10px">${s.lead_name || s.id.slice(-8)}</td>
+          <td style="padding:4px 8px;font-size:10px">${s.booking_date}</td>
+          <td style="padding:4px 8px;font-size:10px;color:#fca5a5">${s.old_starts_at}</td>
+          <td style="padding:4px 8px;font-size:10px;color:#86efac">${s.new_starts_at}</td>
+        </tr>`).join('');
+      tzBackfillOut.innerHTML = `
+        <div style="padding:10px;background:${dryRun ? 'rgba(99,179,237,0.10)' : 'rgba(34,197,94,0.10)'};border:1px solid ${dryRun ? 'rgba(99,179,237,0.35)' : 'rgba(34,197,94,0.35)'};border-radius:6px;font-size:0.78rem;margin-bottom:10px;color:#cbd5e1">
+          ${dryRun ? 'DRY RUN — nothing was written.' : '✓ Corrections applied.'} <strong>${r.fixed}</strong> of ${r.inspected} bookings ${dryRun ? 'would be' : 'were'} fixed · ${r.skipped} already correct.
+        </div>
+        ${sampleRows ? `
+          <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:8px;font-size:11px">
+            <div style="margin-bottom:6px;color:var(--muted,#888);font-size:10px">Sample (first 10):</div>
+            <table style="width:100%;border-collapse:collapse">
+              <thead><tr style="font-size:9px;color:var(--muted,#888);text-transform:uppercase">
+                <th style="padding:4px 8px;text-align:left">Lead</th>
+                <th style="padding:4px 8px;text-align:left">Wall time</th>
+                <th style="padding:4px 8px;text-align:left">Old UTC</th>
+                <th style="padding:4px 8px;text-align:left">New UTC</th>
+              </tr></thead>
+              <tbody>${sampleRows}</tbody>
+            </table>
+          </div>` : ''}
+      `;
+    } catch (err) {
+      tzBackfillOut.innerHTML = '<div class="err" style="padding:8px">Failed: ' + err.message + '</div>';
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Backfill Booking Times';
+    }
+  } }, 'Backfill Booking Times');
+  migPanel.appendChild(tzBackfillBtn);
+  migPanel.appendChild(tzBackfillOut);
+
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
   // tab into every tenant's sidebar without per-tenant SQL.
