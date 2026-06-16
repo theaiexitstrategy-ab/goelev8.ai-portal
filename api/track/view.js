@@ -8,8 +8,11 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 const seen = new Map();
 const RATE_LIMIT_MS = 60 * 60 * 1000; // 60 minutes
 
-function isRateLimited(ip, slug) {
-  const key = ip + ':' + slug;
+// Rate limit per (ip, slug, path) instead of per (ip, slug) so a
+// single visitor browsing multiple pages within an hour still
+// generates the per-page view rows the Analytics tab needs.
+function isRateLimited(ip, slug, path) {
+  const key = ip + ':' + slug + ':' + (path || '/');
   const last = seen.get(key);
   if (last && Date.now() - last < RATE_LIMIT_MS) return true;
   seen.set(key, Date.now());
@@ -19,6 +22,17 @@ function isRateLimited(ip, slug) {
     seen.delete(first);
   }
   return false;
+}
+
+// Normalize path: strip query + hash, lowercase, cap to 200 chars,
+// collapse trailing slash. Keeps /MERCH, /merch?ref=ad, /merch/ all
+// rolling up under one bucket in the Analytics tab.
+function normalizePath(raw) {
+  if (typeof raw !== 'string') return '/';
+  let p = raw.split('?')[0].split('#')[0].trim().toLowerCase();
+  if (!p) return '/';
+  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  return p.slice(0, 200);
 }
 
 export default async function handler(req, res) {
@@ -44,12 +58,14 @@ export default async function handler(req, res) {
 
     const { slug, client_id, referrer, user_agent } = body;
     if (!slug && !client_id) return res.status(200).json({ ok: true });
+    const path = normalizePath(body.path);
 
-    // Rate limit check
+    // Rate limit check — scoped per (ip, slug, path) so visitors
+    // browsing multiple pages still register one row per page.
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
       || req.headers['x-real-ip']
       || 'unknown';
-    if (isRateLimited(ip, slug || client_id)) {
+    if (isRateLimited(ip, slug || client_id, path)) {
       return res.status(200).json({ ok: true });
     }
 
@@ -66,13 +82,20 @@ export default async function handler(req, res) {
 
     if (!resolvedClientId) return res.status(200).json({ ok: true });
 
-    // Insert view
-    await supabaseAdmin.from('funnel_views').insert({
+    // Insert view. Tolerant retry without `path` for pre-migration
+    // projects so we never break the public tracker.
+    const row = {
       client_id: resolvedClientId,
       slug: slug || '',
+      path,
       referrer: referrer || null,
       user_agent: user_agent || null
-    });
+    };
+    let { error: insErr } = await supabaseAdmin.from('funnel_views').insert(row);
+    if (insErr && /column .*path.* does not exist/i.test(insErr.message || '')) {
+      const { path: _drop, ...legacy } = row;
+      await supabaseAdmin.from('funnel_views').insert(legacy);
+    }
 
     return res.status(200).json({ ok: true });
   } catch {

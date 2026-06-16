@@ -9037,6 +9037,88 @@ async function viewAnalytics() {
   }));
   restOfPage.appendChild(funnelPanel);
 
+  // Storefront (/merch) performance — first-party tracker data from
+  // embed/track.js, joined to merch_orders for a view→order
+  // conversion rate. Fired in parallel; failure renders an empty
+  // panel rather than blocking the rest of Analytics.
+  const merchPanel = el('div', { class: 'panel' });
+  merchPanel.appendChild(el('h2', {}, '🛍️ Storefront (/merch) Performance'));
+  merchPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:12px' },
+    'First-party view tracking on your /merch page + paid orders from the portal · last 30 days'));
+  const merchSlot = el('div', {}, el('p', { class: 'muted' }, 'Loading…'));
+  merchPanel.appendChild(merchSlot);
+  restOfPage.appendChild(merchPanel);
+  (async () => {
+    try {
+      const fv = await api('/api/portal/funnel-views');
+      const sf = fv.storefront;
+      merchSlot.replaceChildren();
+      if (!sf) {
+        merchSlot.appendChild(el('p', { class: 'muted' },
+          'No /merch traffic recorded yet. Make sure the GoElev8 tracker script is embedded in your /merch page (see Master Admin → tracking snippet) — views appear within a minute of the next page load.'));
+        return;
+      }
+      // Summary cards
+      const fmtPct = (v) => v == null ? '—' : v + '%';
+      const summaryCards = el('div', { class: 'cards', style: 'margin-bottom:14px' },
+        card('👀', '/merch Views',  sf.views_30d,  'Unique-per-hour visits'),
+        card('🛒', 'Paid Orders',   sf.orders_30d, 'Same 30-day window'),
+        card('🎯', 'View → Order',  fmtPct(sf.conversion_pct), sf.views_30d > 0 ? 'Conversion rate' : 'Need views to compute')
+      );
+      merchSlot.appendChild(summaryCards);
+
+      // Daily chart from sf.by_day
+      const days = Object.entries(sf.by_day || {});
+      if (days.length && days.some(([_, v]) => v > 0)) {
+        const max = Math.max(...days.map(([_, v]) => v), 1);
+        const chart = el('div', { class: 'view-chart' });
+        days.forEach(([date, views]) => {
+          const bar = el('div', {
+            class: 'view-bar',
+            title: date + ': ' + views + ' view' + (views === 1 ? '' : 's')
+          },
+            el('div', { class: 'view-bar-fill', style: 'height:' + Math.max(2, (views / max) * 100) + '%' }),
+            el('div', { class: 'view-bar-label' }, new Date(date).getDate())
+          );
+          chart.appendChild(bar);
+        });
+        merchSlot.appendChild(chart);
+      } else {
+        merchSlot.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-top:8px' },
+          'No /merch views in the last 30 days. Check that ' +
+          '<script src="https://portal.goelev8.ai/embed/track.js" async></script> ' +
+          'is in the <head> of your /merch page.'));
+      }
+
+      // Top portal-tracked pages — helps the operator see whether
+      // other pages (/, /about, etc) are also being tracked, useful
+      // for sanity-checking the embed.
+      if (Array.isArray(fv.by_path) && fv.by_path.length) {
+        const pathPanel = el('div', { style: 'margin-top:14px' });
+        pathPanel.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-bottom:6px' },
+          'All tracked pages (first-party tracker)'));
+        const max = fv.by_path[0]?.count || 1;
+        const list = el('div', { style: 'display:flex;flex-direction:column;gap:4px' });
+        for (const p of fv.by_path.slice(0, 8)) {
+          const bar = el('div', { style: 'display:flex;align-items:center;gap:8px;font-size:0.8rem' },
+            el('div', { class: 'mono', style: 'flex:0 0 220px;color:' + (p.path === '/merch' ? '#63b3ed' : 'var(--text,#e0e0e0)') }, p.path),
+            el('div', { style: 'flex:1;height:6px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden' },
+              el('div', { style: 'width:' + Math.round((p.count / max) * 100) + '%;height:100%;background:#63b3ed' })
+            ),
+            el('div', { style: 'flex:0 0 50px;text-align:right;color:var(--muted,#888);font-size:0.75rem' }, String(p.count))
+          );
+          list.appendChild(bar);
+        }
+        pathPanel.appendChild(list);
+        merchSlot.appendChild(pathPanel);
+      }
+    } catch (e) {
+      merchSlot.replaceChildren();
+      merchSlot.appendChild(el('p', { class: 'err', style: 'font-size:0.85rem' },
+        'Storefront stats unavailable: ' + e.message));
+    }
+  })();
+
   // Road To The Stage Ebook Sales — for tenants that resell the R2S
   // ebook (Flex Facility, Will Power Fitness Factory). Admin sees it
   // via impersonation; never in any other tenant's view.
@@ -9474,7 +9556,7 @@ async function render() {
       case 'settings':  view = await viewSettings(); break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
       case 'admin_sales':   view = state.isAdmin ? await viewAdminSales()   : await viewOverview(); break;
-      case 'analytics': view = (state.user?.email === 'ab@goelev8.ai' || ['flex-facility', 'willpower-fitness'].includes(state.client?.slug)) ? await viewAnalytics() : await viewOverview(); break;
+      case 'analytics': view = (state.user?.email === 'ab@goelev8.ai' || ['flex-facility', 'willpower-fitness', 'islay-studios'].includes(state.client?.slug)) ? await viewAnalytics() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
   } catch (e) {

@@ -141,10 +141,16 @@
   document.addEventListener('submit', handleSubmit, true);
 
   // ── Page view tracking ─────────────────────────────────────────────
-  // Fire once on load. Silent, never blocks render.
+  // Fire once on load. Silent, never blocks render. `path` is sent
+  // separately from `slug` so the portal can group views by URL path
+  // (e.g. /merch vs /, /about, etc) without overloading the tenant
+  // slug field — that's the only way the Analytics tab can break out
+  // per-page traffic + conversion.
   try {
+    var loc = window.location || {};
     var viewPayload = JSON.stringify({
       slug: cfg.slug,
+      path: loc.pathname || '/',
       referrer: document.referrer || null,
       user_agent: navigator.userAgent || null
     });

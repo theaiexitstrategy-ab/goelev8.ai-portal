@@ -3368,6 +3368,18 @@ async function applyPendingMigrations(req, res) {
     `COMMENT ON COLUMN public.clients.pickup_location IS
        'Public-facing pickup location shown on Stripe Checkout (e.g. "iSlay Studios, Springfield MO"). Null = generic "Pick up in person" label.';`,
 
+    // ----- funnel_views.path: per-page traffic breakdown -----
+    // Before this column, every tracked page view recorded only the
+    // tenant slug — so the Analytics tab couldn't distinguish a hit
+    // on /merch from a hit on /home. Now embed/track.js sends
+    // location.pathname and we group by it so per-page stats (e.g.
+    // /merch traffic + conversion rate) can render.
+    `ALTER TABLE public.funnel_views
+       ADD COLUMN IF NOT EXISTS path text;`,
+    `CREATE INDEX IF NOT EXISTS funnel_views_client_path_idx
+       ON public.funnel_views(client_id, path, viewed_at)
+       WHERE path IS NOT NULL;`,
+
     // ----- clients.pickup_instructions -----
     // Free-text instructions appended to the order-received SMS when
     // the customer picked the in-person pickup shipping option. Use
