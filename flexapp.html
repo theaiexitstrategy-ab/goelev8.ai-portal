@@ -1,0 +1,178 @@
+<!-- © 2026 GoElev8.ai | Aaron Bryant. All rights reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>FLEX Facility App</title>
+<meta name="description" content="Download the FLEX Facility training app." />
+
+<!-- Open Graph meta tags so an SMS or social-media preview renders
+     the Flex brand instead of a generic GoElev8 fallback. The image
+     points at the marketing site's existing flex-logo.png so we don't
+     duplicate brand assets across repos. -->
+<meta property="og:title" content="FLEX Facility App" />
+<meta property="og:description" content="Download the FLEX Facility training app" />
+<meta property="og:image" content="https://theflexfacility.com/flex-logo.png" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://goelev8.ai/flexapp" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="FLEX Facility App" />
+<meta name="twitter:description" content="Download the FLEX Facility training app" />
+<meta name="twitter:image" content="https://theflexfacility.com/flex-logo.png" />
+
+<!-- Meta-refresh as a belt-and-braces fallback for the JS-disabled
+     case. Fires at the same 2-second mark as the JS redirect so the
+     UX is identical either way. -->
+<meta http-equiv="refresh" content="2; url=https://apps.apple.com/us/app/flex-facility/id6755446262" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #000;
+    --white: #fff;
+    --muted: #9a9a9a;
+    --cyan: #00FFFF;
+    --gold: #c8a84b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { background: var(--bg); color: var(--white); min-height: 100vh; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 20px env(safe-area-inset-bottom, 32px);
+  }
+
+  .card {
+    width: 100%;
+    max-width: 420px;
+    text-align: center;
+  }
+
+  .logo {
+    width: 96px;
+    height: 96px;
+    margin: 0 auto 28px;
+    display: block;
+    object-fit: contain;
+  }
+
+  /* Brand mark — white "FLEX" lockup. Stays mobile-readable down to
+     320px viewports and scales up on tablets. */
+  .brand {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 900;
+    font-size: clamp(48px, 12vw, 72px);
+    letter-spacing: 0.05em;
+    line-height: 1;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    color: var(--white);
+  }
+  .brand .facility {
+    display: block;
+    font-size: clamp(14px, 4vw, 18px);
+    letter-spacing: 0.42em;
+    color: var(--muted);
+    margin-top: 8px;
+    font-weight: 700;
+  }
+
+  .status {
+    margin-top: 36px;
+    font-size: 15px;
+    color: var(--white);
+    line-height: 1.55;
+  }
+
+  /* Cyan loading spinner. SVG so it stays crisp at every density. */
+  .spinner {
+    width: 44px;
+    height: 44px;
+    margin: 24px auto 0;
+    border: 3px solid rgba(0, 255, 255, 0.18);
+    border-top-color: var(--cyan);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .fallback {
+    margin-top: 28px;
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .fallback a {
+    color: var(--cyan);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(0, 255, 255, 0.45);
+    padding-bottom: 1px;
+  }
+  .fallback a:hover, .fallback a:focus { border-bottom-color: var(--cyan); }
+
+  .footer {
+    position: fixed;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: 0; right: 0;
+    text-align: center;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.25);
+  }
+  .footer a { color: inherit; text-decoration: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; border-top-color: rgba(0, 255, 255, 0.5); }
+  }
+</style>
+</head>
+<body>
+
+<main class="card" role="main">
+  <img
+    class="logo"
+    src="https://theflexfacility.com/flex-logo.png"
+    alt="The Flex Facility"
+    onerror="this.style.display='none'"
+  />
+  <div class="brand">
+    Flex
+    <span class="facility">Facility</span>
+  </div>
+
+  <p class="status" aria-live="polite">Taking you to the FLEX App…</p>
+
+  <div class="spinner" aria-hidden="true"></div>
+
+  <p class="fallback">
+    <a id="fallback-link" href="https://apps.apple.com/us/app/flex-facility/id6755446262">
+      Click here if you are not redirected
+    </a>
+  </p>
+</main>
+
+<div class="footer">
+  Powered by <a href="https://goelev8.ai" rel="noopener">GoElev8.ai</a>
+</div>
+
+<script>
+  // JS-driven redirect. Fires at the 2-second mark to match the
+  // <meta refresh> fallback. window.location.replace() instead of
+  // .href so the redirect page doesn't end up in the browser's back
+  // stack — a tap of Back from the App Store should land them on the
+  // SMS / page they came from, not bounce them back here.
+  var APP_URL = 'https://apps.apple.com/us/app/flex-facility/id6755446262';
+  setTimeout(function () {
+    try { window.location.replace(APP_URL); }
+    catch (_) { window.location.href = APP_URL; }
+  }, 2000);
+</script>
+
+</body>
+</html>

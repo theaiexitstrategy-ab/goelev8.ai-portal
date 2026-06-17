@@ -43,6 +43,61 @@ const PROGRESS_UPDATE_EVERY = 5;            // write progress every N sends
 const OPT_OUT_REGEX = /\b(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT|OPT[\s-]?OUT)\b/i;
 const OPT_OUT_SUFFIX = '\n\nReply STOP to opt out.';
 
+// Count recipients that would match a given segment + tag filter for
+// a tenant. Used by the SMS Blast modal's live segment-counter to show
+// "500 contacts × $0.04 = $20.00" before the operator clicks Send.
+// Mirrors the filter logic in the POST path so the count matches what
+// the actual blast would target.
+//
+// Returns just the count — never reads phone numbers / contact rows —
+// so this is cheap to call on every segment/tag change in the UI.
+async function countRecipientsForSegment({ clientId, segment, includeTags, excludeTags, artistFilter }) {
+  const includeArr = Array.isArray(includeTags)
+    ? includeTags.map(t => String(t).trim()).filter(Boolean) : [];
+  const excludeArr = Array.isArray(excludeTags)
+    ? excludeTags.map(t => String(t).trim()).filter(Boolean) : [];
+  const hardExclude = new Set([...(excludeArr || []), 'Do Not Contact']);
+
+  if (segment === 'contacts' || segment === 'imported') {
+    let cq = supabaseAdmin
+      .from('contacts').select('id, phone, opted_out, tags')
+      .eq('client_id', clientId);
+    if (segment === 'imported') cq = cq.eq('source', 'import');
+    if (includeArr.length) cq = cq.overlaps('tags', includeArr);
+    const { data, error } = await cq;
+    if (error) return { count: 0, error: error.message };
+    const filtered = (data || [])
+      .filter(c => c.phone && !c.opted_out)
+      .filter(c => !(c.tags || []).some(t => hardExclude.has(t)));
+    return { count: filtered.length };
+  }
+
+  let query = supabaseAdmin
+    .from('leads').select('id, phone, tags').eq('client_id', clientId);
+  switch (segment) {
+    case 'new':          query = query.eq('lead_status', 'New'); break;
+    case 'booked':       query = query.eq('lead_status', 'Booked'); break;
+    case 'first_timers': query = query.eq('booking_confirmed', false); break;
+    case 'returning':    query = query.eq('booking_confirmed', true); break;
+    case 'no_shows':     query = query.eq('lead_status', 'No Show'); break;
+    case 'by_artist':    query = query.eq('artist_selected', artistFilter); break;
+  }
+  if (includeArr.length) query = query.overlaps('tags', includeArr);
+
+  // Mirror the POST path's opted_out tolerance: try with the filter,
+  // fall back without it if the column doesn't exist yet.
+  let { data, error } = await query.eq('opted_out', false);
+  if (error && /column .*opted_out.* does not exist/i.test(error.message || '')) {
+    const retry = await query;
+    data = retry.data; error = retry.error;
+  }
+  if (error) return { count: 0, error: error.message };
+  const filtered = (data || [])
+    .filter(l => l.phone)
+    .filter(l => !(l.tags || []).some(t => hardExclude.has(t)));
+  return { count: filtered.length };
+}
+
 // Returns { count_hour, count_day, last_sent_at, next_available_at }
 // for the tenant's blast history. Treats 'Sending'/'Sent'/'Partial' as
 // counted — only 'Failed' (zero deliveries) is exempt so an operator
@@ -97,6 +152,24 @@ export default async function handler(req, res) {
 
   // ---------- GET: list blasts + send-limit status ----------
   if (req.method === 'GET') {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const action = url.searchParams.get('action');
+
+    // Live recipient count for the blast composer's segment counter.
+    // Mirrors the POST path's filters so the count shown in the UI
+    // matches what an actual send would target.
+    if (action === 'count-recipients') {
+      const segment = url.searchParams.get('segment') || 'contacts';
+      const artistFilter = url.searchParams.get('artistFilter') || null;
+      const csv = (v) => (v ? String(v).split(',').map(s => s.trim()).filter(Boolean) : []);
+      const includeTags = csv(url.searchParams.get('includeTags'));
+      const excludeTags = csv(url.searchParams.get('excludeTags'));
+      const result = await countRecipientsForSegment({
+        clientId, segment, includeTags, excludeTags, artistFilter
+      });
+      return res.status(200).json({ segment, count: result.count, error: result.error });
+    }
+
     const [{ data, error }, limits] = await Promise.all([
       supabaseAdmin
         .from('blasts')

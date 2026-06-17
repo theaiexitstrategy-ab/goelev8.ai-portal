@@ -6146,22 +6146,83 @@ function openBlastModal(wrap) {
   const previewBox = el('div', { style: 'font-size:0.8rem;padding:10px 12px;background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.15);border-radius:6px;margin-top:6px;white-space:pre-wrap;line-height:1.4' });
   const previewLabel = el('div', { style: 'font-size:0.65rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted,#888);margin-bottom:4px;font-weight:600' }, 'Preview (with sample contact "Sarah Johnson")');
   const previewText = el('div', { style: 'color:var(--text,#e0e0e0)' });
-  // Live segment + per-recipient credit cost counter so operators
-  // see what a long message will cost BEFORE they click Send. Matches
-  // the server math in lib/twilio.js estimateSegments() exactly.
-  const previewMeta = el('div', {
-    style: 'font-size:0.7rem;color:var(--muted,#888);margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06)'
-  });
-  previewBox.append(previewLabel, previewText, previewMeta);
+  previewBox.append(previewLabel, previewText);
 
-  // Same segment math as lib/twilio.js — keep in sync if the server
-  // ever switches to long-code GSM-7 / UCS-2 lengths.
-  function clientEstimateSegments(body) {
-    if (!body) return 0;
-    const isUnicode = /[^ -]/.test(body);
-    const len = body.length;
-    if (isUnicode) return len <= 70 ? 1 : Math.ceil(len / 67);
-    return len <= 160 ? 1 : Math.ceil(len / 153);
+  // SMS segment counter — lives directly below the message textarea
+  // so it's the first thing the operator sees as they type.
+  // Char count vs current segment ceiling ("265 / 306 chars"),
+  // segment count ("2 segments"), per-message cost ("$0.04 per
+  // message"), total estimated ("500 contacts × $0.04 = $20.00").
+  // Color tiers: 1 seg green / 2 yellow / 3 orange / 4+ red.
+  // Recipient count is fetched live from /api/portal/blasts?action=
+  // count-recipients on every segment / tag change. Informational
+  // only — sending is never blocked.
+  const SMS_RATE_CENTS_PER_SEG = Number.isFinite(+window.GE8_SMS_RATE_CENTS)
+    ? +window.GE8_SMS_RATE_CENTS : 4;
+  function ceilingForSegments(segs) {
+    if (segs <= 1) return 160;
+    return 160 + 146 + 153 * (segs - 2);
+  }
+  function segmentsFromLen(len) {
+    if (len <= 0)   return 0;
+    if (len <= 160) return 1;
+    if (len <= 306) return 2;
+    if (len <= 459) return 3;
+    if (len <= 612) return 4;
+    return 4 + Math.ceil((len - 612) / 153);
+  }
+  function colorForSegments(segs) {
+    if (segs <= 1)  return '#86efac';
+    if (segs === 2) return '#fde68a';
+    if (segs === 3) return '#fdba74';
+    return '#f87171';
+  }
+
+  const segCounter = el('div', {
+    style:
+      'display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;' +
+      'padding:10px 12px;margin-top:6px;border-radius:6px;' +
+      'background:#000;border:1px solid rgba(0,255,255,0.18);' +
+      'font-size:0.78rem;line-height:1.35;font-family:Inter,system-ui,sans-serif'
+  });
+  const segChars = el('strong', { style: 'color:#86efac;letter-spacing:0.01em' }, '0 / 160 chars');
+  const segCount = el('span',   { style: 'color:var(--muted,#888)' }, '1 segment');
+  const segPer   = el('span',   { style: 'color:var(--muted,#888)' }, '$0.04 per message');
+  const segTotal = el('span',   { style: 'color:#00FFFF;font-weight:600;margin-left:auto' }, '—');
+  segCounter.append(segChars, segCount, segPer, segTotal);
+
+  let recipientCount = null;
+  function setRecipientCount(n) {
+    recipientCount = (typeof n === 'number' && n >= 0) ? n : null;
+    updateSegCounter();
+  }
+
+  function updateSegCounter() {
+    let body = msgIn.value || '';
+    if (promoIn && promoIn.value.trim()) body += '\n\nUse code: ' + promoIn.value.trim();
+    if (body.trim() && !OPT_OUT_RE.test(body)) body += '\n\nReply STOP to opt out.';
+    const len  = body.length;
+    const segs = Math.max(1, segmentsFromLen(len));
+    const ceil = ceilingForSegments(segs);
+    const color = colorForSegments(segs);
+    segChars.textContent = len + ' / ' + ceil + ' chars';
+    segChars.style.color = color;
+    segCount.textContent = segs === 1 ? '1 segment' : (segs + ' segments');
+    const perMsgCents = segs * SMS_RATE_CENTS_PER_SEG;
+    const perMsgUsd   = (perMsgCents / 100).toFixed(2);
+    segPer.textContent = '$' + perMsgUsd + ' per message';
+    if (recipientCount == null) {
+      segTotal.textContent = 'Counting contacts…';
+      segTotal.style.color = 'var(--muted,#888)';
+    } else if (recipientCount === 0) {
+      segTotal.textContent = '0 contacts';
+      segTotal.style.color = 'var(--muted,#888)';
+    } else {
+      const totalCents = recipientCount * perMsgCents;
+      const totalUsd   = (totalCents / 100).toFixed(2);
+      segTotal.textContent = recipientCount.toLocaleString() + ' contacts × $' + perMsgUsd + ' = $' + totalUsd;
+      segTotal.style.color = '#00FFFF';
+    }
   }
 
   // Carrier policy + TCPA require every blast to carry an opt-out
@@ -6178,31 +6239,17 @@ function openBlastModal(wrap) {
       previewText.textContent = '(start typing your message…)';
       previewText.style.fontStyle = 'italic';
       previewText.style.color = 'var(--muted,#888)';
-      previewMeta.textContent = '';
+      updateSegCounter();
       return;
     }
     let rendered = previewMergeTags(body, sample);
-    if (promoIn.value.trim()) rendered += `\n\nUse code: ${promoIn.value.trim()}`;
+    if (promoIn.value.trim()) rendered += '\n\nUse code: ' + promoIn.value.trim();
     if (!OPT_OUT_RE.test(rendered)) rendered += '\n\nReply STOP to opt out.';
     previewText.textContent = rendered;
     previewText.style.fontStyle = '';
     previewText.style.color = '';
-
-    const segs = clientEstimateSegments(rendered);
-    const cost = segs;
-    const segLabel = segs === 1 ? '1 segment' : segs + ' segments';
-    const creditLabel = cost === 1 ? '1 credit' : cost + ' credits';
-    // Warning color when the message would cost more than 1 credit
-    // per recipient — that's a real spend signal at higher recipient
-    // counts and worth flagging before Send.
-    const overage = segs > 1;
-    previewMeta.innerHTML =
-      `<strong style="color:${overage ? '#fbd38d' : '#86efac'}">${rendered.length} chars · ${segLabel} · ${creditLabel} per recipient</strong>` +
-      (overage
-        ? '<br><span>Multi-segment messages charge the segment count per recipient. Shorter messages = fewer credits.</span>'
-        : '');
+    updateSegCounter();
   };
-
   const insertAtCursor = (token) => {
     const start = msgIn.selectionStart != null ? msgIn.selectionStart : msgIn.value.length;
     const end   = msgIn.selectionEnd   != null ? msgIn.selectionEnd   : msgIn.value.length;
@@ -6260,6 +6307,54 @@ function openBlastModal(wrap) {
   };
   drawIncludeChips();
   drawExcludeChips();
+
+  // ── Recipient count fetch ─────────────────────────────────────────
+  // Polled from /api/portal/blasts?action=count-recipients whenever
+  // the segment dropdown or tag filters change. Debounced so a quick
+  // sequence of clicks doesn't fire a request per click. The chip
+  // drawer functions (drawIncludeChips / drawExcludeChips) are const
+  // arrow functions — instead of monkey-patching them, the segment
+  // counter's auto-refresh hook re-runs whenever the chips host
+  // mutates (MutationObserver), which catches both adds and removes
+  // without coupling to the existing onclick handlers.
+  let countAbort = null;
+  let countTimer = null;
+  function refreshRecipientCount() {
+    if (countTimer) clearTimeout(countTimer);
+    countTimer = setTimeout(async () => {
+      try {
+        if (countAbort) countAbort.abort();
+        countAbort = new AbortController();
+        const params = new URLSearchParams({
+          action:  'count-recipients',
+          segment: segSel.value || 'contacts'
+        });
+        if (includeTags.length) params.set('includeTags', includeTags.join(','));
+        if (excludeTags.length) params.set('excludeTags', excludeTags.join(','));
+        const headers = {};
+        if (state.token) headers.authorization = 'Bearer ' + state.token;
+        if (state.isAdmin && state.impersonating) headers['x-admin-as-client'] = state.impersonating;
+        const r = await fetch('/api/portal/blasts?' + params.toString(), {
+          headers, signal: countAbort.signal
+        });
+        if (!r.ok) { setRecipientCount(null); return; }
+        const data = await r.json().catch(() => ({}));
+        setRecipientCount(typeof data.count === 'number' ? data.count : null);
+      } catch (e) {
+        if (e.name !== 'AbortError') setRecipientCount(null);
+      }
+    }, 180);
+  }
+  // Fires whenever a tag chip is added or removed via the picker.
+  // MutationObserver watches child changes on either chip host so we
+  // don't need to monkey-patch the existing const drawers.
+  const tagObserver = new MutationObserver(() => refreshRecipientCount());
+  tagObserver.observe(includeChipsHost, { childList: true });
+  tagObserver.observe(excludeChipsHost, { childList: true });
+  // Segment dropdown change → recount (covers leads vs contacts swap).
+  segSel.addEventListener('change', refreshRecipientCount);
+  // Initial fetch on modal open.
+  refreshRecipientCount();
 
   // Tracks the in-flight POST so a re-click can't fire a second one.
   // The button is also disabled, but this is belt-and-braces in case
@@ -6423,6 +6518,7 @@ function openBlastModal(wrap) {
     limitsBanner,
     el('label', {}, 'Blast Name'), nameIn,
     el('label', {}, 'Message Body'), msgIn,
+    segCounter,
     complianceNote,
     chipsRow,
     previewBox,

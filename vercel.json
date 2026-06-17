@@ -5,6 +5,7 @@
     { "path": "/api/cron/sync-stripe-orders", "schedule": "*/5 * * * *" }
   ],
   "rewrites": [
+    { "source": "/flexapp", "destination": "/flexapp.html" },
     { "source": "/api/webhooks/lead", "destination": "/api/events?action=lead" },
     { "source": "/api/webhooks/vapi", "destination": "/api/events?action=vapi" },
     { "source": "/api/webhooks/twilio/inbound", "destination": "/api/twilio?action=inbound" },
