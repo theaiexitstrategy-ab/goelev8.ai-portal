@@ -1062,6 +1062,83 @@ async function backfillLeadsToContacts(req, res) {
   });
 }
 
+// Single-booking diagnostic. Given a booking_id (or the most recent
+// WPFF booking if none provided), shows what's actually stored in
+// the DB AND what the timezone fix would compute. Use this when
+// 'Backfill Booking Times' says everything is fine but the operator
+// still sees the wrong time on one specific booking — it tells us
+// exactly which way the data is off and whether the regex even
+// matched.
+//
+// Body: { booking_id?, slug?, tz?='America/Chicago' }
+async function inspectBooking(req, res) {
+  const body = await readJson(req).catch(() => ({}));
+  const bookingId = body?.booking_id ? String(body.booking_id) : null;
+  const slug      = body?.slug ? String(body.slug) : null;
+  const tz        = String(body?.tz || 'America/Chicago');
+
+  let row;
+  if (bookingId) {
+    const r = await supabaseAdmin
+      .from('bookings')
+      .select('id, client_id, booking_date, starts_at, lead_name, phone, service, status, created_at')
+      .eq('id', bookingId).maybeSingle();
+    row = r.data;
+  } else if (slug) {
+    const { data: c } = await supabaseAdmin
+      .from('clients').select('id').eq('slug', slug).maybeSingle();
+    if (!c) return res.status(404).json({ error: 'tenant_not_found' });
+    const r = await supabaseAdmin
+      .from('bookings')
+      .select('id, client_id, booking_date, starts_at, lead_name, phone, service, status, created_at')
+      .eq('client_id', c.id)
+      .order('created_at', { ascending: false })
+      .limit(1).maybeSingle();
+    row = r.data;
+  } else {
+    return res.status(400).json({ error: 'booking_id_or_slug_required' });
+  }
+  if (!row) return res.status(404).json({ error: 'booking_not_found' });
+
+  const expected = parseWallClockInTz(row.booking_date, tz);
+  const fmt = (iso) => {
+    if (!iso) return null;
+    try { return new Date(iso).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' }); }
+    catch { return iso; }
+  };
+
+  // Diagnose: what does the regex see, and what would we update to?
+  const regexMatched = expected != null;
+  let verdict;
+  if (!regexMatched) {
+    verdict = 'UNPARSEABLE: booking_date does not match the wall-clock regex. The backfill cannot fix this row automatically — fix the source widget or update the regex.';
+  } else if (expected === row.starts_at) {
+    verdict = 'OK: stored starts_at already matches the computed value. The display should be correct.';
+  } else {
+    verdict = 'NEEDS_BACKFILL: stored starts_at differs from the computed value. Click Backfill Booking Times (non-dry-run) to fix this row.';
+  }
+
+  return res.status(200).json({
+    booking: {
+      id: row.id,
+      lead_name: row.lead_name,
+      phone: row.phone,
+      service: row.service,
+      status: row.status,
+      booking_date: row.booking_date,
+      starts_at_stored: row.starts_at,
+      starts_at_stored_display_in_tz: fmt(row.starts_at)
+    },
+    expected: {
+      starts_at_computed: expected,
+      starts_at_computed_display_in_tz: fmt(expected),
+      regex_matched: regexMatched,
+      tz
+    },
+    verdict
+  });
+}
+
 async function backfillBookingTimes(req, res) {
   const body = await readJson(req).catch(() => ({}));
   const slug    = body?.slug ? String(body.slug).trim() : null;
@@ -1092,12 +1169,32 @@ async function backfillBookingTimes(req, res) {
 
   const inspected = rows?.length || 0;
   const samples = [];
+  const unparseableSamples = [];
+  const alreadyCorrectSamples = [];
   let fixed = 0, skipped = 0, unparseable = 0;
 
   for (const r of rows || []) {
     const expected = parseWallClockInTz(r.booking_date, tz);
-    if (!expected) { unparseable++; continue; }
-    if (expected === r.starts_at) { skipped++; continue; }
+    if (!expected) {
+      unparseable++;
+      if (unparseableSamples.length < 5) {
+        unparseableSamples.push({
+          id: r.id, lead_name: r.lead_name,
+          booking_date: r.booking_date, starts_at: r.starts_at
+        });
+      }
+      continue;
+    }
+    if (expected === r.starts_at) {
+      skipped++;
+      if (alreadyCorrectSamples.length < 3) {
+        alreadyCorrectSamples.push({
+          id: r.id, lead_name: r.lead_name,
+          booking_date: r.booking_date, starts_at: r.starts_at
+        });
+      }
+      continue;
+    }
     if (samples.length < 10) {
       samples.push({
         id: r.id, lead_name: r.lead_name, booking_date: r.booking_date,
@@ -1114,7 +1211,9 @@ async function backfillBookingTimes(req, res) {
   return res.status(200).json({
     inspected, fixed, skipped, unparseable,
     dry_run: dryRun, tz,
-    sample_corrections: samples
+    sample_corrections: samples,
+    sample_unparseable: unparseableSamples,
+    sample_already_correct: alreadyCorrectSamples
   });
 }
 
@@ -3640,6 +3739,7 @@ export default async function handler(req, res) {
       case 'backfill-external-merch-orders': return await backfillExternalMerchOrdersAction(req, res);
       case 'connect-status-all':         return await connectStatusAll(req, res);
       case 'backfill-booking-times':     return await backfillBookingTimes(req, res);
+      case 'inspect-booking':            return await inspectBooking(req, res);
       case 'backfill-leads-to-contacts': return await backfillLeadsToContacts(req, res);
       case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);

@@ -8147,6 +8147,37 @@ async function viewAdmin() {
   migPanel.appendChild(tzBackfillBtn);
   migPanel.appendChild(tzBackfillOut);
 
+  // ─── Inspect a Single Booking (timezone debug) ────────────────────
+  // Use when 'Backfill Booking Times' didn't help and the operator
+  // still sees a wrong time on one specific booking. Tells us
+  // exactly what's in the DB, what the regex sees, and what the fix
+  // would compute.
+  const inspectBookingOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:360px;margin-top:8px' });
+  const inspectBookingBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    const choice = prompt('Inspect by booking_id OR most-recent booking for a tenant slug?\n\nEnter a booking UUID, OR enter "slug:willpower-fitness" (or any slug) to inspect the most recent booking for that tenant.\n\nLeave blank to cancel.');
+    if (!choice) return;
+    const body = {};
+    if (choice.toLowerCase().startsWith('slug:')) body.slug = choice.slice(5).trim();
+    else body.booking_id = choice.trim();
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Inspecting…';
+    try {
+      const r = await api('/api/admin?action=inspect-booking', { method: 'POST', body });
+      inspectBookingOut.style.display = 'block';
+      inspectBookingOut.textContent = JSON.stringify(r, null, 2);
+      toast(r.verdict || 'See output below', !r.verdict?.startsWith('OK'));
+    } catch (err) {
+      inspectBookingOut.style.display = 'block';
+      inspectBookingOut.textContent = 'Failed: ' + err.message;
+      toast('Failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Inspect Booking';
+    }
+  } }, 'Inspect Booking');
+  migPanel.appendChild(inspectBookingBtn);
+  migPanel.appendChild(inspectBookingOut);
+
   // ─── Backfill Leads → Contacts ────────────────────────────────────
   // Inserts a contacts row for every lead that doesn't already have
   // one, so legacy leads (submitted before lead-intake started
