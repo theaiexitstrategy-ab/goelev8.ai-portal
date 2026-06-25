@@ -22,6 +22,7 @@ import { twilioForClient, estimateSegments, truncateForSms } from '../lib/twilio
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 import { backfillExternalMerchOrders } from '../lib/merch-ingest.js';
 import { stripe } from '../lib/stripe.js';
+import { provisionTenant } from '../lib/provisioning.js';
 
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
@@ -1071,6 +1072,34 @@ async function backfillLeadsToContacts(req, res) {
 // matched.
 //
 // Body: { booking_id?, slug?, tz?='America/Chicago' }
+// Manual provisioning trigger. Body: { client_id } OR { slug }.
+// Looks up the clients row, runs the full provisioning agent,
+// returns the agent's log. Idempotent — re-running on an
+// already-provisioned tenant just re-syncs.
+async function provisionTenantAction(req, res, ctx) {
+  const body = await readJson(req).catch(() => ({}));
+  let clientId = body?.client_id ? String(body.client_id).trim() : null;
+  const slug   = body?.slug ? String(body.slug).trim() : null;
+  if (!clientId && slug) {
+    const { data: c } = await supabaseAdmin
+      .from('clients').select('id').eq('slug', slug).maybeSingle();
+    if (!c) return res.status(404).json({ error: 'tenant_not_found' });
+    clientId = c.id;
+  }
+  if (!clientId) return res.status(400).json({ error: 'client_id_or_slug_required' });
+
+  try {
+    const result = await provisionTenant({
+      clientId,
+      triggeredBy: ctx?.user?.email || 'admin'
+    });
+    return res.status(200).json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[provision-tenant] failed:', e);
+    return res.status(500).json({ error: e?.message || 'provisioning_failed' });
+  }
+}
+
 async function inspectBooking(req, res) {
   const body = await readJson(req).catch(() => ({}));
   const bookingId = body?.booking_id ? String(body.booking_id) : null;
@@ -3501,6 +3530,173 @@ async function applyPendingMigrations(req, res) {
        ON public.messages(client_id, blast_id, created_at)
        WHERE blast_id IS NOT NULL;`,
 
+    // ─── Provisioning agent schema ─────────────────────────────────────
+    // Tables + columns the lib/provisioning.js orchestrator reads and
+    // writes. Mapped onto the existing clients-as-tenants model — no
+    // parallel tenants table.
+    //
+    // clients gets the brand fields the agent expects to copy onto a
+    // tenant home (primary/secondary color, logo url, owner contact,
+    // plan tier, onboarded_at). Most already exist; these are the
+    // missing ones. Idempotent ALTER ADD COLUMN IF NOT EXISTS.
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS primary_color   text,
+       ADD COLUMN IF NOT EXISTS secondary_color text,
+       ADD COLUMN IF NOT EXISTS logo_url        text,
+       ADD COLUMN IF NOT EXISTS owner_name      text,
+       ADD COLUMN IF NOT EXISTS owner_email     text,
+       ADD COLUMN IF NOT EXISTS plan_tier       text,
+       ADD COLUMN IF NOT EXISTS booking_url     text,
+       ADD COLUMN IF NOT EXISTS onboarded_at    timestamptz,
+       ADD COLUMN IF NOT EXISTS onboarding_status text;`,
+
+    // client_info — onboarding intake captured before provisioning.
+    // Holds the prose fields the agent reads when building the brand
+    // home (services list, brand description, font preference, city,
+    // state, requested domain). Free-form JSON for forward compat —
+    // adding a new intake field on the onboarding form doesn't need
+    // a migration.
+    `CREATE TABLE IF NOT EXISTS public.client_info (
+       client_id        uuid PRIMARY KEY REFERENCES public.clients(id) ON DELETE CASCADE,
+       business_name    text,
+       owner_name       text,
+       owner_email      text,
+       city             text,
+       state            text,
+       primary_color    text,
+       secondary_color  text,
+       font_preference  text,
+       domain_preference text,
+       services         jsonb NOT NULL DEFAULT '[]'::jsonb,
+       keywords         jsonb NOT NULL DEFAULT '[]'::jsonb,
+       booking_url      text,
+       payload          jsonb NOT NULL DEFAULT '{}'::jsonb,
+       created_at       timestamptz NOT NULL DEFAULT now(),
+       updated_at       timestamptz NOT NULL DEFAULT now()
+     );`,
+    `ALTER TABLE public.client_info ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS client_info_admin_all ON public.client_info;`,
+    `CREATE POLICY client_info_admin_all ON public.client_info
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS client_info_member_all ON public.client_info;`,
+    `CREATE POLICY client_info_member_all ON public.client_info
+       FOR ALL TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
+       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
+    // client_assets — uploaded photos/videos with labels and page
+    // placement. The provisioning agent moves files from a temp
+    // onboarding bucket to client-assets/<slug>/ and updates file_url.
+    `CREATE TABLE IF NOT EXISTS public.client_assets (
+       id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id     uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       label         text,
+       page_position text,
+       file_url      text,
+       file_path     text,
+       mime_type     text,
+       rank          integer NOT NULL DEFAULT 0,
+       created_at    timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS client_assets_client_rank_idx
+       ON public.client_assets(client_id, rank);`,
+    `ALTER TABLE public.client_assets ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS client_assets_admin_all ON public.client_assets;`,
+    `CREATE POLICY client_assets_admin_all ON public.client_assets
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS client_assets_member_all ON public.client_assets;`,
+    `CREATE POLICY client_assets_member_all ON public.client_assets
+       FOR ALL TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
+       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
+    // domains — domain request tracking. Status moves through
+    // requested → purchased → configured → live as the operator
+    // walks each tenant through go-live.
+    `CREATE TABLE IF NOT EXISTS public.domains (
+       id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id         uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       requested_domain  text,
+       status            text NOT NULL DEFAULT 'requested'
+         CHECK (status IN ('requested', 'purchased', 'configured', 'live')),
+       notes             text,
+       created_at        timestamptz NOT NULL DEFAULT now(),
+       updated_at        timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS domains_client_idx ON public.domains(client_id);`,
+    `ALTER TABLE public.domains ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS domains_admin_all ON public.domains;`,
+    `CREATE POLICY domains_admin_all ON public.domains
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS domains_member_select ON public.domains;`,
+    `CREATE POLICY domains_member_select ON public.domains
+       FOR SELECT TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
+    // keywords — seeded by the provisioning agent. Sources:
+    //   'client_provided'  — from the onboarding intake
+    //   'platform_network' — always include iSlay Studios for SEO
+    //   'auto'             — Claude-generated local SEO keywords
+    `CREATE TABLE IF NOT EXISTS public.keywords (
+       id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id   uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       keyword     text NOT NULL,
+       source      text NOT NULL DEFAULT 'auto'
+         CHECK (source IN ('client_provided', 'platform_network', 'auto')),
+       active      boolean NOT NULL DEFAULT true,
+       created_at  timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS keywords_client_keyword_uniq
+       ON public.keywords(client_id, lower(keyword));`,
+    `CREATE INDEX IF NOT EXISTS keywords_client_active_idx
+       ON public.keywords(client_id, active);`,
+    `ALTER TABLE public.keywords ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS keywords_admin_all ON public.keywords;`,
+    `CREATE POLICY keywords_admin_all ON public.keywords
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS keywords_member_select ON public.keywords;`,
+    `CREATE POLICY keywords_member_select ON public.keywords
+       FOR SELECT TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
+    // provisioning_log — what the agent did, when, and any errors.
+    // Idempotent: re-running provisioning appends a new log row;
+    // historical attempts are preserved for triage.
+    `CREATE TABLE IF NOT EXISTS public.provisioning_log (
+       id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id         uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       completed_steps   jsonb NOT NULL DEFAULT '[]'::jsonb,
+       errors            jsonb NOT NULL DEFAULT '[]'::jsonb,
+       triggered_by      text,
+       provisioned_at    timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS provisioning_log_client_idx
+       ON public.provisioning_log(client_id, provisioned_at DESC);`,
+    `ALTER TABLE public.provisioning_log ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS provisioning_log_admin_all ON public.provisioning_log;`,
+    `CREATE POLICY provisioning_log_admin_all ON public.provisioning_log
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+
     // ----- merch_orders.processing_fee_cents: per-order recorded fee -----
     // Mirrors the value the storefront passed in. Needed so the
     // Orders dashboard can show the full breakdown and so refunds
@@ -3740,6 +3936,7 @@ export default async function handler(req, res) {
       case 'connect-status-all':         return await connectStatusAll(req, res);
       case 'backfill-booking-times':     return await backfillBookingTimes(req, res);
       case 'inspect-booking':            return await inspectBooking(req, res);
+      case 'provision-tenant':           return await provisionTenantAction(req, res, ctx);
       case 'backfill-leads-to-contacts': return await backfillLeadsToContacts(req, res);
       case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);

@@ -8178,6 +8178,41 @@ async function viewAdmin() {
   migPanel.appendChild(inspectBookingBtn);
   migPanel.appendChild(inspectBookingOut);
 
+  // ─── Provision Tenant ─────────────────────────────────────────────
+  // Manual trigger for lib/provisioning.js. Wires brand fields onto
+  // the clients row, moves uploaded assets into client-assets/<slug>/,
+  // registers the requested domain, verifies Stripe Connect, seeds
+  // keywords (client + iSlay Studios + Claude-generated), writes a
+  // provisioning_log row, and emails ab@goelev8.ai a summary.
+  // Idempotent — safe to re-run on an already-provisioned client.
+  const provisionOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:360px;margin-top:8px' });
+  const provisionBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    const choice = prompt('Provision tenant by slug or by client UUID:\n\nEnter "slug:locs-and-wellness" or paste a clients.id UUID.\nLeave blank to cancel.');
+    if (!choice) return;
+    const body = {};
+    if (choice.toLowerCase().startsWith('slug:')) body.slug = choice.slice(5).trim();
+    else body.client_id = choice.trim();
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Provisioning…';
+    try {
+      const r = await api('/api/admin?action=provision-tenant', { method: 'POST', body });
+      provisionOut.style.display = 'block';
+      provisionOut.textContent = JSON.stringify(r, null, 2);
+      const okCount = (r.completed || []).length;
+      const errCount = (r.errors || []).length;
+      toast(`Provisioned ${r.business_name || r.slug || ''} — ${okCount} steps, ${errCount} error${errCount === 1 ? '' : 's'}`, errCount > 0);
+    } catch (err) {
+      provisionOut.style.display = 'block';
+      provisionOut.textContent = 'Failed: ' + err.message;
+      toast('Failed: ' + err.message, true);
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = 'Provision Tenant';
+    }
+  } }, 'Provision Tenant');
+  migPanel.appendChild(provisionBtn);
+  migPanel.appendChild(provisionOut);
+
   // ─── Backfill Leads → Contacts ────────────────────────────────────
   // Inserts a contacts row for every lead that doesn't already have
   // one, so legacy leads (submitted before lead-intake started
