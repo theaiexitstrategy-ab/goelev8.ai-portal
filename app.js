@@ -708,10 +708,14 @@ async function viewOverview() {
   tu.appendChild(el('h2', {}, 'Buy SMS credits'));
   tu.appendChild(el('p', { class: 'muted' }, 'Pick a pack — credits are added instantly after payment.'));
   const packsRow = el('div', { class: 'cards' });
+  // Mirrors lib/credits.js + goelev8.ai/smscalc — keep in sync. Each
+  // entry includes baseCredits + bonusCredits so the card can show
+  // "1,500 + 200 bonus" instead of just the total.
   const PACKS = [
-    { id: 'starter', label: 'Starter', price: '$25', credits: 250, rate: '$0.10/SMS' },
-    { id: 'growth',  label: 'Growth',  price: '$50', credits: 625, rate: '$0.08/SMS' },
-    { id: 'pro',     label: 'Pro',     price: '$100', credits: 2000, rate: '$0.05/SMS' }
+    { id: 'starter', label: 'Starter', price: '$25',  credits: 500,   baseCredits: 500,   bonusCredits: 0,    rate: '$0.050/SMS', badge: null },
+    { id: 'growth',  label: 'Growth',  price: '$60',  credits: 1700,  baseCredits: 1500,  bonusCredits: 200,  rate: '$0.035/SMS', badge: '🔥 Most Popular' },
+    { id: 'pro',     label: 'Pro',     price: '$175', credits: 6000,  baseCredits: 5000,  bonusCredits: 1000, rate: '$0.029/SMS', badge: 'Best Value' },
+    { id: 'elite',   label: 'Elite',   price: '$300', credits: 12500, baseCredits: 10000, bonusCredits: 2500, rate: '$0.024/SMS', badge: null }
   ];
   for (const p of PACKS) {
     const btn = el('button', { class: 'btn',
@@ -721,10 +725,18 @@ async function viewOverview() {
           window.location.href = r.url;
         } catch (e) { toast(e.message, true); }
       }}, `Buy ${p.label} →`);
-    const c = el('div', { class: 'pack-card' + (p.id === 'growth' ? ' featured' : '') },
+    const creditsLine = p.bonusCredits
+      ? el('div', { class: 'pack-credits' },
+          `${p.baseCredits.toLocaleString()} + `,
+          el('span', { style: 'color:#86efac' }, `${p.bonusCredits.toLocaleString()} bonus`)
+        )
+      : el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`);
+    const c = el('div', { class: 'pack-card' + (p.badge ? ' featured' : '') },
+      p.badge ? el('div', { class: 'pack-badge', style: 'font-size:0.65rem;color:#fbd38d;letter-spacing:0.06em;margin-bottom:2px' }, p.badge) : null,
       el('div', { class: 'pack-label' }, p.label),
       el('div', { class: 'pack-price' }, p.price),
-      el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`),
+      creditsLine,
+      p.bonusCredits ? el('div', { class: 'muted', style: 'font-size:0.7rem' }, `${p.credits.toLocaleString()} total`) : null,
       el('div', { class: 'pack-rate' }, p.rate),
       btn
     );
@@ -5185,10 +5197,18 @@ async function viewBilling() {
   tp.appendChild(el('h2', {}, 'Buy more credits'));
   const packsRow = el('div', { class: 'cards' });
   for (const p of Object.values(b.packs)) {
-    packsRow.appendChild(el('div', { class: 'pack-card' + (p.id === 'growth' ? ' featured' : '') },
+    const creditsLine = p.bonusCredits
+      ? el('div', { class: 'pack-credits' },
+          `${p.baseCredits.toLocaleString()} + `,
+          el('span', { style: 'color:#86efac' }, `${p.bonusCredits.toLocaleString()} bonus`)
+        )
+      : el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`);
+    packsRow.appendChild(el('div', { class: 'pack-card' + (p.badge ? ' featured' : '') },
+      p.badge ? el('div', { class: 'pack-badge', style: 'font-size:0.65rem;color:#fbd38d;letter-spacing:0.06em;margin-bottom:2px' }, p.badge) : null,
       el('div', { class: 'pack-label' }, p.label),
       el('div', { class: 'pack-price' }, '$' + (p.priceCents / 100)),
-      el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`),
+      creditsLine,
+      p.bonusCredits ? el('div', { class: 'muted', style: 'font-size:0.7rem' }, `${p.credits.toLocaleString()} total`) : null,
       el('button', { class: 'btn',
         onclick: async () => {
           try {
@@ -5208,7 +5228,7 @@ async function viewBilling() {
   enabled.checked = b.auto_reload.enabled;
   const threshold = el('input', { type: 'number', value: b.auto_reload.threshold, min: 1 });
   const packSel = el('select', {},
-    ...Object.values(b.packs).map(p => el('option', { value: p.id, selected: p.id === b.auto_reload.pack }, `${p.label} ($${p.priceCents/100} / ${p.credits} credits)`))
+    ...Object.values(b.packs).map(p => el('option', { value: p.id, selected: p.id === b.auto_reload.pack }, `${p.label} ($${p.priceCents/100} / ${p.credits.toLocaleString()} credits${p.bonusCredits ? ' incl. ' + p.bonusCredits.toLocaleString() + ' bonus' : ''})`))
   );
   ar.appendChild(el('div', { class: 'row', style: 'gap:20px; margin-bottom:12px' },
     el('label', { style: 'display:flex; align-items:center; gap:8px; font-size:14px; color:var(--text)' }, enabled, 'Enable auto-reload'),
@@ -6926,10 +6946,18 @@ async function viewSettings() {
     billingPanel.appendChild(el('h3', { style: 'margin-top:20px;font-size:14px;font-weight:600' }, 'Buy more credits'));
     const packsRow = el('div', { class: 'cards' });
     for (const p of Object.values(b.packs || {})) {
-      packsRow.appendChild(el('div', { class: 'pack-card' + (p.id === 'growth' ? ' featured' : '') },
+      const creditsLine = p.bonusCredits
+        ? el('div', { class: 'pack-credits' },
+            `${p.baseCredits.toLocaleString()} + `,
+            el('span', { style: 'color:#86efac' }, `${p.bonusCredits.toLocaleString()} bonus`)
+          )
+        : el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`);
+      packsRow.appendChild(el('div', { class: 'pack-card' + (p.badge ? ' featured' : '') },
+        p.badge ? el('div', { class: 'pack-badge', style: 'font-size:0.65rem;color:#fbd38d;letter-spacing:0.06em;margin-bottom:2px' }, p.badge) : null,
         el('div', { class: 'pack-label' }, p.label),
         el('div', { class: 'pack-price' }, '$' + (p.priceCents / 100)),
-        el('div', { class: 'pack-credits' }, `${p.credits.toLocaleString()} credits`),
+        creditsLine,
+        p.bonusCredits ? el('div', { class: 'muted', style: 'font-size:0.7rem' }, `${p.credits.toLocaleString()} total`) : null,
         el('button', { class: 'btn',
           onclick: async () => {
             try {
@@ -6947,7 +6975,7 @@ async function viewSettings() {
     arEnabled.checked = !!b.auto_reload?.enabled;
     const arThreshold = el('input', { type: 'number', value: b.auto_reload?.threshold ?? 50, min: 1 });
     const arPackSel = el('select', {},
-      ...Object.values(b.packs || {}).map(p => el('option', { value: p.id, selected: p.id === b.auto_reload?.pack }, `${p.label} ($${p.priceCents/100} / ${p.credits} credits)`))
+      ...Object.values(b.packs || {}).map(p => el('option', { value: p.id, selected: p.id === b.auto_reload?.pack }, `${p.label} ($${p.priceCents/100} / ${p.credits.toLocaleString()} credits${p.bonusCredits ? ' incl. ' + p.bonusCredits.toLocaleString() + ' bonus' : ''})`))
     );
     billingPanel.appendChild(el('div', { class: 'row', style: 'gap:20px; margin:12px 0' },
       el('label', { style: 'display:flex; align-items:center; gap:8px; font-size:14px; color:var(--text)' }, arEnabled, 'Enable auto-reload')

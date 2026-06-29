@@ -75,7 +75,14 @@ export default async function handler(req, res) {
         price_data: {
           currency: 'usd',
           unit_amount: pack.priceCents,
-          product_data: { name: `GoElev8 SMS — ${pack.label} Pack`, description: `${pack.credits} SMS credits` }
+          product_data: {
+            name: `GoElev8 SMS — ${pack.label} Pack`,
+            // Itemize base + bonus on the Stripe receipt when the pack
+            // has a bonus so the customer sees what they're getting.
+            description: pack.bonusCredits
+              ? `${pack.baseCredits.toLocaleString()} credits + ${pack.bonusCredits.toLocaleString()} bonus = ${pack.credits.toLocaleString()} total`
+              : `${pack.credits.toLocaleString()} SMS credits`
+          }
         }
       }],
       success_url: `${process.env.PORTAL_BASE_URL}/?credits=success`,
