@@ -549,13 +549,15 @@ function shell(content) {
     tabs = ADMIN_TABS;
   } else if (state.client?.portal_tabs) {
     // Client has custom tabs — treat that list as authoritative.
-    const isFlexSlug = state.client?.slug === 'flex-facility';
-    tabs = (isGlobalAdmin || isFlexSlug) ? withAnalytics(state.client.portal_tabs) : state.client.portal_tabs;
+    // portal_tabs is the single source of truth for tab visibility.
+    // Master admin gets analytics auto-injected as a safety net for
+    // legacy tenant rows that were provisioned before the analytics
+    // tab existed — every other login honors portal_tabs as-is.
+    tabs = isGlobalAdmin ? withAnalytics(state.client.portal_tabs) : state.client.portal_tabs;
     tabs = withBookings(tabs, /* explicitTabs */ true);
   } else {
     // Default client tabs
-    const isFlexSlug = state.client?.slug === 'flex-facility';
-    tabs = (isGlobalAdmin || isFlexSlug) ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
+    tabs = isGlobalAdmin ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
     tabs = withBookings(tabs, /* explicitTabs */ false);
   }
   // Final pass: collapse legacy tab ids onto the new consolidated set
@@ -8277,7 +8279,7 @@ async function viewAdmin() {
     e.currentTarget.textContent = 'Updating…';
     try {
       const r = await api('/api/admin?action=ensure-portal-tabs', { method: 'POST' });
-      toast(`Updated ${r.tenants_updated} tenants — every portal now exposes overview/leads/messages/contacts/blasts/nudges/bookings/analytics/settings`);
+      toast(`Updated ${r.tenants_updated} tenants — every portal now exposes overview/leads/messaging/bookings/analytics/settings`);
       tabsOut.style.display = 'block';
       tabsOut.textContent = JSON.stringify(r, null, 2);
     } catch (err) {
@@ -9814,7 +9816,7 @@ async function render() {
       case 'settings':  view = await viewSettings(); break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
       case 'admin_sales':   view = state.isAdmin ? await viewAdminSales()   : await viewOverview(); break;
-      case 'analytics': view = (state.user?.email === 'ab@goelev8.ai' || ['flex-facility', 'willpower-fitness', 'islay-studios'].includes(state.client?.slug)) ? await viewAnalytics() : await viewOverview(); break;
+      case 'analytics': view = await viewAnalytics(); break;
       default:          view = await viewOverview();
     }
   } catch (e) {
