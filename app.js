@@ -7748,7 +7748,7 @@ function renderClientCard(c) {
 // actions (Impersonate, View Analytics, Add/Remove Credits) + a ⚙
 // Settings button that opens a modal with the per-tenant config
 // (GA4 ID, Stripe key, Booking URL, Pause billing).
-function renderAdminClientCard(c, refresh) {
+function renderAdminClientCard(c, refresh, allClients) {
   const fmtAgo = (ts) => {
     if (!ts) return 'No activity yet';
     const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
@@ -7824,21 +7824,40 @@ function renderAdminClientCard(c, refresh) {
       }, 'Analytics'),
       el('button', { class: 'btn sm', onclick: () => adjustCredits(+1) }, '+ Credits'),
       el('button', { class: 'btn sm ghost', onclick: () => adjustCredits(-1) }, '− Credits'),
-      el('button', { class: 'btn sm', onclick: () => openClientSettingsModal(c, refresh) }, '⚙ Settings')
+      el('button', { class: 'btn sm', onclick: () => openClientSettingsModal(c, refresh, allClients) }, '⚙ Settings')
     )
   );
 }
 
 // Per-tenant config modal — keeps the GA4 / Stripe / Booking / pause
 // controls off the cluttered card surface.
-function openClientSettingsModal(c, refresh) {
+function openClientSettingsModal(c, refresh, allClients) {
   const existing = document.querySelector('.client-settings-bg');
   if (existing) existing.remove();
 
   const ga4In = el('input', { type: 'text', placeholder: 'GA4 property ID (numeric)', value: c.ga4_property_id || '' });
   const buIn  = el('input', { type: 'text', placeholder: 'book.theflexfacility.com', value: c.booking_custom_domain || '' });
   const skIn  = el('input', { type: 'password', placeholder: 'sk_live_… (paste to set, leave blank to keep current)' });
-  const twIn  = el('input', { type: 'text', placeholder: '+18775551234 (leave blank to clear)', value: c.twilio_phone_number || '' });
+  const twIn  = el('input', { type: 'text', placeholder: '+18775551234 (leave blank to clear)', value: c.twilio_phone_number || '', style: 'flex:1' });
+
+  // "Copy from another tenant" picker for the Twilio number. When the
+  // same LLC operates multiple tenants (TAES + GoElev8.ai are both
+  // owned by Aaron), reusing an existing number is faster than
+  // provisioning a new one in the Twilio console. Only lists tenants
+  // that ALREADY have a number set. Empty option = do nothing.
+  const twSameSources = ((allClients || [])
+    .filter(x => x.id !== c.id && x.twilio_phone_number))
+    .map(x => ({ id: x.id, label: (x.business_name || x.name || x.slug) + ' — ' + x.twilio_phone_number, phone: x.twilio_phone_number }));
+  const twCopySel = el('select', { style: 'width:100%;margin-top:6px' },
+    el('option', { value: '' }, twSameSources.length ? 'Copy from another tenant…' : 'No other tenants have a Twilio number set'),
+    ...twSameSources.map(s => el('option', { value: s.phone }, s.label))
+  );
+  twCopySel.onchange = () => {
+    if (twCopySel.value) {
+      twIn.value = twCopySel.value;
+      twCopySel.value = '';
+    }
+  };
 
   const close = () => bg.remove();
   const result = el('div', { style: 'min-height:1.2em;font-size:0.8rem' });
@@ -7898,8 +7917,8 @@ function openClientSettingsModal(c, refresh) {
       'Custom domain for this tenant\'s booking widget (no protocol). Drives the Vapi assistant + welcome SMS.',
       buIn),
     field('Twilio Phone Number',
-      'E.164 format (e.g. +18775551234) — the "from" number for all SMS this tenant sends. Leave blank to clear (blocks sends).',
-      twIn),
+      'E.164 format (e.g. +18775551234) — the "from" number for all SMS this tenant sends. Same number can be shared across tenants owned by the same LLC.',
+      el('div', {}, twIn, twCopySel)),
     field('Stripe Secret Key',
       'sk_live_... — only used to sync sales from this tenant\'s Stripe account. Leave blank to keep the existing key.',
       skIn),
@@ -8824,7 +8843,7 @@ async function viewAdmin() {
       return;
     }
     const grid = el('div', { class: 'admin-clients-grid' },
-      ...allClients.map(c => renderAdminClientCard(c, refresh))
+      ...allClients.map(c => renderAdminClientCard(c, refresh, allClients))
     );
     cardGridHost.appendChild(grid);
   };
