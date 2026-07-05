@@ -19,6 +19,7 @@
 import { requireAdmin, methodGuard, readJson } from '../lib/auth.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { twilioForClient, estimateSegments, truncateForSms } from '../lib/twilio.js';
+import { getBillingClient } from '../lib/credits.js';
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 import { backfillExternalMerchOrders } from '../lib/merch-ingest.js';
 import { stripe } from '../lib/stripe.js';
@@ -4064,15 +4065,24 @@ async function taesSendSms(req, res) {
   const { data: client } = await supabaseAdmin
     .from('clients').select('*').eq('slug', 'ai-exit-strategy').maybeSingle();
   if (!client) return res.status(404).json({ error: 'taes_tenant_not_found' });
-  if (!client.twilio_phone_number) {
-    return res.status(400).json({ error: 'no_twilio_number_on_taes_tenant' });
+
+  // Resolve the billing/Twilio source. If ai-exit-strategy has its own
+  // twilio_phone_number, use it directly. Otherwise fall through to
+  // parent_client_id (same pattern Will Power uses to inherit Flex's
+  // Twilio + credit pool). getBillingClient handles both cases.
+  const twilioSrc = await getBillingClient(supabaseAdmin, client);
+  if (!twilioSrc.twilio_phone_number) {
+    return res.status(400).json({
+      error: 'no_twilio_number_on_taes_tenant',
+      hint: 'The AI Exit Strategy has no Twilio phone number. Two fixes: (a) provision one for TAES (update clients.twilio_phone_number on ai-exit-strategy), or (b) point TAES at another tenant that has one — set clients.parent_client_id on ai-exit-strategy to Flex Facility\'s uuid (same pattern Will Power Fitness Factory uses).'
+    });
   }
 
-  const tw = twilioForClient(client);
+  const tw = twilioForClient(twilioSrc);
   let twilioMsg;
   try {
     twilioMsg = await tw.messages.create({
-      from: client.twilio_phone_number,
+      from: twilioSrc.twilio_phone_number,
       to,
       body: truncateForSms(text),
       statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
@@ -4082,7 +4092,9 @@ async function taesSendSms(req, res) {
   }
 
   // Log the outbound so it shows in the TAES tenant's Messages tab
-  // history — but credits_charged: 0 so admin sends never bill.
+  // history — but credits_charged: 0 so admin sends never bill. Row
+  // stays scoped to the TAES tenant even when a parent number carried
+  // the send, so the operator sees it in the right dashboard.
   await supabaseAdmin.from('messages').insert({
     client_id: client.id,
     contact_id: null,
@@ -4092,7 +4104,7 @@ async function taesSendSms(req, res) {
     twilio_sid: twilioMsg.sid,
     status: twilioMsg.status,
     to_number: to,
-    from_number: client.twilio_phone_number,
+    from_number: twilioSrc.twilio_phone_number,
     credits_charged: 0
   });
   return res.status(200).json({ ok: true, sid: twilioMsg.sid });
