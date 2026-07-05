@@ -1796,6 +1796,73 @@ async function taesSchema(req, res) {
     });
   }
 
+  // JWT sanity check — decode the service_role key's payload without
+  // verifying (we don't have the signing secret, and we're only
+  // reading claims to diagnose config mismatches, not trusting them).
+  // Supabase JWTs carry:
+  //   iss: 'supabase'
+  //   ref: '<project-ref>'           ← must equal 'uouoczmxigizkqszagdl'
+  //   role: 'anon' | 'service_role'  ← must equal 'service_role'
+  //   iat, exp
+  // Surfacing all three in the response makes the "wrong project /
+  // wrong key type / expired key" cases obvious without extra
+  // roundtrips. Also surfaces the portal's own SUPABASE_URL host so
+  // the operator can eyeball whether they mixed up two projects.
+  const decodeJwtPayload = (jwt) => {
+    try {
+      const [, payload] = String(jwt || '').split('.');
+      if (!payload) return null;
+      const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+      const pad = b64.length % 4 ? b64 + '='.repeat(4 - (b64.length % 4)) : b64;
+      return JSON.parse(Buffer.from(pad, 'base64').toString('utf-8'));
+    } catch { return null; }
+  };
+  const taesKeyClaims = decodeJwtPayload(process.env.SUPABASE_SERVICE_ROLE_KEY_TAES);
+  const expectedRef = 'uouoczmxigizkqszagdl';
+  const keyRef = taesKeyClaims?.ref || null;
+  const keyRole = taesKeyClaims?.role || null;
+  const keyExp = taesKeyClaims?.exp || null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const keyExpired = keyExp && keyExp < nowSec;
+
+  const configMismatch = [];
+  if (keyRole && keyRole !== 'service_role') {
+    configMismatch.push(`SUPABASE_SERVICE_ROLE_KEY_TAES has role="${keyRole}" — expected "service_role". You likely pasted the anon (public) key by mistake; grab the service_role key from Supabase → Settings → API instead.`);
+  }
+  if (keyRef && keyRef !== expectedRef) {
+    configMismatch.push(`SUPABASE_SERVICE_ROLE_KEY_TAES belongs to project "${keyRef}" — expected "${expectedRef}". Check that you copied the key from the correct Supabase project (uouoczmxigizkqszagdl).`);
+  }
+  if (keyExpired) {
+    configMismatch.push(`SUPABASE_SERVICE_ROLE_KEY_TAES expired at ${new Date(keyExp * 1000).toISOString()}. Rotate the key in Supabase → Settings → API.`);
+  }
+  // Portal's own Supabase URL for cross-reference — if the operator
+  // sees the same host in url_taes and url_portal, they might have
+  // pointed both at the same project by mistake.
+  const portalUrlHost = (() => {
+    try { return new URL(process.env.SUPABASE_URL || '').host; } catch { return null; }
+  })();
+  const taesUrlHost = (() => {
+    try { return new URL(process.env.SUPABASE_URL_TAES || '').host; } catch { return null; }
+  })();
+
+  if (configMismatch.length) {
+    return res.status(200).json({
+      configured: true,
+      error: 'config_mismatch',
+      diagnosis: configMismatch,
+      key_claims: taesKeyClaims ? {
+        ref: keyRef, role: keyRole,
+        expires_at: keyExp ? new Date(keyExp * 1000).toISOString() : null,
+        expired: !!keyExpired
+      } : { warning: 'Could not decode the SUPABASE_SERVICE_ROLE_KEY_TAES JWT. It may not be a valid Supabase key format.' },
+      env_summary: {
+        SUPABASE_URL_TAES_host: taesUrlHost,
+        SUPABASE_URL_host_portal_main: portalUrlHost,
+        expected_ref: expectedRef
+      }
+    });
+  }
+
   // Fetch every user-space table (schema=public) from information_schema
   // via the Supabase client. supabase-js doesn't expose information_schema
   // directly, so we execute raw SQL via the postgrest RPC 'exec_sql' if
@@ -1828,7 +1895,18 @@ async function taesSchema(req, res) {
         configured: true,
         error: 'auth_failed',
         detail: e.message,
-        hint: 'SUPABASE_SERVICE_ROLE_KEY_TAES is set but Supabase rejected it. Most likely: (a) you copied the anon "public" key instead of service_role — verify by decoding the JWT at jwt.io and checking payload.role; (b) the key is from a different project than uouoczmxigizkqszagdl; (c) the env var was added to Preview/Development in Vercel but not Production, and Production hasn\'t been redeployed since.',
+        key_claims: taesKeyClaims ? {
+          ref: keyRef, role: keyRole,
+          expires_at: keyExp ? new Date(keyExp * 1000).toISOString() : null
+        } : { warning: 'Could not decode the SUPABASE_SERVICE_ROLE_KEY_TAES JWT — it may not be a valid Supabase key format.' },
+        env_summary: {
+          SUPABASE_URL_TAES_host: taesUrlHost,
+          SUPABASE_URL_host_portal_main: portalUrlHost,
+          expected_ref: expectedRef,
+          key_matches_url: keyRef === expectedRef,
+          key_is_service_role: keyRole === 'service_role'
+        },
+        hint: 'SUPABASE_SERVICE_ROLE_KEY_TAES is set but Supabase rejected it. Cross-reference the key_claims + env_summary above to see WHICH mismatch: role=anon means you copied the public key; ref=<other> means the key is from a different project; if both look right, redeploy — the env var may only exist in Preview/Development.'
       });
     }
     return res.status(200).json({
