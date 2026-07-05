@@ -8500,38 +8500,6 @@ async function viewAdmin() {
   migPanel.appendChild(tabsBtn);
   migPanel.appendChild(tabsOut);
 
-  // ─── TAES schema inspector ────────────────────────────────────────
-  // Introspects the separate Supabase project (uouoczmxigizkqszagdl)
-  // that backs The AI Exit Strategy course. Phase-1 helper: dumps the
-  // full table + column list + up to 3 sample rows per table so we
-  // can wire the Curriculum / Students / Progress / Community tabs
-  // against the real schema. Renders the JSON verbatim so the master
-  // admin can paste it back for the actual tab wiring.
-  const taesOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:420px;margin-top:8px' });
-  const taesBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
-    e.currentTarget.disabled = true;
-    e.currentTarget.textContent = 'Inspecting TAES…';
-    try {
-      const r = await api('/api/admin?action=taes-schema');
-      taesOut.style.display = 'block';
-      taesOut.textContent = JSON.stringify(r, null, 2);
-      if (r.configured === false) {
-        toast('TAES env vars not set — see the JSON output for next steps.', true, 6000);
-      } else if (r.error) {
-        toast('TAES connected, but: ' + r.error, true, 6000);
-      } else {
-        toast(`Fetched ${r.table_count} tables from TAES.`);
-      }
-    } catch (err) {
-      toast('Failed: ' + err.message, true);
-    } finally {
-      e.currentTarget.disabled = false;
-      e.currentTarget.textContent = '🎓 Inspect TAES Schema';
-    }
-  } }, '🎓 Inspect TAES Schema');
-  migPanel.appendChild(taesBtn);
-  migPanel.appendChild(taesOut);
-
   // Open the cross-tenant Trash view (soft-deleted records, last 30 days).
   const trashBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: () => openTrashView() }, '🗑 View Trash (30d)');
   migPanel.appendChild(trashBtn);
@@ -10231,7 +10199,7 @@ async function render() {
       case 'settings':  view = await viewSettings(); break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
       case 'admin_sales':   view = state.isAdmin ? await viewAdminSales()   : await viewOverview(); break;
-      case 'taes':      view = state.isAdmin ? await viewTaes() : await viewOverview(); break;
+      case 'taes':      view = (state.isAdmin || state.client?.slug === 'ai-exit-strategy') ? await viewTaes() : await viewOverview(); break;
       case 'analytics': view = await viewAnalytics(); break;
       default:          view = await viewOverview();
     }

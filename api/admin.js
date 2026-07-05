@@ -18,7 +18,6 @@
 
 import { requireAdmin, methodGuard, readJson } from '../lib/auth.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { taesAdmin, isTaesConfigured } from '../lib/supabase-taes.js';
 import { twilioForClient, estimateSegments, truncateForSms } from '../lib/twilio.js';
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 import { backfillExternalMerchOrders } from '../lib/merch-ingest.js';
@@ -1769,204 +1768,12 @@ async function restoreTrashRecord(req, res) {
   return res.status(200).json({ ok: true, action: 'restored' });
 }
 
-// Introspect the TAES Supabase project (uouoczmxigizkqszagdl) so we
-// can wire the Curriculum / Students / Progress / Community tabs
-// against the real schema. Reads via the Supabase Management API's
-// SQL query endpoint using a service-role scoped access token — the
-// SUPABASE_ACCESS_TOKEN env var applyPendingMigrations already uses.
-//
-// GET  → returns { configured, tables: [{schema, name, columns:[{name,type,nullable}], sample_rows}] }
-//        for every public.* table in the TAES project, with up to 3
-//        sample rows per table so the operator (and future Claude) can
-//        see actual data shapes without exposing sensitive fields.
-//
-// If SUPABASE_URL_TAES / SUPABASE_SERVICE_ROLE_KEY_TAES aren't set,
-// returns { configured:false, next_steps:[…] } so the master admin UI
-// can render a friendly onboarding banner instead of an error.
-async function taesSchema(req, res) {
-  if (!isTaesConfigured()) {
-    return res.status(200).json({
-      configured: false,
-      project_ref: 'uouoczmxigizkqszagdl',
-      next_steps: [
-        'Add SUPABASE_URL_TAES=https://uouoczmxigizkqszagdl.supabase.co to Vercel',
-        'Add SUPABASE_SERVICE_ROLE_KEY_TAES=<taes service_role key> to Vercel',
-        'Redeploy the portal, then re-run this endpoint'
-      ]
-    });
-  }
-
-  // JWT sanity check — decode the service_role key's payload without
-  // verifying (we don't have the signing secret, and we're only
-  // reading claims to diagnose config mismatches, not trusting them).
-  // Supabase JWTs carry:
-  //   iss: 'supabase'
-  //   ref: '<project-ref>'           ← must equal 'uouoczmxigizkqszagdl'
-  //   role: 'anon' | 'service_role'  ← must equal 'service_role'
-  //   iat, exp
-  // Surfacing all three in the response makes the "wrong project /
-  // wrong key type / expired key" cases obvious without extra
-  // roundtrips. Also surfaces the portal's own SUPABASE_URL host so
-  // the operator can eyeball whether they mixed up two projects.
-  const decodeJwtPayload = (jwt) => {
-    try {
-      const [, payload] = String(jwt || '').split('.');
-      if (!payload) return null;
-      const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
-      const pad = b64.length % 4 ? b64 + '='.repeat(4 - (b64.length % 4)) : b64;
-      return JSON.parse(Buffer.from(pad, 'base64').toString('utf-8'));
-    } catch { return null; }
-  };
-  const taesKeyClaims = decodeJwtPayload(process.env.SUPABASE_SERVICE_ROLE_KEY_TAES);
-  const expectedRef = 'uouoczmxigizkqszagdl';
-  const keyRef = taesKeyClaims?.ref || null;
-  const keyRole = taesKeyClaims?.role || null;
-  const keyExp = taesKeyClaims?.exp || null;
-  const nowSec = Math.floor(Date.now() / 1000);
-  const keyExpired = keyExp && keyExp < nowSec;
-
-  const configMismatch = [];
-  if (keyRole && keyRole !== 'service_role') {
-    configMismatch.push(`SUPABASE_SERVICE_ROLE_KEY_TAES has role="${keyRole}" — expected "service_role". You likely pasted the anon (public) key by mistake; grab the service_role key from Supabase → Settings → API instead.`);
-  }
-  if (keyRef && keyRef !== expectedRef) {
-    configMismatch.push(`SUPABASE_SERVICE_ROLE_KEY_TAES belongs to project "${keyRef}" — expected "${expectedRef}". Check that you copied the key from the correct Supabase project (uouoczmxigizkqszagdl).`);
-  }
-  if (keyExpired) {
-    configMismatch.push(`SUPABASE_SERVICE_ROLE_KEY_TAES expired at ${new Date(keyExp * 1000).toISOString()}. Rotate the key in Supabase → Settings → API.`);
-  }
-  // Portal's own Supabase URL for cross-reference — if the operator
-  // sees the same host in url_taes and url_portal, they might have
-  // pointed both at the same project by mistake.
-  const portalUrlHost = (() => {
-    try { return new URL(process.env.SUPABASE_URL || '').host; } catch { return null; }
-  })();
-  const taesUrlHost = (() => {
-    try { return new URL(process.env.SUPABASE_URL_TAES || '').host; } catch { return null; }
-  })();
-
-  if (configMismatch.length) {
-    return res.status(200).json({
-      configured: true,
-      error: 'config_mismatch',
-      diagnosis: configMismatch,
-      key_claims: taesKeyClaims ? {
-        ref: keyRef, role: keyRole,
-        expires_at: keyExp ? new Date(keyExp * 1000).toISOString() : null,
-        expired: !!keyExpired
-      } : { warning: 'Could not decode the SUPABASE_SERVICE_ROLE_KEY_TAES JWT. It may not be a valid Supabase key format.' },
-      env_summary: {
-        SUPABASE_URL_TAES_host: taesUrlHost,
-        SUPABASE_URL_host_portal_main: portalUrlHost,
-        expected_ref: expectedRef
-      }
-    });
-  }
-
-  // Fetch every user-space table (schema=public) from information_schema
-  // via the Supabase client. supabase-js doesn't expose information_schema
-  // directly, so we execute raw SQL via the postgrest RPC 'exec_sql' if
-  // present — otherwise fall back to a set of hand-picked catalog queries.
-  //
-  // Simplest reliable path: use the Supabase client's .from() on
-  // information_schema.tables / .columns. The information_schema views
-  // are readable by service_role by default.
-  let tables = [];
-  try {
-    const { data: tRows, error: tErr } = await taesAdmin
-      .from('information_schema.tables')
-      .select('table_schema, table_name')
-      .eq('table_schema', 'public')
-      .order('table_name');
-    if (tErr) throw tErr;
-    tables = tRows || [];
-  } catch (e) {
-    // Two common failure modes here:
-    //   1. "Invalid API key" — service_role key is wrong (usually the
-    //      anon key was copied by mistake, or a different project's
-    //      key was pasted, or the env var landed on the wrong Vercel
-    //      environment).
-    //   2. information_schema not exposed via PostgREST — rare, but
-    //      possible on locked-down projects.
-    // Surface the specific cause so the operator knows what to fix.
-    const msg = String(e.message || '');
-    if (/invalid api key|jwt|unauthorized|401|403/i.test(msg)) {
-      return res.status(200).json({
-        configured: true,
-        error: 'auth_failed',
-        detail: e.message,
-        key_claims: taesKeyClaims ? {
-          ref: keyRef, role: keyRole,
-          expires_at: keyExp ? new Date(keyExp * 1000).toISOString() : null
-        } : { warning: 'Could not decode the SUPABASE_SERVICE_ROLE_KEY_TAES JWT — it may not be a valid Supabase key format.' },
-        env_summary: {
-          SUPABASE_URL_TAES_host: taesUrlHost,
-          SUPABASE_URL_host_portal_main: portalUrlHost,
-          expected_ref: expectedRef,
-          key_matches_url: keyRef === expectedRef,
-          key_is_service_role: keyRole === 'service_role'
-        },
-        hint: 'SUPABASE_SERVICE_ROLE_KEY_TAES is set but Supabase rejected it. Cross-reference the key_claims + env_summary above to see WHICH mismatch: role=anon means you copied the public key; ref=<other> means the key is from a different project; if both look right, redeploy — the env var may only exist in Preview/Development.'
-      });
-    }
-    return res.status(200).json({
-      configured: true,
-      error: 'information_schema_unreachable',
-      detail: e.message,
-      hint: 'PostgREST may not expose information_schema on this project. Paste the schema list from the Supabase dashboard → Database → Tables view instead.',
-    });
-  }
-
-  const out = [];
-  for (const t of tables) {
-    const name = t.table_name;
-    // Columns
-    let columns = [];
-    try {
-      const { data: cRows } = await taesAdmin
-        .from('information_schema.columns')
-        .select('column_name, data_type, is_nullable, column_default')
-        .eq('table_schema', 'public')
-        .eq('table_name', name)
-        .order('ordinal_position');
-      columns = (cRows || []).map(c => ({
-        name: c.column_name,
-        type: c.data_type,
-        nullable: c.is_nullable === 'YES',
-        default: c.column_default || null
-      }));
-    } catch {}
-
-    // Row count + up to 3 sample rows so we can eyeball actual data
-    // shapes without shipping full contents. Non-fatal on failure —
-    // some tables may deny select even to service_role via RLS.
-    let rowCount = null;
-    let sampleRows = [];
-    try {
-      const { count } = await taesAdmin.from(name).select('*', { count: 'exact', head: true });
-      rowCount = count ?? null;
-    } catch {}
-    try {
-      const { data: sample } = await taesAdmin.from(name).select('*').limit(3);
-      sampleRows = sample || [];
-    } catch {}
-
-    out.push({
-      schema: 'public',
-      name,
-      columns,
-      row_count: rowCount,
-      sample_rows: sampleRows
-    });
-  }
-
-  return res.status(200).json({
-    configured: true,
-    project_ref: 'uouoczmxigizkqszagdl',
-    table_count: out.length,
-    tables: out
-  });
-}
+// [removed] taesSchema — was a Phase-1 direct-Supabase inspector.
+// Superseded by the taesRoster/taesAttention/taesPartners/
+// taesParticipant proxy handlers below, which call TAES's own
+// auth-gated HTTP API via PORTAL_API_KEY. The two env vars that fed
+// this (SUPABASE_URL_TAES + SUPABASE_SERVICE_ROLE_KEY_TAES) are dead
+// weight — unset them in Vercel.
 
 async function ensurePortalTabs(req, res) {
   // Unified 6-tab nav: messages/blasts/nudges fold under 'messaging',
@@ -3134,6 +2941,16 @@ async function applyPendingMigrations(req, res) {
      WHERE portal_tabs IS DISTINCT FROM
            '["overview","leads","messaging","bookings","analytics","settings"]'::jsonb;`,
 
+    // ----- TAES portal_tabs — add 'taes' so the TAES tenant login sees
+    //       the roster/attention/partners view alongside master admin.
+    // Slug-scoped, idempotent. Matches the STANDARD_TABS shape but
+    // slots 'taes' just before 'settings'.
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","messaging","bookings","analytics","taes","settings"]'::jsonb
+     WHERE slug = 'ai-exit-strategy'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","messaging","bookings","analytics","taes","settings"]'::jsonb;`,
+
     // ----- One-shot data fix: GA4 Property IDs -----
     // Wires each tenant's numeric Property ID so the Analytics tab can
     // query the GA4 Data API. Slug-scoped UPDATEs — idempotent.
@@ -4206,7 +4023,6 @@ export default async function handler(req, res) {
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);
       case 'inspect-recent-stripe-sessions': return await inspectRecentStripeSessions(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
-      case 'taes-schema':               return await taesSchema(req, res);
       case 'taes-roster':               return await taesRoster(req, res);
       case 'taes-participant':          return await taesParticipant(req, res);
       case 'taes-attention':            return await taesAttention(req, res);
