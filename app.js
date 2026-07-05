@@ -9323,14 +9323,26 @@ function taesProfileNodes(d, opts) {
         el('td', { class: 'mono', style: 'text-align:right' }, m.quiz_score != null ? m.quiz_score + '%' : '—')))))
       : el('p', { class: 'muted' }, 'No module activity.')));
 
+  // Assessment chat — collapsed by default. The transcript can be
+  // dozens of turns of prose and dominates the profile if it renders
+  // inline, so we wrap it in a native <details> disclosure. The
+  // operator sees the summary + turn count and clicks to open the
+  // full transcript when they actually want to read it.
   const sessions = (d.assessment && d.assessment.sessions) || [];
   if (sessions.length) {
     const s = sessions[0];
     const transcript = Array.isArray(s.transcript) ? s.transcript : null;
-    body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
-      el('h3', {}, 'Assessment chat'),
-      el('div', { class: 'muted' }, (s.status || '') + ' · ' + taesFmtDate(s.created_at)),
-      transcript ? el('div', { style: 'max-height:260px;overflow:auto;margin-top:8px' },
+    const turnCount = transcript ? transcript.length : 0;
+    body.appendChild(el('details', {
+      style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:0'
+    },
+      el('summary', {
+        style: 'cursor:pointer;padding:16px;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px'
+      },
+        el('span', {}, '💬 Assessment chat'),
+        el('span', { class: 'muted', style: 'font-size:0.78rem;font-weight:400' },
+          (s.status || 'session') + ' · ' + taesFmtDate(s.created_at) + (turnCount ? ' · ' + turnCount + ' turns' : ''))),
+      transcript ? el('div', { style: 'max-height:340px;overflow:auto;padding:0 16px 16px' },
         ...transcript.map((t) => el('p', { style: 'margin:6px 0' },
           el('strong', {}, (t.role === 'assistant' ? 'Guide: ' : 'Student: ')), String(t.content || '')))) : null));
   }
