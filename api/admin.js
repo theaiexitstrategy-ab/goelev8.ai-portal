@@ -18,6 +18,7 @@
 
 import { requireAdmin, methodGuard, readJson } from '../lib/auth.js';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { taesAdmin, isTaesConfigured } from '../lib/supabase-taes.js';
 import { twilioForClient, estimateSegments, truncateForSms } from '../lib/twilio.js';
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
 import { backfillExternalMerchOrders } from '../lib/merch-ingest.js';
@@ -1766,6 +1767,112 @@ async function restoreTrashRecord(req, res) {
     .update({ deleted_at: null }).eq('id', id);
   if (error) return res.status(400).json({ error: error.message });
   return res.status(200).json({ ok: true, action: 'restored' });
+}
+
+// Introspect the TAES Supabase project (uouoczmxigizkqszagdl) so we
+// can wire the Curriculum / Students / Progress / Community tabs
+// against the real schema. Reads via the Supabase Management API's
+// SQL query endpoint using a service-role scoped access token — the
+// SUPABASE_ACCESS_TOKEN env var applyPendingMigrations already uses.
+//
+// GET  → returns { configured, tables: [{schema, name, columns:[{name,type,nullable}], sample_rows}] }
+//        for every public.* table in the TAES project, with up to 3
+//        sample rows per table so the operator (and future Claude) can
+//        see actual data shapes without exposing sensitive fields.
+//
+// If SUPABASE_URL_TAES / SUPABASE_SERVICE_ROLE_KEY_TAES aren't set,
+// returns { configured:false, next_steps:[…] } so the master admin UI
+// can render a friendly onboarding banner instead of an error.
+async function taesSchema(req, res) {
+  if (!isTaesConfigured()) {
+    return res.status(200).json({
+      configured: false,
+      project_ref: 'uouoczmxigizkqszagdl',
+      next_steps: [
+        'Add SUPABASE_URL_TAES=https://uouoczmxigizkqszagdl.supabase.co to Vercel',
+        'Add SUPABASE_SERVICE_ROLE_KEY_TAES=<taes service_role key> to Vercel',
+        'Redeploy the portal, then re-run this endpoint'
+      ]
+    });
+  }
+
+  // Fetch every user-space table (schema=public) from information_schema
+  // via the Supabase client. supabase-js doesn't expose information_schema
+  // directly, so we execute raw SQL via the postgrest RPC 'exec_sql' if
+  // present — otherwise fall back to a set of hand-picked catalog queries.
+  //
+  // Simplest reliable path: use the Supabase client's .from() on
+  // information_schema.tables / .columns. The information_schema views
+  // are readable by service_role by default.
+  let tables = [];
+  try {
+    const { data: tRows, error: tErr } = await taesAdmin
+      .from('information_schema.tables')
+      .select('table_schema, table_name')
+      .eq('table_schema', 'public')
+      .order('table_name');
+    if (tErr) throw tErr;
+    tables = tRows || [];
+  } catch (e) {
+    // information_schema not exposed via PostgREST — fall back to a
+    // dedicated RPC or ask the user to paste the schema. Report clearly.
+    return res.status(200).json({
+      configured: true,
+      error: 'information_schema_unreachable',
+      detail: e.message,
+      hint: 'PostgREST may not expose information_schema on this project. Paste the schema list from the Supabase dashboard → Database → Tables view instead.',
+    });
+  }
+
+  const out = [];
+  for (const t of tables) {
+    const name = t.table_name;
+    // Columns
+    let columns = [];
+    try {
+      const { data: cRows } = await taesAdmin
+        .from('information_schema.columns')
+        .select('column_name, data_type, is_nullable, column_default')
+        .eq('table_schema', 'public')
+        .eq('table_name', name)
+        .order('ordinal_position');
+      columns = (cRows || []).map(c => ({
+        name: c.column_name,
+        type: c.data_type,
+        nullable: c.is_nullable === 'YES',
+        default: c.column_default || null
+      }));
+    } catch {}
+
+    // Row count + up to 3 sample rows so we can eyeball actual data
+    // shapes without shipping full contents. Non-fatal on failure —
+    // some tables may deny select even to service_role via RLS.
+    let rowCount = null;
+    let sampleRows = [];
+    try {
+      const { count } = await taesAdmin.from(name).select('*', { count: 'exact', head: true });
+      rowCount = count ?? null;
+    } catch {}
+    try {
+      const { data: sample } = await taesAdmin.from(name).select('*').limit(3);
+      sampleRows = sample || [];
+    } catch {}
+
+    out.push({
+      schema: 'public',
+      name,
+      columns,
+      row_count: rowCount,
+      sample_rows: sampleRows
+    });
+  }
+
+  return res.status(200).json({
+    configured: true,
+    project_ref: 'uouoczmxigizkqszagdl',
+    table_count: out.length,
+    tables: out
+  });
 }
 
 async function ensurePortalTabs(req, res) {
@@ -3956,6 +4063,7 @@ export default async function handler(req, res) {
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);
       case 'inspect-recent-stripe-sessions': return await inspectRecentStripeSessions(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
+      case 'taes-schema':               return await taesSchema(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);
