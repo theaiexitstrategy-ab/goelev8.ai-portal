@@ -9098,12 +9098,14 @@ function taesDetail(d, opts) {
   // Any module with status='complete' counts. Falls back to the raw
   // count when a module list is unavailable so the panel still shows
   // something useful.
-  const mods = d.modules || [];
-  const total = mods.length;
-  const done = mods.filter((m) => (m.status || '').toLowerCase() === 'complete').length;
+  // Note: the detailed modules table below reuses `d.modules` under
+  // its own `mods` binding — don't shadow it here.
+  const progressMods = d.modules || [];
+  const total = progressMods.length;
+  const done = progressMods.filter((m) => (m.status || '').toLowerCase() === 'complete').length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const quizAvg = (() => {
-    const scores = mods.map((m) => m.quiz_score).filter((s) => s != null);
+    const scores = progressMods.map((m) => m.quiz_score).filter((s) => s != null);
     if (!scores.length) return null;
     return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
   })();
