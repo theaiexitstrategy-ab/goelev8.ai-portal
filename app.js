@@ -7838,6 +7838,7 @@ function openClientSettingsModal(c, refresh) {
   const ga4In = el('input', { type: 'text', placeholder: 'GA4 property ID (numeric)', value: c.ga4_property_id || '' });
   const buIn  = el('input', { type: 'text', placeholder: 'book.theflexfacility.com', value: c.booking_custom_domain || '' });
   const skIn  = el('input', { type: 'password', placeholder: 'sk_live_… (paste to set, leave blank to keep current)' });
+  const twIn  = el('input', { type: 'text', placeholder: '+18775551234 (leave blank to clear)', value: c.twilio_phone_number || '' });
 
   const close = () => bg.remove();
   const result = el('div', { style: 'min-height:1.2em;font-size:0.8rem' });
@@ -7848,6 +7849,10 @@ function openClientSettingsModal(c, refresh) {
       // GA4 + Booking always save (even when blank — clears them).
       await api('/api/admin?action=set-ga4', { method: 'POST', body: { client_id: c.id, ga4_property_id: ga4In.value.trim() } });
       await api('/api/admin?action=set-booking-url', { method: 'POST', body: { client_id: c.id, booking_url: buIn.value.trim() } });
+      // Twilio phone number — always saves (blank clears). E.164
+      // normalization happens server-side, so operators can paste in
+      // any human-friendly format.
+      await api('/api/admin?action=set-twilio-number', { method: 'POST', body: { client_id: c.id, twilio_phone_number: twIn.value.trim() } });
       // Stripe key only saves when the field is non-empty (keeps existing on blank).
       if (skIn.value.trim()) {
         await api('/api/admin?action=set-stripe-key', { method: 'POST', body: { client_id: c.id, stripe_secret_key: skIn.value.trim() } });
@@ -7892,6 +7897,9 @@ function openClientSettingsModal(c, refresh) {
     field('Booking URL',
       'Custom domain for this tenant\'s booking widget (no protocol). Drives the Vapi assistant + welcome SMS.',
       buIn),
+    field('Twilio Phone Number',
+      'E.164 format (e.g. +18775551234) — the "from" number for all SMS this tenant sends. Leave blank to clear (blocks sends).',
+      twIn),
     field('Stripe Secret Key',
       'sk_live_... — only used to sync sales from this tenant\'s Stripe account. Leave blank to keep the existing key.',
       skIn),

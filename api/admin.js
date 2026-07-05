@@ -3873,6 +3873,45 @@ async function backfillTwilioReserve(req, res) {
   });
 }
 
+// Set (or clear) a tenant's Twilio phone number. Bare-minimum shape
+// so the master-admin ⚙ Settings modal can wire the field. Accepts
+// the number in any human-friendly form; normalizes to E.164 before
+// writing. Optionally also updates subaccount_sid + auth_token when
+// the caller has provisioned a dedicated subaccount for the tenant.
+async function setTwilioNumber(req, res) {
+  const body = await readJson(req);
+  const { client_id, twilio_phone_number, twilio_subaccount_sid, twilio_auth_token } = body || {};
+  if (!client_id) return res.status(400).json({ error: 'client_id required' });
+
+  const patch = {};
+  if (twilio_phone_number !== undefined) {
+    const raw = String(twilio_phone_number || '').trim();
+    if (!raw) {
+      patch.twilio_phone_number = null;
+    } else {
+      // toE164 is the same normalizer used elsewhere in the codebase.
+      const { toE164 } = await import('../lib/phone.js');
+      const e = toE164(raw);
+      if (!e) return res.status(400).json({ error: 'invalid_phone', detail: raw });
+      patch.twilio_phone_number = e;
+    }
+  }
+  if (typeof twilio_subaccount_sid === 'string') {
+    const v = twilio_subaccount_sid.trim();
+    patch.twilio_subaccount_sid = v || null;
+  }
+  if (typeof twilio_auth_token === 'string') {
+    const v = twilio_auth_token.trim();
+    patch.twilio_auth_token = v || null;
+  }
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing_to_update' });
+
+  const { data, error } = await supabaseAdmin
+    .from('clients').update(patch).eq('id', client_id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  return res.status(200).json({ client: data });
+}
+
 async function setBookingUrl(req, res) {
   const body = await readJson(req);
   const { client_id, booking_url } = body || {};
@@ -4131,6 +4170,7 @@ export default async function handler(req, res) {
       case 'set-ga4':        return await setGa4(req, res);
       case 'set-stripe-key': return await setStripeKey(req, res);
       case 'set-booking-url':return await setBookingUrl(req, res);
+      case 'set-twilio-number': return await setTwilioNumber(req, res);
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'twilio-cost':              return await twilioCostSetting(req, res);
