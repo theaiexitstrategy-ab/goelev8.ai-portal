@@ -7838,26 +7838,54 @@ function openClientSettingsModal(c, refresh, allClients) {
   const ga4In = el('input', { type: 'text', placeholder: 'GA4 property ID (numeric)', value: c.ga4_property_id || '' });
   const buIn  = el('input', { type: 'text', placeholder: 'book.theflexfacility.com', value: c.booking_custom_domain || '' });
   const skIn  = el('input', { type: 'password', placeholder: 'sk_live_… (paste to set, leave blank to keep current)' });
-  const twIn  = el('input', { type: 'text', placeholder: '+18775551234 (leave blank to clear)', value: c.twilio_phone_number || '', style: 'flex:1' });
+  const twIn  = el('input', { type: 'text', placeholder: '+18775551234 (leave blank to clear)', value: c.twilio_phone_number || '', style: 'width:100%' });
 
-  // "Copy from another tenant" picker for the Twilio number. When the
-  // same LLC operates multiple tenants (TAES + GoElev8.ai are both
-  // owned by Aaron), reusing an existing number is faster than
-  // provisioning a new one in the Twilio console. Only lists tenants
-  // that ALREADY have a number set. Empty option = do nothing.
-  const twSameSources = ((allClients || [])
-    .filter(x => x.id !== c.id && x.twilio_phone_number))
-    .map(x => ({ id: x.id, label: (x.business_name || x.name || x.slug) + ' — ' + x.twilio_phone_number, phone: x.twilio_phone_number }));
-  const twCopySel = el('select', { style: 'width:100%;margin-top:6px' },
-    el('option', { value: '' }, twSameSources.length ? 'Copy from another tenant…' : 'No other tenants have a Twilio number set'),
-    ...twSameSources.map(s => el('option', { value: s.phone }, s.label))
+  // "Inherit from parent tenant" picker. clients.twilio_phone_number
+  // has a UNIQUE constraint, so two tenants can't own the same number
+  // directly. Instead, when the same LLC runs multiple tenants
+  // (TAES + GoElev8.ai + Flex — all Aaron), the operator sets a
+  // parent_client_id and the child inherits the parent's Twilio +
+  // credit pool via getBillingClient(). This is the same pattern Will
+  // Power Fitness Factory uses to inherit Flex.
+  //
+  // Only lists tenants that ALREADY have a Twilio number set (no
+  // point inheriting from a tenant with no number). Blank option = no
+  // inheritance (default).
+  //
+  // NOTE: outbound sends go through the parent's Twilio number.
+  // Inbound REPLIES to that number get logged under the PARENT's
+  // client_id (whichever tenant "owns" that number in the DB), not
+  // the child's — the inbound webhook resolves tenant by phone number
+  // and there's only one match. Set expectations accordingly.
+  const parentSources = (allClients || [])
+    .filter(x => x.id !== c.id && x.twilio_phone_number)
+    .map(x => ({
+      id: x.id,
+      label: (x.business_name || x.name || x.slug) + ' — ' + x.twilio_phone_number
+    }));
+  const twParentSel = el('select', { style: 'width:100%;margin-top:6px' },
+    el('option', { value: '' },
+      parentSources.length ? 'None (use own number)' : 'No other tenants have a Twilio number set'),
+    ...parentSources.map(s => el('option', { value: s.id }, s.label))
   );
-  twCopySel.onchange = () => {
-    if (twCopySel.value) {
-      twIn.value = twCopySel.value;
-      twCopySel.value = '';
+  // Preselect the current parent if one is set.
+  if (c.parent_client_id) twParentSel.value = c.parent_client_id;
+
+  // When the operator picks a parent, gray out and clear the own-
+  // number input so the mutual-exclusion is visible. Selecting "None"
+  // re-enables it.
+  const applyParentUiState = () => {
+    if (twParentSel.value) {
+      twIn.disabled = true;
+      twIn.value = '';
+      twIn.placeholder = 'Inheriting from parent tenant (see dropdown)';
+    } else {
+      twIn.disabled = false;
+      twIn.placeholder = '+18775551234 (leave blank to clear)';
     }
   };
+  twParentSel.onchange = applyParentUiState;
+  applyParentUiState();
 
   const close = () => bg.remove();
   const result = el('div', { style: 'min-height:1.2em;font-size:0.8rem' });
@@ -7868,10 +7896,24 @@ function openClientSettingsModal(c, refresh, allClients) {
       // GA4 + Booking always save (even when blank — clears them).
       await api('/api/admin?action=set-ga4', { method: 'POST', body: { client_id: c.id, ga4_property_id: ga4In.value.trim() } });
       await api('/api/admin?action=set-booking-url', { method: 'POST', body: { client_id: c.id, booking_url: buIn.value.trim() } });
-      // Twilio phone number — always saves (blank clears). E.164
-      // normalization happens server-side, so operators can paste in
-      // any human-friendly format.
-      await api('/api/admin?action=set-twilio-number', { method: 'POST', body: { client_id: c.id, twilio_phone_number: twIn.value.trim() } });
+      // Twilio: two mutually exclusive modes. When a parent is picked,
+      // clear the own-number and set parent_client_id — the child now
+      // inherits via getBillingClient(). Otherwise save the own-number
+      // and clear any prior parent link. The unique constraint on
+      // clients.twilio_phone_number is what forces this either/or (two
+      // tenants can't own the same number directly).
+      if (twParentSel.value) {
+        await api('/api/admin?action=set-parent-client', {
+          method: 'POST', body: { client_id: c.id, parent_client_id: twParentSel.value }
+        });
+      } else {
+        await api('/api/admin?action=set-parent-client', {
+          method: 'POST', body: { client_id: c.id, parent_client_id: null }
+        });
+        await api('/api/admin?action=set-twilio-number', {
+          method: 'POST', body: { client_id: c.id, twilio_phone_number: twIn.value.trim() }
+        });
+      }
       // Stripe key only saves when the field is non-empty (keeps existing on blank).
       if (skIn.value.trim()) {
         await api('/api/admin?action=set-stripe-key', { method: 'POST', body: { client_id: c.id, stripe_secret_key: skIn.value.trim() } });
@@ -7917,8 +7959,8 @@ function openClientSettingsModal(c, refresh, allClients) {
       'Custom domain for this tenant\'s booking widget (no protocol). Drives the Vapi assistant + welcome SMS.',
       buIn),
     field('Twilio Phone Number',
-      'E.164 format (e.g. +18775551234) — the "from" number for all SMS this tenant sends. Same number can be shared across tenants owned by the same LLC.',
-      el('div', {}, twIn, twCopySel)),
+      'Option 1: paste this tenant\'s OWN E.164 number (e.g. +18775551234). Option 2: pick a parent tenant in the dropdown and this tenant inherits the parent\'s Twilio + credit pool (Will Power → Flex pattern). Only one wins — picking a parent clears the own-number field.',
+      el('div', {}, twIn, twParentSel)),
     field('Stripe Secret Key',
       'sk_live_... — only used to sync sales from this tenant\'s Stripe account. Leave blank to keep the existing key.',
       skIn),

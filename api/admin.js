@@ -28,7 +28,7 @@ import { provisionTenant } from '../lib/provisioning.js';
 async function listClients(req, res) {
   const { data: clients, error } = await supabaseAdmin
     .from('clients')
-    .select('id, slug, name, twilio_phone_number, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at, tier, conversion_label, business_name, logo_url, brand_color, ga4_property_id')
+    .select('id, slug, name, twilio_phone_number, parent_client_id, credit_balance, billing_paused, welcome_sms_enabled, stripe_connected_account_id, created_at, tier, conversion_label, business_name, logo_url, brand_color, ga4_property_id')
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
 
@@ -3912,6 +3912,39 @@ async function setTwilioNumber(req, res) {
   return res.status(200).json({ client: data });
 }
 
+// Set (or clear) a tenant's parent_client_id. Used when the operator
+// wants a child tenant to inherit its Twilio number + credit pool from
+// a parent (same LLC, one billing pool pattern — Will Power → Flex is
+// the canonical example). Clears the child's own twilio_phone_number
+// in the same transaction so the number doesn't sit stale on the row
+// (and so the unique constraint on clients.twilio_phone_number doesn't
+// block a future parent switch).
+//
+// Body: { client_id, parent_client_id }
+//   parent_client_id: null to REMOVE inheritance; otherwise the uuid
+//   of another clients row to inherit from.
+async function setParentClient(req, res) {
+  const body = await readJson(req);
+  const { client_id, parent_client_id } = body || {};
+  if (!client_id) return res.status(400).json({ error: 'client_id required' });
+  if (client_id === parent_client_id) {
+    return res.status(400).json({ error: 'client_cannot_parent_itself' });
+  }
+
+  const patch = { parent_client_id: parent_client_id || null };
+  // Clear own Twilio number when linking to a parent — the child now
+  // sends via getBillingClient() which resolves the parent. Leaving
+  // the old number in place would either (a) violate the unique
+  // constraint if the parent has the same number, or (b) look like
+  // conflicting config to the next operator reading the row.
+  if (parent_client_id) patch.twilio_phone_number = null;
+
+  const { data, error } = await supabaseAdmin
+    .from('clients').update(patch).eq('id', client_id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  return res.status(200).json({ client: data });
+}
+
 async function setBookingUrl(req, res) {
   const body = await readJson(req);
   const { client_id, booking_url } = body || {};
@@ -4171,6 +4204,7 @@ export default async function handler(req, res) {
       case 'set-stripe-key': return await setStripeKey(req, res);
       case 'set-booking-url':return await setBookingUrl(req, res);
       case 'set-twilio-number': return await setTwilioNumber(req, res);
+      case 'set-parent-client': return await setParentClient(req, res);
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'twilio-cost':              return await twilioCostSetting(req, res);
