@@ -9383,11 +9383,41 @@ function taesProfileNodes(d, opts) {
       w.github_repo_url ? el('p', {}, el('a', { href: w.github_repo_url, target: '_blank', rel: 'noopener' }, '💻 ' + w.github_repo_url)) : null));
   }
 
-  body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
-    el('h3', {}, 'Assessment profile'),
-    (d.assessment && d.assessment.profile)
-      ? taesKV(d.assessment.profile, ['id', 'participant_id', 'created_at', 'updated_at'])
-      : el('p', { class: 'muted' }, 'No profile yet.')));
+  // Assessment profile — KV summary of the participant's placement
+  // profile fields. raw_transcript is excluded from the inline table
+  // (it's the full conversation dump that produced the profile —
+  // huge and noisy) and shown separately as a collapsed <details>
+  // disclosure below the summary. Matches the pattern used for the
+  // Assessment chat panel: metadata visible, raw prose gated behind
+  // a click.
+  const assessmentProfile = (d.assessment && d.assessment.profile) || null;
+  const rawTranscript = assessmentProfile && typeof assessmentProfile.raw_transcript === 'string'
+    ? assessmentProfile.raw_transcript
+    : null;
+  const profileChildren = [
+    el('h3', { style: 'margin-top:0' }, 'Assessment profile'),
+    assessmentProfile
+      ? taesKV(assessmentProfile, ['id', 'participant_id', 'created_at', 'updated_at', 'raw_transcript'])
+      : el('p', { class: 'muted' }, 'No profile yet.')
+  ];
+  if (rawTranscript) {
+    profileChildren.push(el('details', {
+      style: 'margin-top:12px;background:rgba(0,0,0,0.15);border:1px solid rgba(255,255,255,0.06);border-radius:8px'
+    },
+      el('summary', {
+        style: 'cursor:pointer;padding:10px 12px;font-size:0.82rem;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px'
+      },
+        el('span', {}, '📝 raw_transcript'),
+        el('span', { class: 'muted', style: 'font-size:0.72rem;font-weight:400' },
+          rawTranscript.length.toLocaleString() + ' chars')),
+      el('div', {
+        style: 'max-height:340px;overflow:auto;padding:0 12px 12px;font-size:0.78rem;white-space:pre-wrap;font-family:inherit;line-height:1.4'
+      }, rawTranscript)));
+  }
+  body.appendChild(el('div', {
+    class: 'panel',
+    style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px'
+  }, ...profileChildren));
 
   const mods = d.modules || [];
   body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
