@@ -9061,36 +9061,193 @@ async function taesDeleteParticipant(p, onDeleted) {
   }
 }
 
-function taesDetail(d, opts) {
-  const nodes = [];
-  const p = d.participant || {};
+// Open a participant's profile in a modal pop-up. Loads the full
+// participant record + progress + assessment, then renders the
+// "fun" profile card with a gradient hero, big avatar, and inline
+// upload. onDeleted (optional) is called after a successful delete
+// so the caller can refresh the roster.
+async function openTaesProfileModal(participantId, opts) {
   const onDeleted = (opts && opts.onDeleted) || null;
 
-  // Header row — name + org on the left, action buttons on the right.
-  // Buttons match the "profile card" affordance the user asked for:
-  // send email, send sms, delete. Delete confirms twice.
-  const emailBtn = el('button', {
-    class: 'btn', title: p.email ? 'Email ' + p.email : 'No email on file',
-    onclick: () => openTaesEmailComposer(p)
-  }, '📧 Email');
-  if (!p.email) emailBtn.disabled = true;
+  const modal = el('div', { class: 'modal taes-profile-modal', style:
+    'width:min(680px,94vw);max-height:92vh;overflow-y:auto;padding:0;' +
+    'border-radius:16px;background:#0d1117;box-shadow:0 20px 60px rgba(0,0,0,0.6)' });
+  const bg = el('div', {
+    class: 'modal-bg',
+    style: 'background:rgba(0,0,0,0.7);backdrop-filter:blur(4px)',
+    onclick: (e) => { if (e.target === bg) bg.remove(); }
+  }, modal);
+  document.body.appendChild(bg);
 
-  const smsBtn = el('button', {
-    class: 'btn', title: p.phone ? 'SMS ' + p.phone : 'No phone on file',
-    onclick: () => openTaesSmsComposer(p)
-  }, '💬 SMS');
-  if (!p.phone) smsBtn.disabled = true;
+  // Loading placeholder so the modal feels responsive while the
+  // fetch is in flight.
+  modal.appendChild(el('div', { style: 'padding:60px;text-align:center' },
+    el('div', { class: 'muted' }, 'Loading profile…')));
 
-  const deleteBtn = el('button', {
-    class: 'btn', style: 'color:#fca5a5;border-color:rgba(239,68,68,0.4)',
-    onclick: () => taesDeleteParticipant(p, onDeleted)
-  }, '🗑 Delete');
+  try {
+    const d = await api('/api/admin?action=taes-participant&id=' + encodeURIComponent(participantId) + '&full=1');
+    modal.replaceChildren(...taesProfileNodes(d, {
+      onDeleted: () => { bg.remove(); if (onDeleted) onDeleted(); },
+      onClose: () => bg.remove()
+    }));
+  } catch (e) {
+    modal.replaceChildren(el('div', { style: 'padding:24px' },
+      el('h2', {}, 'Could not load profile'),
+      el('p', { class: 'err' }, e.message || 'unknown'),
+      el('button', { class: 'btn', onclick: () => bg.remove() }, 'Close')));
+  }
+}
 
-  nodes.push(el('div', { class: 'row between', style: 'align-items:center;gap:12px;flex-wrap:wrap' },
-    el('div', {},
-      el('h2', { style: 'margin:0' }, p.name || 'Participant'),
-      p.orgName ? el('div', { class: 'muted', style: 'font-size:0.85rem' }, p.orgName) : null),
-    el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, emailBtn, smsBtn, deleteBtn)));
+// Two initials for the placeholder avatar (when no photo_url is set).
+// Falls back to "?" if we can't extract anything.
+function taesInitials(name) {
+  const s = String(name || '').trim();
+  if (!s) return '?';
+  const parts = s.split(/\s+/).filter(Boolean);
+  return ((parts[0][0] || '') + (parts[1]?.[0] || '')).toUpperCase() || '?';
+}
+
+// Deterministic pastel color from the name so the placeholder avatar
+// varies per participant but stays stable for the same person.
+function taesAvatarColor(name) {
+  let h = 0;
+  for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) & 0xffff;
+  return `hsl(${h % 360}, 70%, 60%)`;
+}
+
+// Kick off a file picker + upload for a participant's profile photo.
+// Reads the file as a data URL, POSTs to /api/admin?action=taes-upload
+// -photo, and calls onUploaded(url) with the new public URL on success.
+async function taesPickAndUploadPhoto(participantId, onUploaded) {
+  const MAX_BYTES = 10 * 1024 * 1024;
+  return new Promise((resolve) => {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'image/jpeg,image/png,image/gif,image/webp,image/heic';
+    picker.onchange = async () => {
+      const file = picker.files?.[0];
+      if (!file) { resolve(null); return; }
+      if (file.size > MAX_BYTES) {
+        toast(`Photo too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 10 MB.`, true);
+        resolve(null); return;
+      }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const r = await api('/api/admin?action=taes-upload-photo', {
+            method: 'POST',
+            body: { id: participantId, data_url: reader.result, filename: file.name }
+          });
+          const url = r?.url || r?.photo_url || null;
+          if (url && typeof onUploaded === 'function') onUploaded(url);
+          toast('Photo updated');
+          resolve(url);
+        } catch (e) {
+          toast('Upload failed: ' + (e.message || 'unknown'), true);
+          resolve(null);
+        }
+      };
+      reader.onerror = () => { toast('Could not read image.', true); resolve(null); };
+      reader.readAsDataURL(file);
+    };
+    picker.click();
+  });
+}
+
+// Build the modal contents for a participant profile. Returns an
+// array of nodes so the caller (openTaesProfileModal) can drop them
+// straight into the modal wrapper. Splits the profile into a hero
+// (gradient background + avatar + name + action buttons) and a body
+// section (progress, contact, website, modules, assessment).
+function taesProfileNodes(d, opts) {
+  const p = d.participant || {};
+  const onDeleted = (opts && opts.onDeleted) || null;
+  const onClose = (opts && opts.onClose) || (() => {});
+  const nodes = [];
+
+  // ─── Close button (top-right, always visible) ─────────────────────
+  const closeBtn = el('button', {
+    style: 'position:absolute;top:14px;right:14px;background:rgba(0,0,0,0.35);' +
+           'color:#fff;border:none;width:34px;height:34px;border-radius:50%;' +
+           'font-size:1.2rem;cursor:pointer;line-height:1;z-index:2',
+    title: 'Close', onclick: onClose
+  }, '×');
+
+  // ─── Avatar — big circle with photo_url or fallback initials ──────
+  // Click anywhere on the avatar to open the photo picker + upload.
+  // The camera-icon overlay makes the affordance obvious.
+  const avatarRing = el('div', { style:
+    'width:110px;height:110px;border-radius:50%;background:#fff;padding:4px;' +
+    'position:relative;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,0.3);' +
+    'flex:0 0 auto'
+  });
+  const avatarInner = el('div', { style:
+    'width:100%;height:100%;border-radius:50%;overflow:hidden;position:relative;' +
+    'display:flex;align-items:center;justify-content:center;' +
+    'background:' + taesAvatarColor(p.name) + ';color:#fff;font-size:2.2rem;font-weight:700'
+  });
+  const imgOrInitials = () => {
+    if (p.photo_url) {
+      return el('img', {
+        src: p.photo_url + (p.photo_url.includes('?') ? '&' : '?') + 't=' + Date.now(),
+        alt: p.name || 'profile',
+        style: 'width:100%;height:100%;object-fit:cover'
+      });
+    }
+    return el('span', {}, taesInitials(p.name));
+  };
+  avatarInner.appendChild(imgOrInitials());
+  const camBadge = el('div', { style:
+    'position:absolute;bottom:0;right:0;background:#00FFFF;color:#0d1117;' +
+    'width:32px;height:32px;border-radius:50%;display:flex;align-items:center;' +
+    'justify-content:center;font-size:0.9rem;border:3px solid #fff;' +
+    'box-shadow:0 2px 6px rgba(0,0,0,0.3)'
+  }, '📷');
+  avatarRing.append(avatarInner, camBadge);
+  avatarRing.onclick = () => {
+    taesPickAndUploadPhoto(p.id || p.participantId, (newUrl) => {
+      p.photo_url = newUrl;
+      avatarInner.replaceChildren(imgOrInitials());
+    });
+  };
+
+  // ─── Action buttons — big, colorful, sit inside the hero ──────────
+  const heroBtn = (label, bg, color, disabled, handler, title) => {
+    const b = el('button', {
+      style: 'padding:9px 16px;border-radius:999px;font-size:0.82rem;font-weight:600;' +
+             'border:none;cursor:pointer;background:' + bg + ';color:' + color +
+             (disabled ? ';opacity:0.4;cursor:not-allowed' : ''),
+      title: title || '', onclick: disabled ? undefined : handler
+    }, label);
+    if (disabled) b.disabled = true;
+    return b;
+  };
+  const actionRow = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px' },
+    heroBtn('📧 Email', 'rgba(255,255,255,0.15)', '#fff', !p.email,
+      () => openTaesEmailComposer(p), p.email ? 'Email ' + p.email : 'No email on file'),
+    heroBtn('💬 SMS', 'rgba(255,255,255,0.15)', '#fff', !p.phone,
+      () => openTaesSmsComposer(p), p.phone ? 'SMS ' + p.phone : 'No phone on file'),
+    heroBtn('🗑 Delete', 'rgba(239,68,68,0.25)', '#fecaca', false,
+      () => taesDeleteParticipant(p, onDeleted), 'Delete participant + all their data')
+  );
+
+  // ─── Hero — gradient banner with avatar + name + org + actions ────
+  const hero = el('div', { style:
+    'position:relative;padding:32px 24px 24px;text-align:center;' +
+    'background:linear-gradient(135deg, #7c3aed 0%, #ec4899 50%, #06b6d4 100%);' +
+    'border-radius:16px 16px 0 0;color:#fff'
+  },
+    closeBtn,
+    el('div', { style: 'display:flex;justify-content:center;margin-bottom:14px' }, avatarRing),
+    el('h1', { style: 'margin:0;font-size:1.5rem;font-weight:700' }, p.name || 'Participant'),
+    p.orgName ? el('div', { style: 'margin-top:4px;font-size:0.9rem;opacity:0.85' }, p.orgName) : null,
+    actionRow
+  );
+  nodes.push(hero);
+
+  // ─── Body wrapper — padded panels stacked vertically ──────────────
+  const body = el('div', { style: 'padding:20px 22px 24px' });
+  nodes.push(body);
 
   // Progress tracker — big visual bar summarising the participant's
   // journey. completedModules / totalModules from the roster row was
@@ -9111,7 +9268,7 @@ function taesDetail(d, opts) {
   })();
 
   const barColor = pct >= 80 ? '#86efac' : pct >= 40 ? '#fbd38d' : '#fca5a5';
-  nodes.push(el('div', { class: 'panel' },
+  body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
     el('h3', { style: 'margin-top:0' }, 'Progress'),
     total > 0
       ? el('div', {},
@@ -9129,7 +9286,7 @@ function taesDetail(d, opts) {
       : el('p', { class: 'muted' }, 'No module activity yet.')));
 
 
-  nodes.push(el('div', { class: 'panel' },
+  body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
     el('h3', {}, 'Contact & account'),
     taesKV({
       email: p.email, phone: p.phone,
@@ -9142,21 +9299,21 @@ function taesDetail(d, opts) {
 
   if (d.website) {
     const w = d.website;
-    nodes.push(el('div', { class: 'panel' },
+    body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
       el('h3', {}, 'Website'),
       taesKV({ purpose: w.site_purpose, published: taesFmtDate(w.published_at) }),
       w.deploy_url ? el('p', {}, el('a', { href: w.deploy_url, target: '_blank', rel: 'noopener' }, w.deploy_url)) : null,
       w.github_repo_url ? el('p', {}, el('a', { href: w.github_repo_url, target: '_blank', rel: 'noopener' }, '💻 ' + w.github_repo_url)) : null));
   }
 
-  nodes.push(el('div', { class: 'panel' },
+  body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
     el('h3', {}, 'Assessment profile'),
     (d.assessment && d.assessment.profile)
       ? taesKV(d.assessment.profile, ['id', 'participant_id', 'created_at', 'updated_at'])
       : el('p', { class: 'muted' }, 'No profile yet.')));
 
   const mods = d.modules || [];
-  nodes.push(el('div', { class: 'panel' },
+  body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
     el('h3', {}, 'Modules (' + mods.length + ')'),
     mods.length ? el('table', {},
       el('thead', {}, el('tr', {}, el('th', {}, 'Module'), el('th', {}, 'Status'), el('th', { style: 'text-align:right' }, 'Quiz'))),
@@ -9170,7 +9327,7 @@ function taesDetail(d, opts) {
   if (sessions.length) {
     const s = sessions[0];
     const transcript = Array.isArray(s.transcript) ? s.transcript : null;
-    nodes.push(el('div', { class: 'panel' },
+    body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
       el('h3', {}, 'Assessment chat'),
       el('div', { class: 'muted' }, (s.status || '') + ' · ' + taesFmtDate(s.created_at)),
       transcript ? el('div', { style: 'max-height:260px;overflow:auto;margin-top:8px' },
@@ -9205,7 +9362,6 @@ async function viewTaes() {
       const parts = r.participants || [];
       const stuck = parts.filter((p) => p.stuck).length;
       const avg = parts.length ? Math.round(parts.reduce((a, p) => a + (p.completionPct || 0), 0) / parts.length) : 0;
-      const detailPanel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Select a participant for full details.'));
 
       content.replaceChildren(
         el('div', { class: 'cards' },
@@ -9214,23 +9370,17 @@ async function viewTaes() {
           el('div', { class: 'card' }, el('div', { class: 'label' }, 'Need attention'), el('div', { class: 'value' }, String(stuck)))),
         el('div', { class: 'panel' },
           el('h2', {}, 'Roster'),
+          el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:8px' }, 'Click a participant to open their profile.'),
           parts.length ? el('table', {},
             el('thead', {}, el('tr', {},
               el('th', {}, 'Name'), el('th', {}, 'Email'), el('th', {}, 'Org'), el('th', {}, 'Track'),
               el('th', { style: 'text-align:right' }, 'Progress'), el('th', { style: 'text-align:right' }, 'Quiz'), el('th', {}, 'Last active'))),
             el('tbody', {}, ...parts.map((p) => el('tr', {
               style: 'cursor:pointer',
-              onclick: async () => {
-                detailPanel.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
-                try {
-                  const d = await api('/api/admin?action=taes-participant&id=' + encodeURIComponent(p.participantId) + '&full=1');
-                  // onDeleted re-renders the whole TAES view so the
-                  // deleted participant vanishes from the roster and
-                  // the detail panel resets to the placeholder.
-                  detailPanel.replaceChildren(...taesDetail(d, { onDeleted: () => render() }));
-                } catch (e) { detailPanel.replaceChildren(el('p', { class: 'err' }, e.message)); }
-                detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              },
+              // Click opens the profile in a pop-up modal. onDeleted
+              // re-renders the whole TAES view so the deleted
+              // participant vanishes from the roster on close.
+              onclick: () => openTaesProfileModal(p.participantId, { onDeleted: () => render() }),
             },
               el('td', {}, (p.stuck ? '🔴 ' : '') + (p.name || '—')),
               el('td', { class: 'muted' }, p.email || ''),
@@ -9239,8 +9389,7 @@ async function viewTaes() {
               el('td', { class: 'mono', style: 'text-align:right' }, (p.completedModules || 0) + '/' + (p.totalModules || 0) + ' (' + (p.completionPct || 0) + '%)'),
               el('td', { class: 'mono', style: 'text-align:right' }, p.quizAvg != null ? p.quizAvg + '%' : '—'),
               el('td', { class: 'muted' }, taesFmtDate(p.lastActive)))))
-          ) : el('p', { class: 'muted' }, 'No participants yet.')),
-        detailPanel
+          ) : el('p', { class: 'muted' }, 'No participants yet.'))
       );
     } else if (sub === 'attention') {
       const r = await api('/api/admin?action=taes-attention');

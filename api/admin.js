@@ -3938,17 +3938,20 @@ async function listAdmins(req, res) {
 // than re-implementing that logic against the raw DB. Auth: PORTAL_API_KEY.
 const TAES_BASE = (process.env.TAES_PORTAL_URL || 'https://www.theaiexitstrategy.com').replace(/\/$/, '');
 
-async function taesFetch(path, { method = 'GET' } = {}) {
+async function taesFetch(path, { method = 'GET', jsonBody = null } = {}) {
   const key = process.env.PORTAL_API_KEY;
   if (!key) {
     const err = new Error('PORTAL_API_KEY is not set in this project — add it in Vercel, then redeploy.');
     err.status = 503;
     throw err;
   }
-  const r = await fetch(`${TAES_BASE}/api/portal/${path}`, {
-    method,
-    headers: { Authorization: `Bearer ${key}` },
-  });
+  const headers = { Authorization: `Bearer ${key}` };
+  const init = { method, headers };
+  if (jsonBody !== null) {
+    headers['content-type'] = 'application/json';
+    init.body = JSON.stringify(jsonBody);
+  }
+  const r = await fetch(`${TAES_BASE}/api/portal/${path}`, init);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     const err = new Error(data.error || `TAES API responded ${r.status}`);
@@ -4028,6 +4031,29 @@ async function taesSendEmail(req, res) {
 // Mirrors send-as-client but auto-resolves the client by slug so the
 // operator doesn't need to know TAES's uuid. Free send — no credit
 // debit and no billing-report impact (credits_charged: 0).
+// Upload a profile photo for a TAES participant. The portal SPA
+// sends a base64 data URI + participant id; we forward the payload to
+// TAES's /participant/[id]/photo endpoint which handles the actual
+// storage upload + participants.photo_url update.
+async function taesUploadPhoto(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const id = String(body?.id || '').trim();
+  const dataUrl = String(body?.data_url || '');
+  const filename = String(body?.filename || '');
+  if (!id) return res.status(400).json({ error: 'id_required' });
+  if (!dataUrl) return res.status(400).json({ error: 'data_url_required' });
+  try {
+    const data = await taesFetch(`participant/${encodeURIComponent(id)}/photo`, {
+      method: 'POST',
+      jsonBody: { data_url: dataUrl, filename }
+    });
+    return res.status(200).json(data);
+  } catch (e) {
+    return res.status(e.status || 502).json({ error: e.message });
+  }
+}
+
 async function taesSendSms(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
   const body = await readJson(req);
@@ -4119,6 +4145,7 @@ export default async function handler(req, res) {
       case 'taes-delete-participant':   return await taesDeleteParticipant(req, res);
       case 'taes-send-email':           return await taesSendEmail(req, res);
       case 'taes-send-sms':             return await taesSendSms(req, res);
+      case 'taes-upload-photo':         return await taesUploadPhoto(req, res);
       case 'taes-partners':             return await taesPartners(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);
