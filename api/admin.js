@@ -1814,8 +1814,23 @@ async function taesSchema(req, res) {
     if (tErr) throw tErr;
     tables = tRows || [];
   } catch (e) {
-    // information_schema not exposed via PostgREST — fall back to a
-    // dedicated RPC or ask the user to paste the schema. Report clearly.
+    // Two common failure modes here:
+    //   1. "Invalid API key" — service_role key is wrong (usually the
+    //      anon key was copied by mistake, or a different project's
+    //      key was pasted, or the env var landed on the wrong Vercel
+    //      environment).
+    //   2. information_schema not exposed via PostgREST — rare, but
+    //      possible on locked-down projects.
+    // Surface the specific cause so the operator knows what to fix.
+    const msg = String(e.message || '');
+    if (/invalid api key|jwt|unauthorized|401|403/i.test(msg)) {
+      return res.status(200).json({
+        configured: true,
+        error: 'auth_failed',
+        detail: e.message,
+        hint: 'SUPABASE_SERVICE_ROLE_KEY_TAES is set but Supabase rejected it. Most likely: (a) you copied the anon "public" key instead of service_role — verify by decoding the JWT at jwt.io and checking payload.role; (b) the key is from a different project than uouoczmxigizkqszagdl; (c) the env var was added to Preview/Development in Vercel but not Production, and Production hasn\'t been redeployed since.',
+      });
+    }
     return res.status(200).json({
       configured: true,
       error: 'information_schema_unreachable',
