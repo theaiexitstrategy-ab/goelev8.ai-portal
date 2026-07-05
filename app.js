@@ -9154,7 +9154,15 @@ async function openTaesProfileModal(participantId, opts) {
     el('div', { class: 'muted' }, 'Loading profile…')));
 
   try {
-    const d = await api('/api/admin?action=taes-participant&id=' + encodeURIComponent(participantId) + '&full=1');
+    // Fetch WITHOUT full=1. That keeps the response small even for
+    // heavy users (Courtney @ AllThingzBlackHair hit the Vercel
+    // 4.5MB response cap with full=1 — huge conversation_state on
+    // module rows + a generated_files bundle on the website row).
+    // The profile view only needs the trimmed sessions (id, status,
+    // created_at, turns) since the transcript disclosure is
+    // collapsed by default anyway; if the operator wants to read
+    // the transcript, we can lazy-fetch full=1 on expand later.
+    const d = await api('/api/admin?action=taes-participant&id=' + encodeURIComponent(participantId));
     modal.replaceChildren(...taesProfileNodes(d, {
       onDeleted: () => { bg.remove(); if (onDeleted) onDeleted(); },
       onClose: () => bg.remove()
@@ -9392,17 +9400,24 @@ function taesProfileNodes(d, opts) {
         el('td', { class: 'mono', style: 'text-align:right' }, m.quiz_score != null ? m.quiz_score + '%' : '—')))))
       : el('p', { class: 'muted' }, 'No module activity.')));
 
-  // Assessment chat — collapsed by default. The transcript can be
-  // dozens of turns of prose and dominates the profile if it renders
-  // inline, so we wrap it in a native <details> disclosure. The
-  // operator sees the summary + turn count and clicks to open the
-  // full transcript when they actually want to read it.
+  // Assessment chat — collapsed by default. The initial profile fetch
+  // uses the trimmed endpoint (no full=1) so the transcript itself
+  // isn't shipped inline — the session summary carries id, status,
+  // created_at, and turn count. Expanding the disclosure lazy-loads
+  // full=1 for just this participant so we get the transcript
+  // without paying the 4.5MB Vercel response cap on every profile
+  // open. Prevents Courtney @ AllThingzBlackHair — style heavy
+  // profiles from failing to load altogether.
   const sessions = (d.assessment && d.assessment.sessions) || [];
   if (sessions.length) {
     const s = sessions[0];
-    const transcript = Array.isArray(s.transcript) ? s.transcript : null;
-    const turnCount = transcript ? transcript.length : 0;
-    body.appendChild(el('details', {
+    const turnCount = typeof s.turns === 'number'
+      ? s.turns
+      : (Array.isArray(s.transcript) ? s.transcript.length : 0);
+    const transcriptHost = el('div', { style: 'padding:0 16px 16px' },
+      el('div', { class: 'muted', style: 'font-size:0.78rem;padding:8px 0' }, 'Expand to load transcript…'));
+
+    const details = el('details', {
       style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:0'
     },
       el('summary', {
@@ -9411,9 +9426,37 @@ function taesProfileNodes(d, opts) {
         el('span', {}, '💬 Assessment chat'),
         el('span', { class: 'muted', style: 'font-size:0.78rem;font-weight:400' },
           (s.status || 'session') + ' · ' + taesFmtDate(s.created_at) + (turnCount ? ' · ' + turnCount + ' turns' : ''))),
-      transcript ? el('div', { style: 'max-height:340px;overflow:auto;padding:0 16px 16px' },
-        ...transcript.map((t) => el('p', { style: 'margin:6px 0' },
-          el('strong', {}, (t.role === 'assistant' ? 'Guide: ' : 'Student: ')), String(t.content || '')))) : null));
+      transcriptHost);
+    body.appendChild(details);
+
+    // Lazy-load full=1 the first time the disclosure opens. Fires
+    // once — the loaded flag prevents redundant fetches on close/open.
+    let loaded = Array.isArray(s.transcript);
+    if (loaded) {
+      transcriptHost.replaceChildren(el('div', { style: 'max-height:340px;overflow:auto' },
+        ...s.transcript.map((t) => el('p', { style: 'margin:6px 0' },
+          el('strong', {}, (t.role === 'assistant' ? 'Guide: ' : 'Student: ')), String(t.content || '')))));
+    }
+    details.addEventListener('toggle', async () => {
+      if (!details.open || loaded) return;
+      loaded = true;
+      transcriptHost.replaceChildren(el('div', { class: 'muted', style: 'font-size:0.78rem;padding:8px 0' }, 'Loading transcript…'));
+      try {
+        const dd = await api('/api/admin?action=taes-participant&id=' + encodeURIComponent(p.id || p.participantId) + '&full=1');
+        const fullSess = ((dd.assessment && dd.assessment.sessions) || [])[0];
+        const tx = Array.isArray(fullSess?.transcript) ? fullSess.transcript : null;
+        if (!tx) {
+          transcriptHost.replaceChildren(el('div', { class: 'muted', style: 'font-size:0.78rem;padding:8px 0' }, 'No transcript available.'));
+        } else {
+          transcriptHost.replaceChildren(el('div', { style: 'max-height:340px;overflow:auto' },
+            ...tx.map((t) => el('p', { style: 'margin:6px 0' },
+              el('strong', {}, (t.role === 'assistant' ? 'Guide: ' : 'Student: ')), String(t.content || '')))));
+        }
+      } catch (err) {
+        transcriptHost.replaceChildren(el('div', { class: 'err', style: 'font-size:0.78rem;padding:8px 0' }, 'Could not load transcript: ' + (err.message || 'unknown')));
+        loaded = false; // let them retry
+      }
+    });
   }
 
   return nodes;
