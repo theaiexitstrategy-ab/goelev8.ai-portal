@@ -3938,7 +3938,7 @@ async function listAdmins(req, res) {
 // than re-implementing that logic against the raw DB. Auth: PORTAL_API_KEY.
 const TAES_BASE = (process.env.TAES_PORTAL_URL || 'https://www.theaiexitstrategy.com').replace(/\/$/, '');
 
-async function taesFetch(path) {
+async function taesFetch(path, { method = 'GET' } = {}) {
   const key = process.env.PORTAL_API_KEY;
   if (!key) {
     const err = new Error('PORTAL_API_KEY is not set in this project — add it in Vercel, then redeploy.');
@@ -3946,6 +3946,7 @@ async function taesFetch(path) {
     throw err;
   }
   const r = await fetch(`${TAES_BASE}/api/portal/${path}`, {
+    method,
     headers: { Authorization: `Bearer ${key}` },
   });
   const data = await r.json().catch(() => ({}));
@@ -3980,6 +3981,95 @@ async function taesAttention(req, res) {
 }
 async function taesPartners(req, res) {
   return taesProxy(res, 'partners');
+}
+
+// Delete a TAES participant + everything they submitted. Proxies to
+// the TAES /api/portal/participant/[id] DELETE endpoint which handles
+// the cascade. Frontend hits this via POST /api/admin?action=
+// taes-delete-participant with { id } in the body — we translate that
+// to a DELETE against TAES.
+async function taesDeleteParticipant(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const id = String(body?.id || '').trim();
+  if (!id) return res.status(400).json({ error: 'id_required' });
+  try {
+    const data = await taesFetch(`participant/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return res.status(200).json(data);
+  } catch (e) {
+    return res.status(e.status || 502).json({ error: e.message });
+  }
+}
+
+// Send a transactional email to a TAES participant. Uses the portal's
+// shared mailer (Resend + BCC theaiexitstrategy@gmail.com per operator
+// policy). The subject + body come from the composer modal in the SPA.
+// No participant-lookup — the caller passes the target email directly;
+// the frontend reads it off the loaded profile.
+async function taesSendEmail(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const to      = String(body?.to      || '').trim();
+  const subject = String(body?.subject || '').trim();
+  const text    = String(body?.body    || '').trim();
+  if (!to || !subject || !text) {
+    return res.status(400).json({ error: 'to_subject_body_required' });
+  }
+  try {
+    const r = await sendMail({ to, subject, text });
+    return res.status(200).json({ ok: true, id: r?.data?.id || null });
+  } catch (e) {
+    return res.status(502).json({ error: 'email_failed: ' + e.message });
+  }
+}
+
+// Send an SMS to a TAES participant using the ai-exit-strategy tenant's
+// Twilio number (or its parent if TAES inherits, via getBillingClient).
+// Mirrors send-as-client but auto-resolves the client by slug so the
+// operator doesn't need to know TAES's uuid. Free send — no credit
+// debit and no billing-report impact (credits_charged: 0).
+async function taesSendSms(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const to = String(body?.to || '').trim();
+  const text = String(body?.body || '').trim();
+  if (!to || !text) return res.status(400).json({ error: 'to_body_required' });
+
+  const { data: client } = await supabaseAdmin
+    .from('clients').select('*').eq('slug', 'ai-exit-strategy').maybeSingle();
+  if (!client) return res.status(404).json({ error: 'taes_tenant_not_found' });
+  if (!client.twilio_phone_number) {
+    return res.status(400).json({ error: 'no_twilio_number_on_taes_tenant' });
+  }
+
+  const tw = twilioForClient(client);
+  let twilioMsg;
+  try {
+    twilioMsg = await tw.messages.create({
+      from: client.twilio_phone_number,
+      to,
+      body: truncateForSms(text),
+      statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
+    });
+  } catch (err) {
+    return res.status(502).json({ error: 'twilio_failed', detail: err.message });
+  }
+
+  // Log the outbound so it shows in the TAES tenant's Messages tab
+  // history — but credits_charged: 0 so admin sends never bill.
+  await supabaseAdmin.from('messages').insert({
+    client_id: client.id,
+    contact_id: null,
+    direction: 'outbound',
+    body: text,
+    segments: estimateSegments(text),
+    twilio_sid: twilioMsg.sid,
+    status: twilioMsg.status,
+    to_number: to,
+    from_number: client.twilio_phone_number,
+    credits_charged: 0
+  });
+  return res.status(200).json({ ok: true, sid: twilioMsg.sid });
 }
 
 export default async function handler(req, res) {
@@ -4026,6 +4116,9 @@ export default async function handler(req, res) {
       case 'taes-roster':               return await taesRoster(req, res);
       case 'taes-participant':          return await taesParticipant(req, res);
       case 'taes-attention':            return await taesAttention(req, res);
+      case 'taes-delete-participant':   return await taesDeleteParticipant(req, res);
+      case 'taes-send-email':           return await taesSendEmail(req, res);
+      case 'taes-send-sms':             return await taesSendSms(req, res);
       case 'taes-partners':             return await taesPartners(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);

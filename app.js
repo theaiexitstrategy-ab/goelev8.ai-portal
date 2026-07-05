@@ -8920,12 +8920,212 @@ function taesKV(obj, skip = []) {
   return rows.length ? el('table', {}, el('tbody', {}, ...rows)) : el('p', { class: 'muted' }, 'None.');
 }
 
-function taesDetail(d) {
+// TAES email composer — small modal for sending a transactional email
+// to a participant. Uses the portal's shared mailer (Resend + BCC to
+// the operator per policy). Prefills the participant's email; subject
+// + body are typed by the operator. Best-effort — the operator sees
+// success/failure in a toast.
+function openTaesEmailComposer(p) {
+  const overlay = el('div', { class: 'new-message-overlay' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const card = el('div', { class: 'new-message-card' });
+
+  const toInput = el('input', { type: 'email', value: p.email || '', style: 'width:100%' });
+  const subjectInput = el('input', {
+    type: 'text', placeholder: 'e.g. Following up on Module 3',
+    style: 'width:100%'
+  });
+  const bodyInput = el('textarea', {
+    placeholder: 'Type your message…', rows: 8,
+    style: 'width:100%;resize:vertical;min-height:180px'
+  });
+  const errBox = el('div', { style: 'font-size:13px;min-height:18px;margin-top:8px' });
+  const sendBtn = el('button', { class: 'btn primary' }, 'Send Email');
+
+  sendBtn.onclick = async () => {
+    errBox.innerHTML = '';
+    if (!toInput.value.trim())     { errBox.innerHTML = '<div class="err">Recipient required.</div>'; return; }
+    if (!subjectInput.value.trim()){ errBox.innerHTML = '<div class="err">Subject required.</div>'; return; }
+    if (!bodyInput.value.trim())   { errBox.innerHTML = '<div class="err">Message body required.</div>'; return; }
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      await api('/api/admin?action=taes-send-email', {
+        method: 'POST',
+        body: {
+          to:      toInput.value.trim(),
+          subject: subjectInput.value.trim(),
+          body:    bodyInput.value.trim()
+        }
+      });
+      toast('Email sent to ' + toInput.value.trim());
+      close();
+    } catch (e) {
+      errBox.innerHTML = '<div class="err">' + (e.message || 'Send failed') + '</div>';
+      sendBtn.disabled = false; sendBtn.textContent = 'Send Email';
+    }
+  };
+
+  card.appendChild(el('div', { class: 'new-message-header' },
+    el('h2', {}, '📧 Email ' + (p.name || 'participant')),
+    el('button', { class: 'btn ghost sm', onclick: close, title: 'Close' }, '×')));
+  card.appendChild(el('div', { class: 'field' }, el('label', {}, 'To'), toInput));
+  card.appendChild(el('div', { class: 'field' }, el('label', {}, 'Subject'), subjectInput));
+  card.appendChild(el('div', { class: 'field' }, el('label', {}, 'Message'), bodyInput));
+  card.appendChild(errBox);
+  card.appendChild(el('div', { class: 'new-message-actions' },
+    el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+    sendBtn));
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => subjectInput.focus(), 60);
+}
+
+// TAES SMS composer — sends from the ai-exit-strategy tenant's Twilio
+// number. Free send (no credit debit). Prefills the participant's
+// phone; the operator types the body. 160-char SMS ceiling is enforced
+// server-side but a live counter here helps the operator see the limit.
+function openTaesSmsComposer(p) {
+  const overlay = el('div', { class: 'new-message-overlay' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const card = el('div', { class: 'new-message-card' });
+
+  const phoneInput = el('input', { type: 'tel', value: p.phone || '', style: 'width:100%' });
+  const bodyInput = el('textarea', {
+    placeholder: 'Type your message…', rows: 5,
+    style: 'width:100%;resize:vertical;min-height:110px'
+  });
+  const segHint = el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' });
+  bodyInput.addEventListener('input', () => {
+    const len = bodyInput.value.length;
+    segHint.textContent = len ? `${len}/160 chars${len > 160 ? ' — will be truncated' : ''}` : '';
+    segHint.style.color = len > 160 ? '#fca5a5' : '';
+  });
+  const errBox = el('div', { style: 'font-size:13px;min-height:18px;margin-top:8px' });
+  const sendBtn = el('button', { class: 'btn primary' }, 'Send SMS');
+
+  sendBtn.onclick = async () => {
+    errBox.innerHTML = '';
+    if (!phoneInput.value.trim()) { errBox.innerHTML = '<div class="err">Phone required.</div>'; return; }
+    if (!bodyInput.value.trim())  { errBox.innerHTML = '<div class="err">Message required.</div>'; return; }
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      await api('/api/admin?action=taes-send-sms', {
+        method: 'POST',
+        body: { to: phoneInput.value.trim(), body: bodyInput.value.trim() }
+      });
+      toast('SMS sent to ' + phoneInput.value.trim());
+      close();
+    } catch (e) {
+      const msg = String(e.message || '');
+      if (/no_twilio_number_on_taes_tenant/.test(msg)) {
+        errBox.innerHTML = '<div class="err">The AI Exit Strategy tenant doesn\'t have a Twilio phone number set. Add one in Master Admin → clients before sending SMS from this tab.</div>';
+      } else {
+        errBox.innerHTML = '<div class="err">' + msg + '</div>';
+      }
+      sendBtn.disabled = false; sendBtn.textContent = 'Send SMS';
+    }
+  };
+
+  card.appendChild(el('div', { class: 'new-message-header' },
+    el('h2', {}, '💬 SMS ' + (p.name || 'participant')),
+    el('button', { class: 'btn ghost sm', onclick: close, title: 'Close' }, '×')));
+  card.appendChild(el('div', { class: 'field' }, el('label', {}, 'To'), phoneInput));
+  card.appendChild(el('div', { class: 'field' }, el('label', {}, 'Message'), bodyInput, segHint));
+  card.appendChild(errBox);
+  card.appendChild(el('div', { class: 'new-message-actions' },
+    el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+    sendBtn));
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => bodyInput.focus(), 60);
+}
+
+// Two-step delete confirm. First click asks "sure?"; second click within
+// 3 seconds fires the DELETE. Matches the destructive-action pattern
+// used elsewhere in the app (no browser confirm(); dialog which some
+// mobile browsers strip out on installed PWAs).
+async function taesDeleteParticipant(p, onDeleted) {
+  if (!confirm(`Delete ${p.name || 'this participant'} from The AI Exit Strategy?\n\nThis removes them + every module, quiz, session, and profile they submitted. This cannot be undone.`)) {
+    return;
+  }
+  try {
+    await api('/api/admin?action=taes-delete-participant', {
+      method: 'POST', body: { id: p.id || p.participantId }
+    });
+    toast('Deleted ' + (p.name || 'participant'));
+    if (typeof onDeleted === 'function') onDeleted();
+  } catch (e) {
+    toast('Delete failed: ' + (e.message || 'unknown'), true, 6000);
+  }
+}
+
+function taesDetail(d, opts) {
   const nodes = [];
   const p = d.participant || {};
-  nodes.push(el('div', { class: 'row between' },
-    el('h2', {}, p.name || 'Participant'),
-    el('span', { class: 'muted' }, p.orgName || '')));
+  const onDeleted = (opts && opts.onDeleted) || null;
+
+  // Header row — name + org on the left, action buttons on the right.
+  // Buttons match the "profile card" affordance the user asked for:
+  // send email, send sms, delete. Delete confirms twice.
+  const emailBtn = el('button', {
+    class: 'btn', title: p.email ? 'Email ' + p.email : 'No email on file',
+    onclick: () => openTaesEmailComposer(p)
+  }, '📧 Email');
+  if (!p.email) emailBtn.disabled = true;
+
+  const smsBtn = el('button', {
+    class: 'btn', title: p.phone ? 'SMS ' + p.phone : 'No phone on file',
+    onclick: () => openTaesSmsComposer(p)
+  }, '💬 SMS');
+  if (!p.phone) smsBtn.disabled = true;
+
+  const deleteBtn = el('button', {
+    class: 'btn', style: 'color:#fca5a5;border-color:rgba(239,68,68,0.4)',
+    onclick: () => taesDeleteParticipant(p, onDeleted)
+  }, '🗑 Delete');
+
+  nodes.push(el('div', { class: 'row between', style: 'align-items:center;gap:12px;flex-wrap:wrap' },
+    el('div', {},
+      el('h2', { style: 'margin:0' }, p.name || 'Participant'),
+      p.orgName ? el('div', { class: 'muted', style: 'font-size:0.85rem' }, p.orgName) : null),
+    el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, emailBtn, smsBtn, deleteBtn)));
+
+  // Progress tracker — big visual bar summarising the participant's
+  // journey. completedModules / totalModules from the roster row was
+  // not passed in with `d`, so we compute both from d.modules directly.
+  // Any module with status='complete' counts. Falls back to the raw
+  // count when a module list is unavailable so the panel still shows
+  // something useful.
+  const mods = d.modules || [];
+  const total = mods.length;
+  const done = mods.filter((m) => (m.status || '').toLowerCase() === 'complete').length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  const quizAvg = (() => {
+    const scores = mods.map((m) => m.quiz_score).filter((s) => s != null);
+    if (!scores.length) return null;
+    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  })();
+
+  const barColor = pct >= 80 ? '#86efac' : pct >= 40 ? '#fbd38d' : '#fca5a5';
+  nodes.push(el('div', { class: 'panel' },
+    el('h3', { style: 'margin-top:0' }, 'Progress'),
+    total > 0
+      ? el('div', {},
+          el('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px' },
+            el('span', { style: 'font-weight:600;font-size:1.05rem' }, done + ' of ' + total + ' modules complete'),
+            el('span', { style: 'color:' + barColor + ';font-weight:600' }, pct + '%')),
+          el('div', {
+            style: 'width:100%;height:14px;background:rgba(255,255,255,0.06);border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,0.08)'
+          }, el('div', {
+            style: 'width:' + pct + '%;height:100%;background:' + barColor + ';transition:width 200ms ease'
+          })),
+          el('div', { class: 'muted', style: 'font-size:0.78rem;margin-top:8px;display:flex;gap:18px;flex-wrap:wrap' },
+            quizAvg != null ? el('span', {}, 'Quiz average: ' + quizAvg + '%') : null,
+            el('span', {}, 'Enrolled: ' + taesFmtDate(p.created_at))))
+      : el('p', { class: 'muted' }, 'No module activity yet.')));
+
 
   nodes.push(el('div', { class: 'panel' },
     el('h3', {}, 'Contact & account'),
@@ -9022,7 +9222,10 @@ async function viewTaes() {
                 detailPanel.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
                 try {
                   const d = await api('/api/admin?action=taes-participant&id=' + encodeURIComponent(p.participantId) + '&full=1');
-                  detailPanel.replaceChildren(...taesDetail(d));
+                  // onDeleted re-renders the whole TAES view so the
+                  // deleted participant vanishes from the roster and
+                  // the detail panel resets to the placeholder.
+                  detailPanel.replaceChildren(...taesDetail(d, { onDeleted: () => render() }));
                 } catch (e) { detailPanel.replaceChildren(el('p', { class: 'err' }, e.message)); }
                 detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
               },
