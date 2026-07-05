@@ -4722,6 +4722,48 @@ async function openMerchOrderDrawer(orderId, onChange) {
   document.body.appendChild(overlay);
 }
 
+// MMS attachment picker + uploader. Opens a native file picker, reads
+// the image as a base64 data URL, POSTs it to /api/portal/messages
+// ?action=upload-mms, and resolves with the resulting public URL. Used
+// by every composer that supports image attachments (Inbox, Blasts,
+// New Message modal). Rejects on cancel with `null` so callers can
+// treat "user closed picker" as a no-op instead of an error.
+//
+// max_bytes: matches the server-side 10MB ceiling. We check client-side
+// too so the operator gets a helpful message BEFORE the round-trip.
+async function pickAndUploadMmsImage() {
+  const MAX_BYTES = 10 * 1024 * 1024;
+  return new Promise((resolve, reject) => {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'image/jpeg,image/png,image/gif,image/webp,image/heic';
+    picker.onchange = async () => {
+      const file = picker.files?.[0];
+      if (!file) { resolve(null); return; }
+      if (file.size > MAX_BYTES) {
+        toast(`Image too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 10 MB.`, true);
+        resolve(null); return;
+      }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const r = await api('/api/portal/messages?action=upload-mms', {
+            method: 'POST',
+            body: { data_url: reader.result, filename: file.name }
+          });
+          resolve({ url: r.url, name: file.name, size: file.size });
+        } catch (e) {
+          toast('Upload failed: ' + (e.message || 'unknown error'), true);
+          reject(e);
+        }
+      };
+      reader.onerror = () => { toast('Could not read image file.', true); resolve(null); };
+      reader.readAsDataURL(file);
+    };
+    picker.click();
+  });
+}
+
 // New Message composer — phone-style "start a new thread" modal.
 // Takes any phone number + optional contact name + message body and
 // POSTs to /api/portal/messages (which already accepts a raw `to`
@@ -4757,6 +4799,39 @@ function openNewMessageModal() {
     segHint.textContent = len ? `${len} chars · ${segments} segment${segments === 1 ? '' : 's'}` : '';
   });
 
+  // MMS attachment state — held on the modal itself so the send handler
+  // can read the current URL. attachPreview shows a thumbnail + × chip.
+  let attachedMediaUrl = null;
+  const attachPreview = el('div', { style: 'margin-top:8px' });
+  const drawAttachPreview = () => {
+    attachPreview.innerHTML = '';
+    if (!attachedMediaUrl) return;
+    const chip = el('div', {
+      style: 'display:inline-flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(0,255,255,0.08);border:1px solid rgba(0,255,255,0.28);border-radius:6px;font-size:0.78rem'
+    },
+      el('img', { src: attachedMediaUrl, style: 'width:32px;height:32px;object-fit:cover;border-radius:4px' }),
+      el('span', { style: 'color:#00FFFF' }, '📎 Image attached · MMS (3 credits)'),
+      el('button', {
+        style: 'background:none;border:none;color:#fca5a5;font-size:1rem;cursor:pointer;padding:0 4px',
+        title: 'Remove attachment',
+        onclick: () => { attachedMediaUrl = null; drawAttachPreview(); }
+      }, '×')
+    );
+    attachPreview.appendChild(chip);
+  };
+  const attachBtn = el('button', {
+    class: 'btn ghost',
+    style: 'font-size:0.78rem;padding:6px 10px',
+    onclick: async () => {
+      attachBtn.disabled = true; attachBtn.textContent = 'Uploading…';
+      try {
+        const r = await pickAndUploadMmsImage();
+        if (r?.url) { attachedMediaUrl = r.url; drawAttachPreview(); }
+      } catch {}
+      attachBtn.disabled = false; attachBtn.textContent = '📎 Attach Image';
+    }
+  }, '📎 Attach Image');
+
   const errBox = el('div', { style: 'font-size:13px;min-height:18px;margin-top:8px' });
   const sendBtn = el('button', { class: 'btn primary' }, 'Send Message');
 
@@ -4765,7 +4840,10 @@ function openNewMessageModal() {
     const phone = phoneInput.value.trim();
     const text  = bodyInput.value.trim();
     if (!phone) { errBox.innerHTML = '<div class="err">Phone number is required.</div>'; phoneInput.focus(); return; }
-    if (!text)  { errBox.innerHTML = '<div class="err">Type a message before sending.</div>'; bodyInput.focus(); return; }
+    // MMS allows image-only messages (no body). SMS still requires text.
+    if (!text && !attachedMediaUrl) {
+      errBox.innerHTML = '<div class="err">Type a message or attach an image before sending.</div>'; bodyInput.focus(); return;
+    }
 
     sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
     try {
@@ -4787,6 +4865,7 @@ function openNewMessageModal() {
       const sendBody = contactId
         ? { contact_id: contactId, body: text }
         : { to: phone, body: text };
+      if (attachedMediaUrl) sendBody.media_url = attachedMediaUrl;
       const r = await api('/api/portal/messages', { method: 'POST', body: sendBody });
       toast(`Sent · balance ${r.balance ?? '—'} credits`);
       close();
@@ -4818,7 +4897,9 @@ function openNewMessageModal() {
   card.appendChild(el('div', { class: 'field' },
     el('label', {}, 'Message'),
     bodyInput,
-    segHint
+    segHint,
+    el('div', { style: 'margin-top:8px' }, attachBtn),
+    attachPreview
   ));
   card.appendChild(errBox);
   card.appendChild(el('div', { class: 'new-message-actions' },
@@ -5096,8 +5177,22 @@ async function viewMessages() {
         ));
         continue;
       }
+      // Render an attached image (MMS) inline above the text body when
+      // media_url is present. Click to open full-size in a new tab.
+      // Falls back gracefully if the image fails to load (broken URL,
+      // deleted Storage object) — the bubble still shows body text.
+      const mediaBlock = m.media_url ? el('div', { class: 'bubble-media', style: 'margin-bottom:6px' },
+        el('a', { href: m.media_url, target: '_blank', rel: 'noopener noreferrer' },
+          el('img', {
+            src: m.media_url,
+            alt: 'MMS attachment',
+            style: 'max-width:220px;max-height:260px;border-radius:8px;display:block;cursor:zoom-in;background:rgba(255,255,255,0.04)'
+          })
+        )
+      ) : null;
       const bubble = el('div', { class: 'bubble ' + (m.direction === 'inbound' ? 'in' : 'out') },
-        el('div', { class: 'bubble-body' }, m.body),
+        mediaBlock,
+        m.body ? el('div', { class: 'bubble-body' }, m.body) : null,
         el('div', { class: 'ts' },
           ts,
           m.direction === 'outbound' ? el('span', { class: 'ts-spacer' }, ' · ') : null,
@@ -5112,10 +5207,45 @@ async function viewMessages() {
     // Composer.
     const ta = el('textarea', { placeholder: 'Type a message…' });
     const suggestionsRow = el('div', { class: 'suggestions' });
+
+    // MMS attachment state — one image per outbound message. Preview
+    // row appears just above the composer row when populated; clicking
+    // × clears the URL. Chip shows the MMS credit cost so the operator
+    // sees the pricing bump before sending.
+    let composerMediaUrl = null;
+    const mediaPreviewRow = el('div', { class: 'composer-media-preview', style: 'padding:6px 12px' });
+    const drawComposerPreview = () => {
+      mediaPreviewRow.innerHTML = '';
+      if (!composerMediaUrl) return;
+      mediaPreviewRow.appendChild(el('div', {
+        style: 'display:inline-flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(0,255,255,0.08);border:1px solid rgba(0,255,255,0.28);border-radius:6px;font-size:0.78rem'
+      },
+        el('img', { src: composerMediaUrl, style: 'width:32px;height:32px;object-fit:cover;border-radius:4px' }),
+        el('span', { style: 'color:#00FFFF' }, '📎 Image attached · MMS (3 credits)'),
+        el('button', {
+          style: 'background:none;border:none;color:#fca5a5;font-size:1rem;cursor:pointer;padding:0 4px',
+          title: 'Remove attachment',
+          onclick: () => { composerMediaUrl = null; drawComposerPreview(); }
+        }, '×')
+      ));
+    };
+    const attachBtn = el('button', {
+      class: 'btn ghost', title: 'Attach image (MMS)',
+      onclick: async () => {
+        attachBtn.disabled = true;
+        try {
+          const r = await pickAndUploadMmsImage();
+          if (r?.url) { composerMediaUrl = r.url; drawComposerPreview(); }
+        } catch {}
+        attachBtn.disabled = false;
+      }
+    }, '📎');
     const composer = el('div', { class: 'composer' },
       suggestionsRow,
+      mediaPreviewRow,
       el('div', { class: 'composer-row' },
         ta,
+        attachBtn,
         el('button', { class: 'btn ghost', onclick: async () => {
           if (!active.contact?.id) {
             toast('AI suggestions need a saved contact.', true);
@@ -5143,13 +5273,18 @@ async function viewMessages() {
 
     async function send() {
       const text = ta.value.trim();
-      if (!text) return;
+      // MMS allows an image-only send (no text). SMS still requires a
+      // body.
+      if (!text && !composerMediaUrl) return;
       try {
         const payload = active.contact?.id
           ? { contact_id: active.contact.id, body: text }
           : { to: active.phone, body: text };
+        if (composerMediaUrl) payload.media_url = composerMediaUrl;
         await api('/api/portal/messages', { method: 'POST', body: payload });
         ta.value = '';
+        composerMediaUrl = null;
+        drawComposerPreview();
         // Refetch the thread so the new outbound row + Twilio sid + status
         // appear immediately. Realtime will catch any inbound replies on
         // top of this without a manual refetch.
@@ -6161,6 +6296,44 @@ function openBlastModal(wrap) {
   );
   const result = el('div', {});
 
+  // MMS attachment state for this blast. Flat 3 credits per recipient
+  // when set (matches the server-side MMS_CREDIT_COST). The segment
+  // counter switches to flat-rate math when populated so operators see
+  // "1,000 contacts × $0.12 = $120" instead of segmented SMS math.
+  const MMS_CREDITS_PER_RECIPIENT = 3;
+  let blastMediaUrl = null;
+  const blastMediaPreview = el('div', { style: 'margin-top:8px;min-height:0' });
+  const drawBlastMediaPreview = () => {
+    blastMediaPreview.innerHTML = '';
+    if (!blastMediaUrl) return;
+    blastMediaPreview.appendChild(el('div', {
+      style: 'display:inline-flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(0,255,255,0.08);border:1px solid rgba(0,255,255,0.28);border-radius:6px;font-size:0.78rem'
+    },
+      el('img', { src: blastMediaUrl, style: 'width:44px;height:44px;object-fit:cover;border-radius:6px' }),
+      el('div', {},
+        el('div', { style: 'color:#00FFFF;font-weight:600' }, '📎 MMS Image Attached'),
+        el('div', { style: 'color:#a0aec0;font-size:0.72rem;margin-top:2px' },
+          `Ships as MMS · flat ${MMS_CREDITS_PER_RECIPIENT} credits per recipient (image + up to 5000 chars)`)
+      ),
+      el('button', {
+        style: 'margin-left:auto;background:none;border:none;color:#fca5a5;font-size:1.1rem;cursor:pointer;padding:0 6px',
+        title: 'Remove image',
+        onclick: () => { blastMediaUrl = null; drawBlastMediaPreview(); updatePreview(); }
+      }, '×')
+    ));
+  };
+  const attachImgBtn = el('button', {
+    type: 'button', class: 'btn ghost', style: 'font-size:0.78rem;padding:6px 12px;margin-top:6px',
+    onclick: async () => {
+      attachImgBtn.disabled = true; attachImgBtn.textContent = 'Uploading…';
+      try {
+        const r = await pickAndUploadMmsImage();
+        if (r?.url) { blastMediaUrl = r.url; drawBlastMediaPreview(); updatePreview(); }
+      } catch {}
+      attachImgBtn.disabled = false; attachImgBtn.textContent = '📎 Attach Image (MMS)';
+    }
+  }, '📎 Attach Image (MMS)');
+
   // Personalization helpers — shown right under the message textarea so
   // non-technical clients can click to insert a placeholder and see the
   // preview update with sample contact data.
@@ -6224,6 +6397,33 @@ function openBlastModal(wrap) {
     if (promoIn && promoIn.value.trim()) body += '\n\nUse code: ' + promoIn.value.trim();
     if (body.trim() && !OPT_OUT_RE.test(body)) body += '\n\nReply STOP to opt out.';
     const len  = body.length;
+
+    // MMS branch: flat 3 credits per recipient (matches server-side
+    // MMS_CREDIT_COST). Body-length math is irrelevant — Twilio bills
+    // MMS as a single message up to 5000 chars.
+    if (blastMediaUrl) {
+      segChars.textContent = len + ' chars · MMS';
+      segChars.style.color = '#00FFFF';
+      segCount.textContent = 'MMS (image + text)';
+      const perMsgCents = MMS_CREDITS_PER_RECIPIENT * SMS_RATE_CENTS_PER_SEG;
+      const perMsgUsd   = (perMsgCents / 100).toFixed(2);
+      segPer.textContent = '$' + perMsgUsd + ' per message';
+      if (recipientCount == null) {
+        segTotal.textContent = 'Counting contacts…';
+        segTotal.style.color = 'var(--muted,#888)';
+      } else if (recipientCount === 0) {
+        segTotal.textContent = '0 contacts';
+        segTotal.style.color = 'var(--muted,#888)';
+      } else {
+        const totalCents = recipientCount * perMsgCents;
+        const totalUsd   = (totalCents / 100).toFixed(2);
+        segTotal.textContent = recipientCount.toLocaleString() + ' contacts × $' + perMsgUsd + ' = $' + totalUsd;
+        segTotal.style.color = '#00FFFF';
+      }
+      return;
+    }
+
+    // SMS branch: per-segment math.
     const segs = Math.max(1, segmentsFromLen(len));
     const ceil = ceilingForSegments(segs);
     const color = colorForSegments(segs);
@@ -6384,7 +6584,10 @@ function openBlastModal(wrap) {
   let inFlight = false;
   const sendBtn = el('button', { class: 'btn primary', onclick: async () => {
     if (inFlight) return;
-    if (!nameIn.value.trim() || !msgIn.value.trim()) { toast('Name and message are required', true); return; }
+    // MMS blasts may ship image-only (no body). Name always required;
+    // message required unless an image is attached.
+    if (!nameIn.value.trim()) { toast('Blast name is required', true); return; }
+    if (!msgIn.value.trim() && !blastMediaUrl) { toast('Message body or an attached image is required', true); return; }
     inFlight = true;
     sendBtn.disabled = true; sendBtn.textContent = 'Sending...';
 
@@ -6437,6 +6640,7 @@ function openBlastModal(wrap) {
         excludeTags
       };
       if (promoIn.value.trim()) body.promoCode = promoIn.value.trim();
+      if (blastMediaUrl) body.media_url = blastMediaUrl;
       const data = await api('/api/portal/blasts', { method: 'POST', body });
       stopped = true; if (pollTimer) clearTimeout(pollTimer);
 
@@ -6544,6 +6748,8 @@ function openBlastModal(wrap) {
     complianceNote,
     chipsRow,
     previewBox,
+    attachImgBtn,
+    blastMediaPreview,
     el('label', {}, 'Promo Code'), promoIn,
     el('label', {}, 'Segment'), segSel,
     el('label', { style: 'margin-top:10px' }, 'Include only these tags (any-of)'),

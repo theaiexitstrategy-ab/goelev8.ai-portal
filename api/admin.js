@@ -2483,7 +2483,7 @@ async function twilioReserveDiagnose(req, res) {
     reserveRows = Number(rrRes.data?.[0]?.n || 0);
   }
   const leRes = await runSql(`SELECT COUNT(*)::int AS n FROM public.credit_ledger
-    WHERE delta < 0 AND reason IN ('sms_send','sms_blast','welcome_sms','nudge_send','islay_sms')`);
+    WHERE delta < 0 AND reason IN ('sms_send','sms_blast','welcome_sms','nudge_send','islay_sms','mms_send','mms_blast')`);
   ledgerEligible = Number(leRes.data?.[0]?.n || 0);
   checks.eligible_sms_ledger_rows = ledgerEligible;
   checks.twilio_reserves_rows = reserveRows;
@@ -2509,7 +2509,7 @@ async function twilioReserveDiagnose(req, res) {
         RETURNS trigger LANGUAGE plpgsql AS $repair_fn$
         DECLARE v_per_segment_cents int; v_segments int; v_cost int;
         BEGIN
-          IF NEW.delta < 0 AND NEW.reason IN ('sms_send','sms_blast','welcome_sms','nudge_send','islay_sms') THEN
+          IF NEW.delta < 0 AND NEW.reason IN ('sms_send','sms_blast','welcome_sms','nudge_send','islay_sms','mms_send','mms_blast') THEN
             v_segments := -NEW.delta;
             BEGIN
               v_per_segment_cents := COALESCE(NULLIF(current_setting('app.twilio_cost_cents', true), '')::int, 1);
@@ -2701,7 +2701,7 @@ async function applyPendingMigrations(req, res) {
        v_cost int;
      BEGIN
        IF NEW.delta < 0
-          AND NEW.reason IN ('sms_send', 'sms_blast', 'welcome_sms', 'nudge_send', 'islay_sms')
+          AND NEW.reason IN ('sms_send', 'sms_blast', 'welcome_sms', 'nudge_send', 'islay_sms', 'mms_send', 'mms_blast')
        THEN
          v_segments := -NEW.delta;
          BEGIN
@@ -3738,7 +3738,21 @@ async function applyPendingMigrations(req, res) {
     `CREATE POLICY booking_blocked_dates_member_all ON public.booking_blocked_dates
        FOR ALL TO authenticated
        USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
-       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`
+       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
+    // ----- 0031: MMS support on messages + mms-attachments bucket -----
+    // media_url stores the public HTTPS URL of the attached image (our
+    // Supabase Storage bucket for outbound + re-hosted inbound). is_mms
+    // is a convenience flag redundant with (media_url IS NOT NULL) so
+    // the UI + accounting can filter cheaply.
+    `ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS media_url text;`,
+    `ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS is_mms boolean DEFAULT false;`,
+    `INSERT INTO storage.buckets (id, name, public)
+       VALUES ('mms-attachments', 'mms-attachments', true)
+       ON CONFLICT (id) DO NOTHING;`,
+    // Same media_url column on blasts so the operator sees which past
+    // blasts included an image when reviewing history.
+    `ALTER TABLE public.blasts ADD COLUMN IF NOT EXISTS media_url text;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
@@ -3818,7 +3832,7 @@ async function backfillTwilioReserve(req, res) {
           ref_id: r.ref_id, pack: r.pack, amount_cents: r.amount_cents,
           created_at: r.created_at
         });
-      } else if (r.delta < 0 && ['sms_send','sms_blast','welcome_sms','nudge_send','islay_sms'].includes(r.reason)) {
+      } else if (r.delta < 0 && ['sms_send','sms_blast','welcome_sms','nudge_send','islay_sms','mms_send','mms_blast'].includes(r.reason)) {
         const segments = -r.delta;
         const cost = segments * perSeg;
         balance -= cost; used += cost;

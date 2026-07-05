@@ -2,6 +2,68 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { estimateSegments, truncateForSms } from '../lib/twilio.js';
 import { sendPushToClient, sendPushToAdmins } from '../lib/push.js';
 
+const MMS_BUCKET = 'mms-attachments';
+
+// Re-host an inbound MMS attachment from Twilio's authenticated media
+// URL into our public Supabase Storage bucket so the browser can render
+// <img src=…> directly without proxying Twilio Basic-Auth requests.
+//
+// Twilio media URLs live at
+//   https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/{SID}/Media/{MID}
+// and require Basic Auth with the (sub)account SID + auth token. Once
+// fetched, we upload the raw bytes to mms-attachments and return the
+// public HTTPS URL. Returns null on any failure — callers should
+// gracefully fall back to storing null on the message row so the
+// inbound row still lands.
+async function rehostInboundMms({ client, mediaUrl, contentType, sid, index }) {
+  try {
+    // Twilio requires Basic Auth with the account (or subaccount) that
+    // owns the message. Prefer the client's subaccount creds when
+    // present, else fall back to the parent account.
+    const sidAuth = client.twilio_subaccount_sid || process.env.TWILIO_ACCOUNT_SID;
+    const tokenAuth = client.twilio_auth_token || process.env.TWILIO_AUTH_TOKEN;
+    if (!sidAuth || !tokenAuth) return null;
+    const basic = Buffer.from(`${sidAuth}:${tokenAuth}`).toString('base64');
+    const resp = await fetch(mediaUrl, { headers: { authorization: `Basic ${basic}` } });
+    if (!resp.ok) return null;
+    const mime = contentType || resp.headers.get('content-type') || 'image/jpeg';
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const extFromMime = {
+      'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+      'image/gif': 'gif',  'image/webp': 'webp', 'image/heic': 'heic'
+    }[mime.toLowerCase()] || 'jpg';
+    const path = `${client.id}/inbound/${Date.now()}-${sid || 'msg'}-${index || 0}.${extFromMime}`;
+    let upErr;
+    {
+      const r = await supabaseAdmin.storage.from(MMS_BUCKET)
+        .upload(path, buf, { contentType: mime, upsert: false });
+      upErr = r.error;
+    }
+    if (upErr && /Bucket not found/i.test(upErr.message || '')) {
+      await supabaseAdmin.storage.createBucket(MMS_BUCKET, { public: true });
+      const retry = await supabaseAdmin.storage.from(MMS_BUCKET)
+        .upload(path, buf, { contentType: mime, upsert: false });
+      upErr = retry.error;
+    }
+    if (upErr) return null;
+    const { data: pub } = supabaseAdmin.storage.from(MMS_BUCKET).getPublicUrl(path);
+    return pub?.publicUrl || null;
+  } catch (e) {
+    console.error('[twilio/inbound] MMS re-host failed:', e.message);
+    return null;
+  }
+}
+
+// Message insert with tolerant fallback for envs where the media_url /
+// is_mms migration hasn't landed yet.
+async function insertInboundMessage(row) {
+  const { error } = await supabaseAdmin.from('messages').insert(row);
+  if (error && /column .*(media_url|is_mms).* does not exist/i.test(error.message || '')) {
+    const { media_url: _m, is_mms: _i, ...legacy } = row;
+    await supabaseAdmin.from('messages').insert(legacy);
+  }
+}
+
 // Vapi handles SMS conversations on these numbers. After we log the
 // inbound message we forward the original Twilio payload to Vapi and
 // return whatever TwiML Vapi sends back. This way both systems work:
@@ -160,11 +222,31 @@ export default async function handler(req, res) {
     const sid = params.MessageSid;
 
     const { data: client } = await supabaseAdmin
-      .from('clients').select('id, name').eq('twilio_phone_number', to).single();
+      .from('clients')
+      .select('id, name, twilio_subaccount_sid, twilio_auth_token')
+      .eq('twilio_phone_number', to).single();
     if (!client) {
       res.setHeader('Content-Type', 'text/xml');
       return res.status(200).send('<Response></Response>');
     }
+
+    // MMS: Twilio sends NumMedia + MediaUrl0..N + MediaContentType0..N.
+    // We re-host the first attachment in our public bucket so the
+    // browser can render it inline without proxying Twilio Basic Auth.
+    // Additional attachments (rare — usually 1 image per MMS) are
+    // dropped for now; the primary attachment covers the common case.
+    const numMedia = parseInt(params.NumMedia || '0', 10) || 0;
+    let inboundMediaUrl = null;
+    if (numMedia > 0 && params.MediaUrl0) {
+      inboundMediaUrl = await rehostInboundMms({
+        client,
+        mediaUrl:    params.MediaUrl0,
+        contentType: params.MediaContentType0,
+        sid,
+        index:       0
+      });
+    }
+    const isMms = numMedia > 0;
 
     let { data: contact } = await supabaseAdmin
       .from('contacts').select('*').eq('client_id', client.id).eq('phone', from).maybeSingle();
@@ -274,20 +356,29 @@ export default async function handler(req, res) {
       leadId = leadRow?.id || null;
     }
 
-    await supabaseAdmin.from('messages').insert({
+    await insertInboundMessage({
       client_id: client.id, contact_id: contact.id, lead_id: leadId,
       direction: 'inbound',
       body, segments: estimateSegments(body), twilio_sid: sid,
-      status: 'received', to_number: to, from_number: from
+      status: 'received', to_number: to, from_number: from,
+      media_url: inboundMediaUrl,
+      is_mms: isMms
     });
 
-    // Push notification for inbound SMS (skip TCPA keyword replies)
+    // Push notification for inbound SMS (skip TCPA keyword replies).
+    // MMS gets a distinct 📷 icon so the operator knows to open the
+    // thread to view the image, not just skim the notification.
     if (!reply) {
       const senderName = contact?.name && contact.name !== from ? contact.name : from;
-      const smsDesc = `${senderName}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`;
+      const bodyPreview = body.length > 80 ? body.slice(0, 80) + '…' : body;
+      const smsDesc = isMms
+        ? `${senderName} sent a photo${body ? ': ' + bodyPreview : ''}`
+        : `${senderName}: ${bodyPreview}`;
+      const icon = isMms ? '📷' : '💬';
+      const label = isMms ? 'MMS' : 'SMS';
       await Promise.all([
-        sendPushToClient(client.id, '💬 New SMS Reply', smsDesc, '/messages').catch(() => {}),
-        sendPushToAdmins('💬 SMS — ' + (client.name || to), smsDesc, '/messages').catch(() => {})
+        sendPushToClient(client.id, `${icon} New ${label} Reply`, smsDesc, '/messages').catch(() => {}),
+        sendPushToAdmins(`${icon} ${label} — ` + (client.name || to), smsDesc, '/messages').catch(() => {})
       ]);
     }
 

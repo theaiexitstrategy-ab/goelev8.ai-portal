@@ -24,7 +24,7 @@
 
 import { requireUser, methodGuard, readJson } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
-import { twilioForClient, estimateSegments } from '../../lib/twilio.js';
+import { twilioForClient, estimateSegments, MMS_CREDIT_COST } from '../../lib/twilio.js';
 import { renderTemplate, firstName } from '../../lib/merge-tags.js';
 import { toE164 } from '../../lib/phone.js';
 import { getBillingClient } from '../../lib/credits.js';
@@ -183,9 +183,12 @@ export default async function handler(req, res) {
   }
 
   // ---------- POST: send blast ----------
-  const { name, message: rawMessage, promoCode, segment, artistFilter, includeTags, excludeTags } =
+  const { name, message: rawMessage, promoCode, segment, artistFilter, includeTags, excludeTags, media_url } =
     await readJson(req);
-  if (!name || !rawMessage) return res.status(400).json({ error: 'name_and_message_required' });
+  const hasMedia = !!media_url;
+  // MMS blasts allow an empty body (image-only). SMS blasts still
+  // require a message.
+  if (!name || (!rawMessage && !hasMedia)) return res.status(400).json({ error: 'name_and_message_required' });
 
   // --- Tenant-level hour + day throttle ---
   // Hard reject if this tenant already sent a blast in the last hour
@@ -214,9 +217,12 @@ export default async function handler(req, res) {
   // opt-out instruction. If the operator already added STOP / UNSUBSCRIBE
   // / similar in their copy, leave it alone. Otherwise auto-append a
   // standard footer so we don't ship a non-compliant blast.
-  let message = String(rawMessage);
+  // Image-only MMS blasts (no body) skip the auto-append — the recipient
+  // still has the standard STOP handling from earlier messages in the
+  // conversation and there's no text to append to.
+  let message = String(rawMessage || '');
   let optOutAutoAppended = false;
-  if (!OPT_OUT_REGEX.test(message)) {
+  if (message && !OPT_OUT_REGEX.test(message)) {
     message = message.trimEnd() + OPT_OUT_SUFFIX;
     optOutAutoAppended = true;
   }
@@ -368,16 +374,21 @@ export default async function handler(req, res) {
   const billingClient = await getBillingClient(supabaseAdmin, clientRow);
   const billingId = billingClient.id;
 
-  // Estimate segments from the template (with opt-out + promo
-  // pre-baked). Per-recipient personalization adds a few chars for
-  // first_name etc, which can occasionally push a borderline message
-  // over a segment boundary — the per-send credit_ledger row below
-  // records the ACTUAL segment count for that recipient so the
-  // ledger stays honest. The upfront deduction is the conservative
-  // estimate, refunded on failure or under-charge.
+  // Cost per recipient:
+  //   MMS blast (media attached) → flat MMS_CREDIT_COST regardless of
+  //     body length. Twilio bills MMS as a single message.
+  //   SMS blast → segments from the template (with opt-out + promo
+  //     pre-baked). Per-recipient personalization adds a few chars for
+  //     first_name etc, which can occasionally push a borderline message
+  //     over a segment boundary — the per-send credit_ledger row below
+  //     records the ACTUAL segment count for that recipient so the ledger
+  //     stays honest. The upfront deduction is the conservative estimate,
+  //     refunded on failure or under-charge.
   let estimateBody = String(message);
   if (promoCode) estimateBody += `\n\nUse code: ${promoCode}`;
-  const segmentsPerRecipient = Math.max(1, estimateSegments(estimateBody));
+  const segmentsPerRecipient = hasMedia
+    ? MMS_CREDIT_COST
+    : Math.max(1, estimateSegments(estimateBody));
 
   const totalCreditsNeeded = recipients.length * segmentsPerRecipient;
   const balance = billingClient?.credit_balance ?? 0;
@@ -400,23 +411,31 @@ export default async function handler(req, res) {
   // Status='Sending' so the client poll can find it and show progress.
   // We update delivered/failed counts every PROGRESS_UPDATE_EVERY sends
   // and finalize the status at the end.
-  const { data: blastRow, error: blastInsErr } = await supabaseAdmin
-    .from('blasts')
-    .insert({
-      client_id: slug,
-      blast_name: name,
-      message_body: message,
-      sent_at: new Date().toISOString(),
-      total_recipients: recipients.length,
-      delivered_count: 0,
-      failed_count: 0,
-      promo_code: promoCode || null,
-      target_segment: segment || 'all',
-      artist_filter: segment === 'by_artist' ? artistFilter : null,
-      status: 'Sending'
-    })
-    .select('id')
-    .single();
+  const blastInsertRow = {
+    client_id: slug,
+    blast_name: name,
+    message_body: message,
+    sent_at: new Date().toISOString(),
+    total_recipients: recipients.length,
+    delivered_count: 0,
+    failed_count: 0,
+    promo_code: promoCode || null,
+    target_segment: segment || 'all',
+    artist_filter: segment === 'by_artist' ? artistFilter : null,
+    status: 'Sending',
+    media_url: hasMedia ? media_url : null
+  };
+  let { data: blastRow, error: blastInsErr } = await supabaseAdmin
+    .from('blasts').insert(blastInsertRow).select('id').single();
+  if (blastInsErr && /column .*media_url.* does not exist/i.test(blastInsErr.message || '')) {
+    // Migration hasn't landed — retry without the MMS column so the
+    // blast still ships. The per-message media still sends via Twilio
+    // (mediaUrl in the create call); only the blast-history summary
+    // column is skipped.
+    const { media_url: _drop, ...legacy } = blastInsertRow;
+    const retry = await supabaseAdmin.from('blasts').insert(legacy).select('id').single();
+    blastRow = retry.data; blastInsErr = retry.error;
+  }
   if (blastInsErr) {
     // Refund the credits we already debited — we never sent anything.
     await supabaseAdmin.from('clients')
@@ -446,15 +465,19 @@ export default async function handler(req, res) {
     // Blasts intentionally bypass the global 160-char truncation —
     // operators expect their full message to ship and are billed by
     // segment in the credit math above. The recipient receives the
-    // full personalized body verbatim.
-    const segments = estimateSegments(personalized);
+    // full personalized body verbatim. For MMS blasts, we bill the
+    // flat MMS_CREDIT_COST (already deducted up front) and pass the
+    // image URL to Twilio as mediaUrl.
+    const segments = hasMedia ? MMS_CREDIT_COST : estimateSegments(personalized);
+    const twilioPayload = {
+      to: toE,
+      from: fromNumber,
+      body: personalized,
+      statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
+    };
+    if (hasMedia) twilioPayload.mediaUrl = [media_url];
     try {
-      const twilioMsg = await tw.messages.create({
-        to: toE,
-        from: fromNumber,
-        body: personalized,
-        statusCallback: `${process.env.PORTAL_BASE_URL}/api/twilio?action=status`
-      });
+      const twilioMsg = await tw.messages.create(twilioPayload);
       sent++;
 
       let contactId = null;
@@ -484,15 +507,21 @@ export default async function handler(req, res) {
         // Stamping blast_id is what makes the per-number throttle
         // distinguish blast messages from 1-on-1 messages the
         // operator sent in the Messages tab.
-        blast_id: blastId
+        blast_id: blastId,
+        media_url: hasMedia ? media_url : null,
+        is_mms: hasMedia
       };
       let insRes = await supabaseAdmin.from('messages').insert(msgRow);
-      if (insRes.error && /column .*blast_id.* does not exist/i.test(insRes.error.message || '')) {
-        const { blast_id: _drop, ...legacy } = msgRow;
+      if (insRes.error && /column .*(blast_id|media_url|is_mms).* does not exist/i.test(insRes.error.message || '')) {
+        // Drop optional MMS + blast_id columns for older schemas so the
+        // core row still lands.
+        const { blast_id: _b, media_url: _m, is_mms: _i, ...legacy } = msgRow;
         await supabaseAdmin.from('messages').insert(legacy);
       }
       await supabaseAdmin.from('credit_ledger').insert({
-        client_id: billingId, delta: -segments, reason: 'sms_blast', ref_id: twilioMsg.sid
+        client_id: billingId, delta: -segments,
+        reason: hasMedia ? 'mms_blast' : 'sms_blast',
+        ref_id: twilioMsg.sid
       });
     } catch {
       failed++;
