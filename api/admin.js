@@ -4022,6 +4022,56 @@ async function listAdmins(req, res) {
   return res.status(200).json({ admins: data || [] });
 }
 
+// ── The AI Exit Strategy (TAES) admin proxy ────────────────────────────────
+// The TAES app owns the roster/stats aggregation (module titles, quiz averages,
+// attention flags), so the portal reads its purpose-built read-only API rather
+// than re-implementing that logic against the raw DB. Auth: PORTAL_API_KEY.
+const TAES_BASE = (process.env.TAES_PORTAL_URL || 'https://www.theaiexitstrategy.com').replace(/\/$/, '');
+
+async function taesFetch(path) {
+  const key = process.env.PORTAL_API_KEY;
+  if (!key) {
+    const err = new Error('PORTAL_API_KEY is not set in this project — add it in Vercel, then redeploy.');
+    err.status = 503;
+    throw err;
+  }
+  const r = await fetch(`${TAES_BASE}/api/portal/${path}`, {
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(data.error || `TAES API responded ${r.status}`);
+    err.status = r.status === 401 ? 502 : r.status;
+    throw err;
+  }
+  return data;
+}
+
+async function taesProxy(res, path) {
+  try {
+    return res.status(200).json(await taesFetch(path));
+  } catch (e) {
+    return res.status(e.status || 502).json({ error: e.message });
+  }
+}
+
+async function taesRoster(req, res) {
+  return taesProxy(res, 'roster');
+}
+async function taesParticipant(req, res) {
+  const url = new URL(req.url, 'http://x');
+  const id = url.searchParams.get('id');
+  if (!id) return res.status(400).json({ error: 'id_required' });
+  const full = url.searchParams.get('full') === '1' ? '?full=1' : '';
+  return taesProxy(res, `participant/${encodeURIComponent(id)}${full}`);
+}
+async function taesAttention(req, res) {
+  return taesProxy(res, 'attention');
+}
+async function taesPartners(req, res) {
+  return taesProxy(res, 'partners');
+}
+
 export default async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   const action = url.searchParams.get('action');
@@ -4064,6 +4114,10 @@ export default async function handler(req, res) {
       case 'inspect-recent-stripe-sessions': return await inspectRecentStripeSessions(req, res);
       case 'ensure-portal-tabs':        return await ensurePortalTabs(req, res);
       case 'taes-schema':               return await taesSchema(req, res);
+      case 'taes-roster':               return await taesRoster(req, res);
+      case 'taes-participant':          return await taesParticipant(req, res);
+      case 'taes-attention':            return await taesAttention(req, res);
+      case 'taes-partners':             return await taesPartners(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);

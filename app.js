@@ -397,6 +397,7 @@ const TAB_LABELS = {
   analytics: 'Analytics',
   admin:     'Master Admin',
   admin_sales: 'Sales',
+  taes:      'TAES',
   booking_admin: 'book.goelev8.ai'
 };
 
@@ -420,11 +421,12 @@ const TAB_ICONS = {
   analytics: '📈',
   admin:     '🛡️',
   admin_sales: '💰',
+  taes:      '🎓',
   booking_admin: '🗓️'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
-const ADMIN_TABS = ['admin','admin_sales','booking_admin','activity','analytics'];
+const ADMIN_TABS = ['admin','admin_sales','taes','booking_admin','activity','analytics'];
 
 // Final pass over the resolved tab list to:
 //   - Drop the deprecated 'contacts' tab (Leads is the unified CRM view)
@@ -8930,6 +8932,181 @@ async function viewAdmin() {
 // ============================================================
 // MASTER ADMIN — GoElev8 platform revenue dashboard ("Sales" tab).
 // Aggregates every source of income across all tenants. Hidden from
+// ============================================================
+// TAES — The AI Exit Strategy admin (roster, participant detail, attention,
+// partner stats). Data comes from api/admin.js taes-* actions, which proxy the
+// TAES app's read-only /api/portal API. Admin-only (router gates by isAdmin).
+// ============================================================
+function taesFmtDate(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d) ? String(v) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function taesKV(obj, skip = []) {
+  const rows = Object.entries(obj || {})
+    .filter(([k, v]) => !skip.includes(k) && v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => el('tr', {},
+      el('td', { class: 'muted', style: 'white-space:nowrap;padding-right:12px;vertical-align:top' }, k),
+      el('td', {}, typeof v === 'object' ? JSON.stringify(v) : String(v))));
+  return rows.length ? el('table', {}, el('tbody', {}, ...rows)) : el('p', { class: 'muted' }, 'None.');
+}
+
+function taesDetail(d) {
+  const nodes = [];
+  const p = d.participant || {};
+  nodes.push(el('div', { class: 'row between' },
+    el('h2', {}, p.name || 'Participant'),
+    el('span', { class: 'muted' }, p.orgName || '')));
+
+  nodes.push(el('div', { class: 'panel' },
+    el('h3', {}, 'Contact & account'),
+    taesKV({
+      email: p.email, phone: p.phone,
+      'SMS consent': p.sms_consent ? ('yes · ' + taesFmtDate(p.sms_consent_at)) : 'no',
+      'PWA installed': p.pwa_installed ? 'yes' : 'no',
+      'push opt-in': p.push_opt_in ? 'yes' : 'no',
+      'onboarding skipped': p.onboarding_skipped ? 'yes' : 'no',
+      enrolled: taesFmtDate(p.created_at),
+    })));
+
+  if (d.website) {
+    const w = d.website;
+    nodes.push(el('div', { class: 'panel' },
+      el('h3', {}, 'Website'),
+      taesKV({ purpose: w.site_purpose, published: taesFmtDate(w.published_at) }),
+      w.deploy_url ? el('p', {}, el('a', { href: w.deploy_url, target: '_blank', rel: 'noopener' }, w.deploy_url)) : null,
+      w.github_repo_url ? el('p', {}, el('a', { href: w.github_repo_url, target: '_blank', rel: 'noopener' }, '💻 ' + w.github_repo_url)) : null));
+  }
+
+  nodes.push(el('div', { class: 'panel' },
+    el('h3', {}, 'Assessment profile'),
+    (d.assessment && d.assessment.profile)
+      ? taesKV(d.assessment.profile, ['id', 'participant_id', 'created_at', 'updated_at'])
+      : el('p', { class: 'muted' }, 'No profile yet.')));
+
+  const mods = d.modules || [];
+  nodes.push(el('div', { class: 'panel' },
+    el('h3', {}, 'Modules (' + mods.length + ')'),
+    mods.length ? el('table', {},
+      el('thead', {}, el('tr', {}, el('th', {}, 'Module'), el('th', {}, 'Status'), el('th', { style: 'text-align:right' }, 'Quiz'))),
+      el('tbody', {}, ...mods.map((m) => el('tr', {},
+        el('td', { class: 'mono' }, m.module_id),
+        el('td', {}, m.status || '—'),
+        el('td', { class: 'mono', style: 'text-align:right' }, m.quiz_score != null ? m.quiz_score + '%' : '—')))))
+      : el('p', { class: 'muted' }, 'No module activity.')));
+
+  const sessions = (d.assessment && d.assessment.sessions) || [];
+  if (sessions.length) {
+    const s = sessions[0];
+    const transcript = Array.isArray(s.transcript) ? s.transcript : null;
+    nodes.push(el('div', { class: 'panel' },
+      el('h3', {}, 'Assessment chat'),
+      el('div', { class: 'muted' }, (s.status || '') + ' · ' + taesFmtDate(s.created_at)),
+      transcript ? el('div', { style: 'max-height:260px;overflow:auto;margin-top:8px' },
+        ...transcript.map((t) => el('p', { style: 'margin:6px 0' },
+          el('strong', {}, (t.role === 'assistant' ? 'Guide: ' : 'Student: ')), String(t.content || '')))) : null));
+  }
+
+  return nodes;
+}
+
+async function viewTaes() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, '🎓 TAES'),
+    el('div', { class: 'muted' }, 'The AI Exit Strategy — roster & progress')));
+
+  const sub = state._taesSub || 'roster';
+  const tabs = [['roster', 'Roster'], ['attention', 'Attention'], ['partners', 'Partners']];
+  wrap.appendChild(el('div', { class: 'row', style: 'gap:8px;margin-bottom:12px' },
+    ...tabs.map(([id, label]) => el('button', {
+      class: 'btn' + (sub === id ? ' primary' : ''),
+      onclick: () => { state._taesSub = id; render(); },
+    }, label))));
+
+  const content = el('div', {});
+  content.appendChild(el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…')));
+  wrap.appendChild(content);
+
+  try {
+    if (sub === 'roster') {
+      const r = await api('/api/admin?action=taes-roster');
+      const parts = r.participants || [];
+      const stuck = parts.filter((p) => p.stuck).length;
+      const avg = parts.length ? Math.round(parts.reduce((a, p) => a + (p.completionPct || 0), 0) / parts.length) : 0;
+      const detailPanel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Select a participant for full details.'));
+
+      content.replaceChildren(
+        el('div', { class: 'cards' },
+          el('div', { class: 'card' }, el('div', { class: 'label' }, 'Participants'), el('div', { class: 'value' }, String(parts.length))),
+          el('div', { class: 'card' }, el('div', { class: 'label' }, 'Avg completion'), el('div', { class: 'value' }, avg + '%')),
+          el('div', { class: 'card' }, el('div', { class: 'label' }, 'Need attention'), el('div', { class: 'value' }, String(stuck)))),
+        el('div', { class: 'panel' },
+          el('h2', {}, 'Roster'),
+          parts.length ? el('table', {},
+            el('thead', {}, el('tr', {},
+              el('th', {}, 'Name'), el('th', {}, 'Email'), el('th', {}, 'Org'), el('th', {}, 'Track'),
+              el('th', { style: 'text-align:right' }, 'Progress'), el('th', { style: 'text-align:right' }, 'Quiz'), el('th', {}, 'Last active'))),
+            el('tbody', {}, ...parts.map((p) => el('tr', {
+              style: 'cursor:pointer',
+              onclick: async () => {
+                detailPanel.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
+                try {
+                  const d = await api('/api/admin?action=taes-participant&id=' + encodeURIComponent(p.participantId) + '&full=1');
+                  detailPanel.replaceChildren(...taesDetail(d));
+                } catch (e) { detailPanel.replaceChildren(el('p', { class: 'err' }, e.message)); }
+                detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              },
+            },
+              el('td', {}, (p.stuck ? '🔴 ' : '') + (p.name || '—')),
+              el('td', { class: 'muted' }, p.email || ''),
+              el('td', {}, p.orgName || '—'),
+              el('td', {}, p.track || '—'),
+              el('td', { class: 'mono', style: 'text-align:right' }, (p.completedModules || 0) + '/' + (p.totalModules || 0) + ' (' + (p.completionPct || 0) + '%)'),
+              el('td', { class: 'mono', style: 'text-align:right' }, p.quizAvg != null ? p.quizAvg + '%' : '—'),
+              el('td', { class: 'muted' }, taesFmtDate(p.lastActive)))))
+          ) : el('p', { class: 'muted' }, 'No participants yet.')),
+        detailPanel
+      );
+    } else if (sub === 'attention') {
+      const r = await api('/api/admin?action=taes-attention');
+      const rows = r.flagged || [];
+      content.replaceChildren(el('div', { class: 'panel' },
+        el('h2', {}, 'Needs attention (' + rows.length + ')'),
+        rows.length ? el('table', {},
+          el('thead', {}, el('tr', {}, el('th', {}, 'Name'), el('th', {}, 'Email'), el('th', {}, 'Org'), el('th', {}, 'Reason'), el('th', {}, 'Details'), el('th', {}, 'Updated'))),
+          el('tbody', {}, ...rows.map((f) => el('tr', {},
+            el('td', {}, f.name || '—'),
+            el('td', { class: 'muted' }, f.email || ''),
+            el('td', {}, f.orgName || '—'),
+            el('td', {}, f.reasonCode || '—'),
+            el('td', { class: 'muted' }, typeof f.details === 'object' ? JSON.stringify(f.details) : (f.details || '')),
+            el('td', { class: 'muted' }, taesFmtDate(f.updatedAt)))))
+        ) : el('p', { class: 'muted' }, 'Nobody needs attention right now. 🎉')));
+    } else {
+      const r = await api('/api/admin?action=taes-partners');
+      const partners = r.partners || [];
+      content.replaceChildren(el('div', { class: 'panel' },
+        el('h2', {}, 'Partner orgs (' + partners.length + ')'),
+        partners.length ? el('div', { class: 'cards' }, ...partners.map((pt) => el('div', { class: 'card' },
+          el('div', { class: 'label' }, pt.orgName || pt.partnerOrgId || 'Org'),
+          el('div', { class: 'value' }, String(pt.totalParticipants != null ? pt.totalParticipants : '—')),
+          el('div', { class: 'sub muted' },
+            'completion ' + (pt.completionRate != null ? pt.completionRate + '%' : '—') +
+            ' · active ' + (pt.activeParticipants != null ? pt.activeParticipants : '—') +
+            (pt.flaggedCount != null ? ' · flagged ' + pt.flaggedCount : ''))))
+        ) : el('p', { class: 'muted' }, 'No partner orgs.')));
+    }
+  } catch (e) {
+    content.replaceChildren(el('div', { class: 'panel' },
+      el('h3', {}, 'Could not load TAES data'),
+      el('p', { class: 'err' }, e.message),
+      el('p', { class: 'muted' }, 'Check that PORTAL_API_KEY is set on this project (Vercel) and the TAES app is reachable.')));
+  }
+  return wrap;
+}
+
 // every non-admin context — the router gates by state.isAdmin.
 // ============================================================
 async function viewAdminSales() {
@@ -10020,7 +10197,7 @@ async function render() {
   // other admin-accessible tabs (activity, analytics, sales). Without
   // 'admin_sales' here, clicking the Sales tab would silently bounce
   // back to Master Admin because the guard below resets state.view.
-  const ADMIN_VIEWS = ['admin', 'admin_sales', 'activity', 'analytics', 'booking_admin'];
+  const ADMIN_VIEWS = ['admin', 'admin_sales', 'activity', 'analytics', 'booking_admin', 'taes'];
   if (state.isAdmin && !state.impersonating && !ADMIN_VIEWS.includes(state.view)) {
     state.view = 'admin';
   }
@@ -10054,6 +10231,7 @@ async function render() {
       case 'settings':  view = await viewSettings(); break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
       case 'admin_sales':   view = state.isAdmin ? await viewAdminSales()   : await viewOverview(); break;
+      case 'taes':      view = state.isAdmin ? await viewTaes() : await viewOverview(); break;
       case 'analytics': view = await viewAnalytics(); break;
       default:          view = await viewOverview();
     }
