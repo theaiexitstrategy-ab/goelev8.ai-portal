@@ -155,15 +155,98 @@ async function loadImpersonateTabs() {
 // ─── Product portfolio switcher ────────────────────────────────────
 // Setter — persists the chosen product slug so subsequent api() calls
 // carry x-product-slug and product-scoped server routes resolve the
-// correct Supabase project via getProductClientFromReq().
+// correct Supabase project via getProductClientFromReq(). Also
+// snaps the active view to the new context's first tab so the
+// operator never sits on a stale route after switching products.
 function setCurrentProduct(slug) {
   if (slug) {
     state.currentProduct = slug;
     localStorage.setItem('ge8_product', slug);
+    const product = (state.productsList || []).find(p => p.slug === slug);
+    const firstTab = product?.tabs?.[0];
+    if (firstTab) state.view = `${slug}_${firstTab.id}`;
   } else {
     state.currentProduct = null;
     localStorage.removeItem('ge8_product');
+    // Return to the admin default when leaving a product.
+    if (state.isAdmin) state.view = 'admin';
   }
+}
+
+// Placeholder view for any tab declared by a product in
+// products.config.js. Backend for each product goes live later —
+// this stub tells the operator what they're looking at + why it's
+// empty. Real view functions can drop in per (product, tab) pair as
+// their data plumbing lands (a small dispatcher below the switch
+// statement in render() would be a clean extension point).
+function viewProductPlaceholder(product, tab) {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, (tab.icon ? tab.icon + ' ' : '') + tab.label),
+    el('div', { class: 'muted' }, product.name + (product.domain ? ' · ' + product.domain : ''))
+  ));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h2', {}, 'Coming soon'),
+    el('p', { class: 'muted' },
+      `The ${tab.label} view for ${product.name} is scaffolded but not yet wired to data.`),
+    !product.connected
+      ? el('p', { class: 'muted', style: 'font-size:0.85rem' },
+          'Backend for this product is not configured yet — set its Supabase env vars in Vercel to activate.')
+      : el('p', { class: 'muted', style: 'font-size:0.85rem' },
+          'Backend is connected; a view function for this tab will render real data once implemented.')
+  ));
+  return wrap;
+}
+
+// Portal-wide (global) settings view. INTENTIONALLY separate from a
+// product's own Settings tab: this covers auth/password + the
+// products list itself; each product's Settings tab covers product-
+// scoped config (moderation defaults, per-product notifications, etc).
+function viewPortalSettings() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, '⚙ Portal Settings'),
+    el('div', { class: 'muted' }, 'Global — applies across every product')
+  ));
+
+  // Session panel — who's logged in, sign-out control.
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'Session'),
+    el('p', {}, 'Signed in as ', el('strong', {}, state.user?.email || '')),
+    el('p', { class: 'muted', style: 'font-size:0.8rem' },
+      'To change your password, use the Sign in page → "Forgot password?" link and follow the email reset flow.')
+  ));
+
+  // Registered products panel — read-only overview of what's in
+  // products.config.js + each product's connection status. The list
+  // itself is managed in code (env vars + config edit), not via UI —
+  // see the header note.
+  const products = state.productsList || [];
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'Products'),
+    el('p', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:8px' },
+      'Registered in lib/products.config.js. Env vars set in Vercel unlock each product\'s backend connection.'),
+    products.length
+      ? el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'Product'),
+            el('th', {}, 'Slug'),
+            el('th', {}, 'Domain'),
+            el('th', {}, 'Status'),
+            el('th', {}, 'Tabs'))),
+          el('tbody', {}, ...products.map(p => el('tr', {},
+            el('td', {}, p.name),
+            el('td', { class: 'mono' }, p.slug),
+            el('td', { class: 'muted' }, p.domain || ''),
+            el('td', {}, p.connected
+              ? el('span', { style: 'color:#86efac' }, '● connected')
+              : el('span', { style: 'color:#fbd38d' }, '○ coming soon')),
+            el('td', { class: 'mono' }, String((p.tabs || []).length)))))
+        )
+      : el('p', { class: 'muted' }, 'No products registered.')
+  ));
+
+  return wrap;
 }
 
 // Populates the sidebar product-switcher <select> from GET /api/products.
@@ -638,8 +721,39 @@ function shell(content) {
     t.splice(insertAt, 0, 'bookings');
     return t;
   };
+  // Product-portfolio mode has precedence over every other tab source.
+  // When the operator picks a product in the sidebar switcher, the tab
+  // list comes straight from that product's config (via /api/products
+  // → state.productsList). Nothing about the legacy tenant-tab logic
+  // applies — each product owns its own sub-nav declaratively.
+  //
+  // View ids are namespaced as `${slug}_${tabId}` so 'danceisasport_
+  // dashboard' and a hypothetical future 'sportsbook_dashboard' never
+  // collide in the view router.
+  const activeProduct = state.currentProduct
+    ? (state.productsList || []).find(p => p.slug === state.currentProduct) || null
+    : null;
+
   let tabs;
-  if (state.isAdmin && !state.impersonating) {
+  let navButtons;
+  let bottomNavTabs;
+  if (activeProduct && Array.isArray(activeProduct.tabs) && activeProduct.tabs.length) {
+    // Product mode — dynamic sub-nav from the product's tab list.
+    const prodTabs = activeProduct.tabs;
+    tabs = prodTabs.map(t => `${activeProduct.slug}_${t.id}`);
+    navButtons = prodTabs.map(t => {
+      const viewId = `${activeProduct.slug}_${t.id}`;
+      return el('button', {
+        class: state.view === viewId ? 'active' : '',
+        onclick: () => { state.view = viewId; render(); }
+      }, (t.icon ? t.icon + ' ' : '') + t.label);
+    });
+    bottomNavTabs = prodTabs.map(t => ({
+      viewId: `${activeProduct.slug}_${t.id}`,
+      label:  t.label,
+      icon:   t.icon || '•'
+    }));
+  } else if (state.isAdmin && !state.impersonating) {
     // Admin view — no client selected
     tabs = ADMIN_TABS;
   } else if (state.client?.portal_tabs) {
@@ -655,14 +769,17 @@ function shell(content) {
     tabs = isGlobalAdmin ? withAnalytics(DEFAULT_TABS) : DEFAULT_TABS;
     tabs = withBookings(tabs, /* explicitTabs */ false);
   }
-  // Final pass: collapse legacy tab ids onto the new consolidated set
-  // and enforce sidebar ordering. The standalone 'messages', 'blasts',
-  // and 'nudges' tabs are folded into the unified 'messaging' tab so
-  // we don't leak duplicate buttons after the migration. 'contacts'
-  // is dropped (Leads is the single CRM view). Final order: Overview
-  // first, Settings last, everything else preserves declared order.
-  tabs = collapseToCleanNav(tabs);
-  const navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
+  if (!navButtons) {
+    // Legacy (non-product) branches: collapse legacy tab ids onto the
+    // new consolidated set and enforce sidebar ordering. The standalone
+    // 'messages', 'blasts', and 'nudges' tabs are folded into the
+    // unified 'messaging' tab so we don't leak duplicate buttons after
+    // the migration. 'contacts' is dropped (Leads is the single CRM
+    // view). Final order: Overview first, Settings last, everything
+    // else preserves declared order.
+    tabs = collapseToCleanNav(tabs);
+    navButtons = tabs.map(id => navBtn(id, TAB_LABELS[id] || id));
+  }
 
   const logoSrc = state.client?.logo_url || '/logo.png';
   // When a tenant is signed in (or admin is impersonating one), show
@@ -672,17 +789,25 @@ function shell(content) {
     ? (state.client.business_name || state.client.name || 'Client Portal')
     : 'GoElev8.AI';
 
-  // Bottom nav buttons for mobile
+  // Bottom nav buttons for mobile — mirrors the sidebar. In product
+  // mode, uses the pre-computed bottomNavTabs (label/icon straight
+  // from the product's tab config). Otherwise reads TAB_LABELS/ICONS
+  // for the legacy id-based tabs.
   const bottomNav = (state.client || state.isAdmin)
     ? el('nav', { class: 'bottom-nav' },
-        ...tabs.map(id => {
-          const label = TAB_LABELS[id] || id;
-          const icon = TAB_ICONS[id] || '•';
-          return el('button', {
-            class: 'bnav-btn' + (state.view === id ? ' active' : ''),
-            onclick: () => { state.view = id; render(); }
-          }, el('span', { class: 'bnav-icon' }, icon), label);
-        })
+        ...(bottomNavTabs
+          ? bottomNavTabs.map(t => el('button', {
+              class: 'bnav-btn' + (state.view === t.viewId ? ' active' : ''),
+              onclick: () => { state.view = t.viewId; render(); }
+            }, el('span', { class: 'bnav-icon' }, t.icon), t.label))
+          : tabs.map(id => {
+              const label = TAB_LABELS[id] || id;
+              const icon = TAB_ICONS[id] || '•';
+              return el('button', {
+                class: 'bnav-btn' + (state.view === id ? ' active' : ''),
+                onclick: () => { state.view = id; render(); }
+              }, el('span', { class: 'bnav-icon' }, icon), label);
+            }))
       )
     : null;
 
@@ -750,6 +875,17 @@ function shell(content) {
         : null,
       impersonateSwitcher,
       adminSection,
+      // Portal Settings — global (auth + products list). Always
+      // accessible for admin, distinct from any product's own
+      // Settings tab. Renders as a discreet footer link above sign-out
+      // so it doesn't compete with the primary product/tenant nav.
+      state.isAdmin
+        ? el('button', {
+            class: 'signout' + (state.view === 'portal_settings' ? ' active' : ''),
+            style: 'opacity:0.85;font-size:0.82rem;padding-bottom:6px',
+            onclick: () => { state.view = 'portal_settings'; render(); closeNav(); }
+          }, '⚙ Portal Settings')
+        : null,
       el('button', { class: 'signout', onclick: () => { closeNav(); logout(); } }, 'Sign out')
     ),
     navBackdrop,
@@ -10781,6 +10917,31 @@ async function render() {
   }
   let view;
   try {
+    // Product-portfolio routing: state.view starts with '<slug>_' when
+    // the operator is inside a product's sub-nav. Dispatch to a
+    // per-product placeholder that renders the tab metadata; when the
+    // backend for that product goes live, per-tab view functions can
+    // replace the placeholder without touching this switch.
+    if (typeof state.view === 'string' && state.view.includes('_') && state.productsList) {
+      const [maybeSlug, ...rest] = state.view.split('_');
+      const product = state.productsList.find(p => p.slug === maybeSlug);
+      if (product) {
+        const tabId = rest.join('_');
+        const tab = (product.tabs || []).find(t => t.id === tabId);
+        if (tab) {
+          view = viewProductPlaceholder(product, tab);
+          root.appendChild(shell(view));
+          return;
+        }
+      }
+    }
+    // Global Portal Settings — always available for admin regardless
+    // of product context.
+    if (state.view === 'portal_settings' && state.isAdmin) {
+      view = viewPortalSettings();
+      root.appendChild(shell(view));
+      return;
+    }
     switch (state.view) {
       case 'admin':     view = await viewAdmin(); break;
       case 'overview':  view = await viewOverview(); break;
