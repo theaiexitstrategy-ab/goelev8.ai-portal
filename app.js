@@ -282,6 +282,229 @@ async function viewProductActivityLog(product) {
   });
 }
 
+// ─── Dance is a Sport — admin views ────────────────────────────────
+// Each of the 8 tabs renders a purpose-built view for a dance-sports
+// operator, not the generic "Coming soon" placeholder every other
+// product's tabs currently get. Backend isn't wired yet, so the
+// interactive affordances (add/edit/moderate) are disabled with
+// tooltips — but the STRUCTURE of each view communicates what the
+// admin will do there so the format reads as domain-specific, not
+// SMS-SaaS-lead-generation.
+//
+// Small helpers reused across the 8 views:
+function diasStatCard(icon, label, value, sub) {
+  return el('div', { class: 'card' },
+    el('div', { class: 'label' }, icon + ' ' + label),
+    el('div', { class: 'value' }, value == null ? '—' : String(value)),
+    sub ? el('div', { class: 'sub muted' }, sub) : null);
+}
+function diasEmptyState(icon, headline, sublines = []) {
+  return el('div', { style: 'padding:36px 24px;text-align:center' },
+    el('div', { style: 'font-size:2.4rem;line-height:1;margin-bottom:10px' }, icon),
+    el('div', { style: 'font-size:1.05rem;font-weight:600;margin-bottom:6px' }, headline),
+    ...sublines.map(s => el('div', { class: 'muted', style: 'font-size:0.82rem;margin-top:2px' }, s)));
+}
+function diasSectionHeader(title, subtitle) {
+  return el('div', { class: 'topbar' },
+    el('h1', {}, title),
+    el('div', { class: 'muted' }, subtitle));
+}
+function diasDisabledBtn(label, tooltipReason) {
+  const b = el('button', {
+    class: 'btn ghost', style: 'opacity:0.55;cursor:not-allowed',
+    title: tooltipReason
+  }, label);
+  b.disabled = true;
+  return b;
+}
+function diasBackendChip(product) {
+  return el('div', { style:
+    'display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border-radius:999px;font-size:0.72rem;' +
+    (product.connected
+      ? 'background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.35);color:#86efac'
+      : 'background:rgba(251,191,36,0.14);border:1px solid rgba(251,191,36,0.35);color:#fde68a')
+  }, product.connected ? '● Backend connected' : '○ Backend not connected');
+}
+
+function viewDiasDashboard(product) {
+  const wrap = el('div', {});
+  wrap.appendChild(diasSectionHeader('📊 Dashboard', product.name + ' · operator overview'));
+  wrap.appendChild(el('div', { style: 'margin-bottom:14px' }, diasBackendChip(product)));
+  // The 4 numbers a dance-sports admin should see immediately on login.
+  wrap.appendChild(el('div', { class: 'cards' },
+    diasStatCard('💃', 'Active Dancers',        null, 'registered profiles'),
+    diasStatCard('🛡️', 'Pending NIL Reviews',   null, 'awaiting guardian consent'),
+    diasStatCard('🎥', 'Media in Review Queue', null, 'photos/videos awaiting approval'),
+    diasStatCard('📅', 'Upcoming Bookings',     null, 'competitions & clinics · 30d')
+  ));
+  wrap.appendChild(el('div', { class: 'panel', style: 'margin-top:14px' },
+    el('h3', {}, 'Today\'s tasks'),
+    el('p', { class: 'muted' }, product.connected
+      ? 'No tasks awaiting your attention.'
+      : 'Metric cards populate once ' + product.name + ' is connected — set DANCEISASPORT_SUPABASE_URL + DANCEISASPORT_SUPABASE_SERVICE_KEY in Vercel and redeploy.')
+  ));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'Recent activity'),
+    el('p', { class: 'muted', style: 'font-size:0.85rem' }, 'Latest dancer signups, guardian consents, media submissions, and coach actions will surface here.')
+  ));
+  return wrap;
+}
+
+function viewDiasDancers(product) {
+  const wrap = el('div', {});
+  wrap.appendChild(diasSectionHeader('💃 Dancer Profiles', 'Roster · skill tier · guardian linkage · NIL status'));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('div', { style: 'display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap' },
+      el('div', { style: 'display:flex;gap:8px;align-items:center' },
+        el('input', {
+          type: 'search', placeholder: 'Search by name, team, or age tier',
+          style: 'padding:6px 10px;min-width:260px', disabled: true
+        }),
+        diasDisabledBtn('+ Add Dancer', 'Backend not connected — dancer registration wires up once ' + product.name + ' Supabase is live')
+      ),
+      diasBackendChip(product)
+    ),
+    diasEmptyState('💃', '0 dancer profiles',
+      ['Profiles include age tier, skill level, team/coach assignment, guardian contact, NIL agreement status, media library, and competition history.',
+       'When a dancer signs up on ' + (product.domain || product.name) + ', their row lands here for admin review.'])
+  ));
+  return wrap;
+}
+
+function viewDiasNilCompliance(product) {
+  const wrap = el('div', {});
+  wrap.appendChild(diasSectionHeader('🛡️ NIL & Guardian Compliance',
+    'Name, Image, Likeness agreements + guardian consent tracking'));
+  wrap.appendChild(el('div', { class: 'cards' },
+    diasStatCard('📝', 'NIL Agreements Signed',    null, 'active dancers with signed NIL'),
+    diasStatCard('⏳', 'Awaiting Guardian Signature', null, 'under-18 dancers pending consent'),
+    diasStatCard('⚠️', 'Expired / Needs Renewal',  null, 'agreements past renewal date')
+  ));
+  wrap.appendChild(el('div', { class: 'panel', style: 'margin-top:14px' },
+    el('h3', {}, 'Compliance queue'),
+    el('div', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
+      'Under-18 dancers can\'t appear in monetized media, be featured in promo material, or receive NIL revenue until their guardian has completed the consent flow. This queue is the admin\'s daily review surface.'),
+    diasEmptyState('🛡️', 'Compliance queue empty',
+      ['Each entry pairs a dancer with their guardian\'s signature status, current NIL agreement, and any pending consent asks (media rights, sponsorship, revenue share).',
+       'Rows appear here automatically when new dancers register or existing agreements approach expiration.'])
+  ));
+  return wrap;
+}
+
+function viewDiasBookings(product) {
+  const wrap = el('div', {});
+  wrap.appendChild(diasSectionHeader('📅 Bookings', 'Competitions · clinics · private lessons · showcases'));
+  wrap.appendChild(el('div', { class: 'cards' },
+    diasStatCard('🏆', 'Competitions',    null, 'next 90 days'),
+    diasStatCard('🎓', 'Clinics',         null, 'workshops & seminars'),
+    diasStatCard('👤', 'Private Lessons', null, 'coach 1:1 sessions'),
+    diasStatCard('✨', 'Showcases',       null, 'performances & exhibitions')
+  ));
+  wrap.appendChild(el('div', { class: 'panel', style: 'margin-top:14px' },
+    el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px' },
+      el('h3', { style: 'margin:0' }, 'Upcoming schedule'),
+      el('div', { style: 'display:flex;gap:6px' },
+        diasDisabledBtn('+ New Competition', 'Backend not connected'),
+        diasDisabledBtn('+ New Clinic', 'Backend not connected'))),
+    diasEmptyState('📅', 'No upcoming bookings',
+      ['Events organized under ' + product.name + ' — competitions with brackets, clinics with capacity limits, private lessons with coach availability — show up here as they\'re created.',
+       'Dancer sign-ups against each event roll up into per-event rosters.'])
+  ));
+  return wrap;
+}
+
+function viewDiasTeams(product) {
+  const wrap = el('div', {});
+  wrap.appendChild(diasSectionHeader('👥 Teams & Coaches',
+    'Team rosters · coach credentials · assignment matrix'));
+  wrap.appendChild(el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px' },
+    el('div', { class: 'panel' },
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px' },
+        el('h3', { style: 'margin:0' }, 'Teams'),
+        diasDisabledBtn('+ Team', 'Backend not connected')),
+      diasEmptyState('👥', '0 teams',
+        ['Teams group dancers under a coach + skill tier + practice schedule.',
+         'Rosters and coach assignments show up per team.'])),
+    el('div', { class: 'panel' },
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px' },
+        el('h3', { style: 'margin:0' }, 'Coaches'),
+        diasDisabledBtn('+ Coach', 'Backend not connected')),
+      diasEmptyState('🎓', '0 coaches',
+        ['Coach records track credentials, background-check status, assigned teams, and private-lesson availability.',
+         'Every coach must clear background verification before being assigned.']))
+  ));
+  return wrap;
+}
+
+function viewDiasMediaReview(product) {
+  const wrap = el('div', {});
+  wrap.appendChild(diasSectionHeader('🎥 Media Review',
+    'Photos & videos awaiting approval before public display'));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('div', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:12px' },
+      'Media featuring under-18 dancers requires guardian consent + admin approval before it can appear on ' + (product.domain || 'the public site') +
+      '. This queue is the admin gate.'),
+    el('div', { style: 'display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap' },
+      diasDisabledBtn('Approve All Pending', 'Backend not connected'),
+      diasDisabledBtn('Reject All Pending', 'Backend not connected'),
+      el('div', { style: 'margin-left:auto' }, diasBackendChip(product))),
+    diasEmptyState('🎥', 'Review queue empty',
+      ['Each item pairs a piece of media (photo or video) with the dancer(s) it features, guardian consent status, uploader, and upload timestamp.',
+       'Approve → publishes to the public feed. Reject → deletes with a reason logged to the activity trail.'])
+  ));
+  return wrap;
+}
+
+function viewDiasSettings(product) {
+  const wrap = el('div', {});
+  wrap.appendChild(diasSectionHeader('⚙️ Settings', product.name + ' — product-specific configuration'));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'Content moderation'),
+    el('p', { class: 'muted', style: 'font-size:0.85rem' },
+      'Default review policy for user-generated media (auto-approve for verified coaches, hold-for-review for dancer uploads, etc.). Applied on new uploads to Media Review.'),
+    diasDisabledBtn('Edit moderation policy', 'Backend not connected')
+  ));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'Guardian consent'),
+    el('p', { class: 'muted', style: 'font-size:0.85rem' },
+      'Template for the guardian consent email/SMS + which fields are captured (COPPA §312.5 compliance). Edits here update the consent flow linked from dancer signup.'),
+    diasDisabledBtn('Edit consent template', 'Backend not connected')
+  ));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'NIL agreement defaults'),
+    el('p', { class: 'muted', style: 'font-size:0.85rem' },
+      'Standard NIL terms, revenue-split defaults, renewal cadence. Individual dancers can be granted custom terms; these are the fallback.'),
+    diasDisabledBtn('Edit NIL defaults', 'Backend not connected')
+  ));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'Backend connection'),
+    el('div', { style: 'margin-bottom:8px' }, diasBackendChip(product)),
+    el('p', { class: 'muted', style: 'font-size:0.8rem' },
+      product.connected
+        ? 'Reads via getProductClient(\'danceisasport\') hit the connected Supabase project.'
+        : 'Register DANCEISASPORT_SUPABASE_URL + DANCEISASPORT_SUPABASE_SERVICE_KEY as Vercel env vars, then redeploy. lib/products.config.js already declares the entry; the factory picks up the vars automatically on next request.')
+  ));
+  return wrap;
+}
+
+// Dispatcher — routes each product-namespaced view id to its
+// dance-sports-specific view. Activity Log stays on the shared
+// viewProductActivityLog so the log framework isn't duplicated per
+// product; every other tab renders a purpose-built dance view.
+async function viewDanceIsASport(product, tab) {
+  switch (tab.id) {
+    case 'dashboard':      return viewDiasDashboard(product);
+    case 'dancers':        return viewDiasDancers(product);
+    case 'nil_compliance': return viewDiasNilCompliance(product);
+    case 'bookings':       return viewDiasBookings(product);
+    case 'teams':          return viewDiasTeams(product);
+    case 'media_review':   return viewDiasMediaReview(product);
+    case 'activity':       return await viewProductActivityLog(product);
+    case 'settings':       return viewDiasSettings(product);
+    default:               return viewProductPlaceholder(product, tab);
+  }
+}
+
 // Placeholder view for any tab declared by a product in
 // products.config.js. Backend for each product goes live later —
 // this stub tells the operator what they're looking at + why it's
@@ -11079,12 +11302,19 @@ async function render() {
         const tabId = rest.join('_');
         const tab = (product.tabs || []).find(t => t.id === tabId);
         if (tab) {
-          // Special case: the 'activity' tab renders the real product-
-          // scoped Activity Log instead of the "coming soon" placeholder.
-          // Other tabs stay as placeholders until per-tab views land.
-          view = tabId === 'activity'
-            ? await viewProductActivityLog(product)
-            : viewProductPlaceholder(product, tab);
+          // Danceisasport is our first product with fully-realized
+          // per-tab views — dispatch to the dance-sports-specific
+          // dispatcher. Every other product (and future ones) falls
+          // through to the generic per-tab pattern: 'activity' →
+          // shared product activity log; everything else → generic
+          // placeholder until real views land.
+          if (product.slug === 'danceisasport') {
+            view = await viewDanceIsASport(product, tab);
+          } else if (tabId === 'activity') {
+            view = await viewProductActivityLog(product);
+          } else {
+            view = viewProductPlaceholder(product, tab);
+          }
           root.appendChild(shell(view));
           return;
         }
