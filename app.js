@@ -597,6 +597,15 @@ async function loadProductsList() {
   } catch {
     state.productsList = [];
   }
+  // First-load only (caller-safe: this branch never re-fires because
+  // the top-of-function cache guard short-circuits subsequent calls).
+  // Triggering a render here lets the sidebar's product-mode branch +
+  // the view router's `<slug>_<tab>` dispatch pick up the newly
+  // populated productsList — without this, the SPA renders once with
+  // productsList=null (falling back to legacy behavior), never
+  // re-renders when the fetch resolves, and the operator sees raw
+  // tab ids + the legacy Overview.
+  try { render(); } catch {}
   return state.productsList;
 }
 
@@ -1028,10 +1037,17 @@ function shell(content) {
   if (productSwitcher) loadProductSwitcher();
   // Non-admin tenants also need the products list so a product-tenant
   // (e.g. danceisasport) can render its tabs' labels + icons from the
-  // products.config metadata. Fire-and-forget; the async populate
-  // triggers a re-render so the sidebar fills in on next tick.
+  // products.config metadata. Fire-and-forget — loadProductsList()
+  // itself triggers render() on first-load, so no .then() needed.
   if (!state.isAdmin && !state.productsList) {
-    loadProductsList().then(() => render());
+    loadProductsList();
+  }
+  // Master admin also needs it eagerly (not just when clicking the
+  // switcher) — an impersonation of a product-tenant like danceisasport
+  // needs activeProduct detection to fire on first render, which requires
+  // state.productsList to be populated by the time shell() checks it.
+  if (state.isAdmin && !state.productsList) {
+    loadProductsList();
   }
 
   const adminSection = state.isAdmin && state.impersonating
