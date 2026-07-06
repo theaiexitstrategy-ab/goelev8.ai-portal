@@ -358,6 +358,25 @@ function viewPortalSettings() {
   return wrap;
 }
 
+// One-shot fetch of the products list into state.productsList.
+// Idempotent — subsequent calls are no-ops once the list is cached.
+// Runs for both admin AND tenant sessions (admin gets extra fields
+// like connection status; tenants get the safe metadata list). The
+// tenant path is needed so a product-tenant's SPA (e.g. the
+// danceisasport login) can render its tabs' labels + icons straight
+// from products.config via the API response, rather than hardcoding
+// them client-side.
+async function loadProductsList() {
+  if (state.productsList) return state.productsList;
+  try {
+    const r = await api('/api/products');
+    state.productsList = r?.products || [];
+  } catch {
+    state.productsList = [];
+  }
+  return state.productsList;
+}
+
 // Populates the sidebar product-switcher <select> from GET /api/products.
 // Only invoked for master admin. Renders each product with its
 // connection status ("· coming soon" suffix when env vars aren't set)
@@ -367,12 +386,7 @@ async function loadProductSwitcher() {
   const host = document.getElementById('product-switcher-host');
   if (!host) return;
   try {
-    // Cache the response on state so re-renders don't re-fetch. Only
-    // re-fetch when the list is cold.
-    if (!state.productsList) {
-      const r = await api('/api/products');
-      state.productsList = r?.products || [];
-    }
+    await loadProductsList();
     host.innerHTML = '';
     const products = state.productsList || [];
     if (!products.length) {
@@ -789,6 +803,13 @@ function shell(content) {
       )
     : null;
   if (productSwitcher) loadProductSwitcher();
+  // Non-admin tenants also need the products list so a product-tenant
+  // (e.g. danceisasport) can render its tabs' labels + icons from the
+  // products.config metadata. Fire-and-forget; the async populate
+  // triggers a re-render so the sidebar fills in on next tick.
+  if (!state.isAdmin && !state.productsList) {
+    loadProductsList().then(() => render());
+  }
 
   const adminSection = state.isAdmin && state.impersonating
     ? el('div', { class: 'admin-section' },
@@ -839,9 +860,21 @@ function shell(content) {
   // View ids are namespaced as `${slug}_${tabId}` so 'danceisasport_
   // dashboard' and a hypothetical future 'sportsbook_dashboard' never
   // collide in the view router.
-  const activeProduct = state.currentProduct
-    ? (state.productsList || []).find(p => p.slug === state.currentProduct) || null
-    : null;
+  // activeProduct fires product-mode tabs when EITHER:
+  //   (a) master admin picked a product in the sidebar switcher, OR
+  //   (b) the current tenant's slug matches a product in the registry
+  //       (danceisasport tenant login → auto-render its 8 tabs)
+  // Explicit switcher pick wins over slug-match so admin can still
+  // "impersonate + product switch" to a different product's view.
+  const productsList = state.productsList || [];
+  const activeProduct =
+    (state.currentProduct
+      ? productsList.find(p => p.slug === state.currentProduct) || null
+      : null)
+    ||
+    (state.client?.slug
+      ? productsList.find(p => p.slug === state.client.slug) || null
+      : null);
 
   let tabs;
   let navButtons;

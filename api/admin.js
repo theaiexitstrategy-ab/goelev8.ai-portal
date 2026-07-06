@@ -721,13 +721,23 @@ async function ensureDefaultClients(req, res) {
   await supabaseAdmin.from('clients').delete().eq('slug', 'dlp').then(() => {}, () => {});
   await supabaseAdmin.from('clients').delete().ilike('name', 'dlp').then(() => {}, () => {});
 
+  // Danceisasport is our first tenant that also lives in the products
+  // registry (lib/products.config.js). It gets a client row here (so
+  // admin can impersonate + real login credentials can be provisioned
+  // via onboardPendingTenants later), and its portal_tabs are set by
+  // the slug-scoped UPDATE inside applyPendingMigrations — the
+  // product-namespaced ids come from the products.config tab list
+  // (danceisasport_dashboard, danceisasport_dancers, etc.) so the
+  // sidebar renders the 8 domain-specific tabs instead of the
+  // standard SMS-SaaS shape.
   const required = [
     { slug: 'goelev8',            name: 'GoElev8.ai',                business_name: 'GoElev8.ai' },
     { slug: 'flex-facility',      name: 'The Flex Facility',         business_name: 'The Flex Facility LLC' },
     { slug: 'islay-studios',      name: 'iSlay Studios',             business_name: 'iSlay Studios LLC' },
     { slug: 'ai-exit-strategy',   name: 'The AI Exit Strategy',      business_name: 'The AI Exit Strategy' },
     { slug: 'allthingzblackhair', name: 'AllThingzBlackHair',        business_name: 'AllThingzBlackHair' },
-    { slug: 'willpower-fitness',  name: 'Will Power Fitness Factory', business_name: 'Will Power Fitness Factory' }
+    { slug: 'willpower-fitness',  name: 'Will Power Fitness Factory', business_name: 'Will Power Fitness Factory' },
+    { slug: 'danceisasport',      name: 'Dance is a Sport',          business_name: 'Dance is a Sport' }
   ];
   const { data: existing } = await supabaseAdmin
     .from('clients').select('id, slug, name, business_name');
@@ -1785,11 +1795,21 @@ async function ensurePortalTabs(req, res) {
   const STANDARD_TABS = [
     'overview', 'leads', 'messaging', 'bookings', 'analytics', 'settings'
   ];
+  // Slugs that OWN their portal_tabs via lib/products.config.js — the
+  // sidebar reads their tabs from the products framework, not the
+  // SMS-SaaS STANDARD set. Adding standard tabs to these would leak
+  // Overview/Leads/Messaging buttons into the product-specific nav.
+  const PRODUCT_TENANT_SLUGS = new Set(['danceisasport']);
   const { data: clients } = await supabaseAdmin
     .from('clients').select('id, slug, name, portal_tabs');
   let updated = 0;
   const perClient = [];
+  const skippedProductTenants = [];
   for (const c of clients || []) {
+    if (PRODUCT_TENANT_SLUGS.has(c.slug)) {
+      skippedProductTenants.push(c.slug);
+      continue;
+    }
     const current = Array.isArray(c.portal_tabs) ? c.portal_tabs : [];
     const missing = STANDARD_TABS.filter(t => !current.includes(t));
     if (!missing.length) continue;
@@ -1806,6 +1826,7 @@ async function ensurePortalTabs(req, res) {
   return res.status(200).json({
     standard_tabs: STANDARD_TABS,
     tenants_updated: updated,
+    skipped_product_tenants: skippedProductTenants,
     per_client: perClient
   });
 }
@@ -3802,7 +3823,21 @@ async function applyPendingMigrations(req, res) {
     `CREATE POLICY admin_activity_log_admin_read ON public.admin_activity_log
        FOR SELECT TO authenticated
        USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
-              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+
+    // ----- Danceisasport portal_tabs -----
+    // 8 product-namespaced tab ids (danceisasport_<tabId>) matching
+    // lib/products.config.js. Namespaced form so that:
+    //   - on login, state.view = portal_tabs[0] = 'danceisasport_dashboard'
+    //     lands the tenant on their Dashboard (not the legacy Overview)
+    //   - the sidebar's product-mode rendering + view router's
+    //     '<slug>_<tabId>' dispatch line up cleanly
+    // Slug-scoped + idempotent (DISTINCT FROM gate) so re-runs are safe.
+    `UPDATE public.clients
+       SET portal_tabs = '["danceisasport_dashboard","danceisasport_dancers","danceisasport_nil_compliance","danceisasport_bookings","danceisasport_teams","danceisasport_media_review","danceisasport_activity","danceisasport_settings"]'::jsonb
+     WHERE slug = 'danceisasport'
+       AND portal_tabs IS DISTINCT FROM
+           '["danceisasport_dashboard","danceisasport_dancers","danceisasport_nil_compliance","danceisasport_bookings","danceisasport_teams","danceisasport_media_review","danceisasport_activity","danceisasport_settings"]'::jsonb;`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
