@@ -1088,6 +1088,143 @@ async function backfillLeadsToContacts(req, res) {
 // Looks up the clients row, runs the full provisioning agent,
 // returns the agent's log. Idempotent — re-running on an
 // already-provisioned tenant just re-syncs.
+// Idempotent seed for The Locs & Wellness Co. — the first real client
+// to go through the provisioning flow. Inserts the clients row +
+// client_info row + a client_assets pointer to the logo path.
+// Re-runnable safely: existing rows are updated with any missing
+// fields rather than duplicated.
+//
+// Fields captured verbatim from the provisioning spec:
+//   slug='locs-and-wellness', business='The Locs & Wellness Co.',
+//   owner=Leslie Dudley, plan='tier1', primary=#0A0A0A,
+//   secondary=#D4AF7A, booking_url=lawco.glossgenius.com/book.
+// The 'iSlay Studios' platform-network keyword is added at
+// provisioning time by lib/provisioning.js — no need to seed it here.
+async function seedLocsAndWellness(req, res, ctx) {
+  const SLUG = 'locs-and-wellness';
+  const spec = {
+    business_name:   'The Locs & Wellness Co.',
+    name:            'The Locs & Wellness Co.',
+    owner_name:      'Leslie Dudley',
+    primary_color:   '#0A0A0A',
+    secondary_color: '#D4AF7A',
+    brand_color:     '#D4AF7A',  // legacy single-color field
+    booking_url:     'https://lawco.glossgenius.com/book',
+    plan:            'tier1'
+  };
+  const summary = { steps: [], warnings: [] };
+
+  // Step 1: upsert the clients row.
+  let { data: existing } = await supabaseAdmin
+    .from('clients').select('*').eq('slug', SLUG).maybeSingle();
+  let clientId = existing?.id || null;
+
+  if (!existing) {
+    const insertRow = { slug: SLUG, ...spec };
+    // Some columns may not exist yet on older schemas — retry stripping
+    // any that trip an 'does not exist' error, so the seed lands even
+    // when a fresh column addition hasn't been applied.
+    let { data: inserted, error: insErr } = await supabaseAdmin
+      .from('clients').insert(insertRow).select().single();
+    if (insErr && /column .*does not exist/i.test(insErr.message || '')) {
+      const missing = (insErr.message.match(/column "([^"]+)"/) || [])[1];
+      if (missing && missing in insertRow) {
+        delete insertRow[missing];
+        summary.warnings.push('clients column missing on schema: ' + missing);
+        const retry = await supabaseAdmin.from('clients').insert(insertRow).select().single();
+        inserted = retry.data; insErr = retry.error;
+      }
+    }
+    if (insErr) return res.status(500).json({ error: 'clients_insert_failed: ' + insErr.message });
+    clientId = inserted.id;
+    summary.steps.push({ step: 'insert_clients_row', client_id: clientId });
+  } else {
+    // Idempotent update — only patch fields the operator hasn't set.
+    const patch = {};
+    for (const [k, v] of Object.entries(spec)) {
+      if (!existing[k]) patch[k] = v;
+    }
+    if (Object.keys(patch).length) {
+      const { error: updErr } = await supabaseAdmin
+        .from('clients').update(patch).eq('id', clientId);
+      if (updErr) summary.warnings.push('clients update failed: ' + updErr.message);
+      summary.steps.push({ step: 'update_clients_row', patched_fields: Object.keys(patch) });
+    } else {
+      summary.steps.push({ step: 'clients_row_up_to_date' });
+    }
+  }
+
+  // Step 2: upsert client_info.
+  const infoRow = {
+    client_id:       clientId,
+    business_name:   spec.business_name,
+    owner_name:      spec.owner_name,
+    primary_color:   spec.primary_color,
+    secondary_color: spec.secondary_color,
+    booking_url:     spec.booking_url
+  };
+  const { data: existingInfo } = await supabaseAdmin
+    .from('client_info').select('client_id').eq('client_id', clientId).maybeSingle();
+  if (existingInfo) {
+    const { error: updErr } = await supabaseAdmin
+      .from('client_info').update(infoRow).eq('client_id', clientId);
+    if (updErr) summary.warnings.push('client_info update failed: ' + updErr.message);
+    else summary.steps.push({ step: 'update_client_info' });
+  } else {
+    const { error: insErr } = await supabaseAdmin.from('client_info').insert(infoRow);
+    if (insErr) summary.warnings.push('client_info insert failed: ' + insErr.message);
+    else summary.steps.push({ step: 'insert_client_info' });
+  }
+
+  // Step 3: upsert the logo asset pointer. The actual JPG file needs
+  // to live at client-assets/<slug>/logo.jpg in Supabase Storage —
+  // if it hasn't been uploaded yet, the row still points at the
+  // expected path so the provisioning agent can move/rename later.
+  const logoPath = `${SLUG}/logo.jpg`;
+  const { data: pub } = supabaseAdmin.storage.from('client-assets').getPublicUrl(logoPath);
+  const logoUrl = pub?.publicUrl || null;
+  const assetRow = {
+    client_id:     clientId,
+    label:         'logo',
+    page_position: 'header',
+    file_url:      logoUrl,
+    file_path:     logoPath,
+    mime_type:     'image/jpeg',
+    rank:          0
+  };
+  const { data: existingLogo } = await supabaseAdmin
+    .from('client_assets').select('id')
+    .eq('client_id', clientId).eq('label', 'logo').maybeSingle();
+  if (existingLogo) {
+    const { error: updErr } = await supabaseAdmin
+      .from('client_assets').update(assetRow).eq('id', existingLogo.id);
+    if (updErr) summary.warnings.push('client_assets logo update failed: ' + updErr.message);
+    else summary.steps.push({ step: 'update_logo_asset', file_path: logoPath });
+  } else {
+    const { error: insErr } = await supabaseAdmin.from('client_assets').insert(assetRow);
+    if (insErr) summary.warnings.push('client_assets logo insert failed: ' + insErr.message);
+    else summary.steps.push({ step: 'insert_logo_asset', file_path: logoPath });
+  }
+
+  // Warnings for missing data the provisioning agent will surface.
+  if (!existing?.owner_email) summary.warnings.push('owner_email is empty — add via /admin?action=update-client-info');
+
+  logFromReq(req, ctx, {
+    action: 'seed_locs_and_wellness',
+    target_type: 'client',
+    target_id: clientId,
+    metadata: { slug: SLUG, steps: summary.steps.map(s => s.step) }
+  });
+
+  return res.status(200).json({
+    ok: true,
+    client_id: clientId,
+    slug: SLUG,
+    next_step: 'Run "Provision Tenant" against this client to complete brand setup.',
+    ...summary
+  });
+}
+
 async function provisionTenantAction(req, res, ctx) {
   const body = await readJson(req).catch(() => ({}));
   let clientId = body?.client_id ? String(body.client_id).trim() : null;
@@ -4406,6 +4543,7 @@ export default async function handler(req, res) {
       case 'backfill-booking-times':     return await backfillBookingTimes(req, res);
       case 'inspect-booking':            return await inspectBooking(req, res);
       case 'provision-tenant':           return await provisionTenantAction(req, res, ctx);
+      case 'seed-locs-and-wellness':     return await seedLocsAndWellness(req, res, ctx);
       case 'backfill-leads-to-contacts': return await backfillLeadsToContacts(req, res);
       case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);

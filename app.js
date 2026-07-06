@@ -9188,6 +9188,80 @@ async function viewAdmin() {
   migPanel.appendChild(tabsBtn);
   migPanel.appendChild(tabsOut);
 
+  // ─── Tenant Provisioning ────────────────────────────────────────
+  // Two-stage flow: (1) seed the client + client_info + logo asset
+  // row for a specific tenant, then (2) run the provisioning agent
+  // (lib/provisioning.js) which syncs brand fields, relocates
+  // assets, registers domain preference, seeds keywords, and emails
+  // Aaron a summary. Currently only the first-real-client button
+  // (Locs & Wellness) is one-click; future tenants seed via their
+  // own action.
+  const provOut = el('pre', { style: 'display:none;background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;font-size:0.7rem;overflow:auto;max-height:280px;margin-top:8px' });
+  const provisionSel = el('select', { style: 'margin-left:8px;padding:6px 10px' });
+  provisionSel.appendChild(el('option', { value: '' }, 'Pick a tenant…'));
+  // Populate the dropdown from allClients closured earlier in viewAdmin.
+  // It lives on-load only — the operator can re-open Master Admin to
+  // refresh if a new tenant just landed.
+  const fillProvisionSel = (list) => {
+    for (const c of list) {
+      const label = (c.business_name || c.name || c.slug) + ' (' + c.slug + ')';
+      provisionSel.appendChild(el('option', { value: c.id }, label));
+    }
+  };
+  if (typeof allClients !== 'undefined' && Array.isArray(allClients) && allClients.length) {
+    fillProvisionSel(allClients);
+  } else {
+    onClientsLoaded.push(fillProvisionSel);
+  }
+
+  const seedLwBtn = el('button', { class: 'btn primary', style: 'margin-left:8px', onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Seeding…';
+    try {
+      const r = await api('/api/admin?action=seed-locs-and-wellness', { method: 'POST' });
+      toast('Locs & Wellness seeded — ' + (r.steps?.length || 0) + ' steps, ' + (r.warnings?.length || 0) + ' warnings');
+      provOut.style.display = 'block';
+      provOut.textContent = JSON.stringify(r, null, 2);
+      // Auto-preselect L&W in the dropdown so the operator can
+      // click "Provision Tenant" as an immediate second step.
+      const opt = Array.from(provisionSel.options).find(o => o.textContent.includes('locs-and-wellness'));
+      if (opt) provisionSel.value = opt.value;
+    } catch (err) {
+      toast('Seed failed: ' + err.message, true);
+      provOut.style.display = 'block';
+      provOut.textContent = 'Error: ' + err.message;
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = '🌱 Seed Locs & Wellness';
+    }
+  } }, '🌱 Seed Locs & Wellness');
+  migPanel.appendChild(seedLwBtn);
+
+  const provisionTenantBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: async (e) => {
+    const clientId = provisionSel.value;
+    if (!clientId) { toast('Pick a tenant from the dropdown first.', true); return; }
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Provisioning…';
+    provOut.style.display = 'block';
+    provOut.textContent = 'Running the provisioning agent — syncing brand fields, relocating assets, registering domain, seeding keywords, emailing summary…';
+    try {
+      const r = await api('/api/admin?action=provision-tenant', {
+        method: 'POST', body: { client_id: clientId }
+      });
+      toast('Provisioned ' + (r.business_name || r.slug) + ' — ' + (r.completed?.length || 0) + ' steps, ' + (r.errors?.length || 0) + ' errors');
+      provOut.textContent = JSON.stringify(r, null, 2);
+    } catch (err) {
+      toast('Provisioning failed: ' + err.message, true);
+      provOut.textContent = 'Error: ' + err.message;
+    } finally {
+      e.currentTarget.disabled = false;
+      e.currentTarget.textContent = '⚙ Provision Tenant';
+    }
+  } }, '⚙ Provision Tenant');
+  migPanel.appendChild(provisionSel);
+  migPanel.appendChild(provisionTenantBtn);
+  migPanel.appendChild(provOut);
+
   // Open the cross-tenant Trash view (soft-deleted records, last 30 days).
   const trashBtn = el('button', { class: 'btn', style: 'margin-left:8px', onclick: () => openTrashView() }, '🗑 View Trash (30d)');
   migPanel.appendChild(trashBtn);
