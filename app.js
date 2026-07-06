@@ -173,6 +173,115 @@ function setCurrentProduct(slug) {
   }
 }
 
+// Shared rendering for the cross-product activity log. Fetches
+// /api/admin?action=admin-activity-log with an optional product_slug
+// filter and renders a table. Used by BOTH the global Portal
+// Activity Log (no pre-filter, exposes a product picker) and the
+// per-product Activity Log tab (pre-filtered, no picker).
+//
+// productFilter can be:
+//   null      — show global feed + expose a product-picker dropdown
+//   '<slug>'  — pre-filter to that product; no picker rendered
+async function renderActivityLog({ productFilter = null, title = '📜 Activity Log', subtitle = 'Combined feed across every product' } = {}) {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, title),
+    el('div', { class: 'muted' }, subtitle)));
+
+  const filterHost = el('div', { class: 'panel', style: 'padding:12px;margin-bottom:12px' });
+  const rowsHost = el('div', { class: 'panel' });
+  wrap.appendChild(filterHost);
+  wrap.appendChild(rowsHost);
+
+  // Global mode: render a product picker so the operator can narrow.
+  // Per-product mode: the filter is baked in, no picker needed.
+  let currentSlug = productFilter;
+  const draw = async () => {
+    rowsHost.innerHTML = '';
+    rowsHost.appendChild(el('div', { class: 'muted' }, 'Loading…'));
+    try {
+      const params = new URLSearchParams();
+      if (currentSlug === '_null') params.set('product_slug', '_null');
+      else if (currentSlug)       params.set('product_slug', currentSlug);
+      const q = params.toString();
+      const r = await api('/api/admin?action=admin-activity-log' + (q ? '&' + q : ''));
+      rowsHost.innerHTML = '';
+      if (r.table_missing) {
+        rowsHost.appendChild(el('p', { class: 'muted' },
+          'Activity log table not yet applied. Master Admin → Run Pending Migrations to enable.'));
+        return;
+      }
+      const entries = r.entries || [];
+      rowsHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.8rem;margin-bottom:8px' },
+        entries.length + ' event' + (entries.length === 1 ? '' : 's')));
+      if (!entries.length) {
+        rowsHost.appendChild(el('p', { class: 'muted' }, 'No events yet.'));
+        return;
+      }
+      const tbl = el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'When'),
+          el('th', {}, 'Actor'),
+          el('th', {}, 'Product'),
+          el('th', {}, 'Action'),
+          el('th', {}, 'Target'),
+          el('th', {}, 'Details'))),
+        el('tbody', {}, ...entries.map(e => el('tr', {},
+          el('td', { class: 'muted', style: 'font-size:0.78rem;white-space:nowrap' },
+            new Date(e.created_at).toLocaleString()),
+          el('td', { class: 'muted', style: 'font-size:0.8rem' }, e.actor_email || '—'),
+          el('td', {}, e.product_slug
+            ? el('span', { style: 'padding:2px 8px;border-radius:10px;background:rgba(124,58,237,0.18);color:#c4b5fd;font-size:0.72rem;font-weight:600' }, e.product_slug)
+            : el('span', { class: 'muted', style: 'font-size:0.75rem' }, 'portal-wide')),
+          el('td', { class: 'mono', style: 'font-size:0.78rem' }, e.action),
+          el('td', { class: 'muted', style: 'font-size:0.78rem' },
+            e.target_type ? (e.target_type + (e.target_id ? ' · ' + String(e.target_id).slice(0, 24) : '')) : '—'),
+          el('td', { class: 'muted', style: 'font-size:0.72rem;max-width:280px;overflow:hidden;text-overflow:ellipsis' },
+            e.metadata ? JSON.stringify(e.metadata) : '—')))));
+      rowsHost.appendChild(tbl);
+    } catch (err) {
+      rowsHost.innerHTML = '';
+      rowsHost.appendChild(el('p', { class: 'err' }, 'Failed: ' + (err.message || 'unknown')));
+    }
+  };
+
+  if (productFilter) {
+    filterHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.8rem' },
+      'Pre-filtered to ', el('strong', {}, productFilter)));
+  } else {
+    // Product picker: options come from state.productsList (loaded on
+    // admin session boot); '' = all, '_null' = portal-wide only.
+    const products = state.productsList || [];
+    const sel = el('select', { style: 'padding:6px 10px;min-width:220px' },
+      el('option', { value: '' }, 'All products + portal-wide'),
+      el('option', { value: '_null' }, 'Portal-wide only'),
+      ...products.map(p => el('option', { value: p.slug }, p.name + ' (' + p.slug + ')')));
+    if (currentSlug) sel.value = currentSlug;
+    sel.onchange = () => { currentSlug = sel.value || null; draw(); };
+    filterHost.appendChild(el('div', { style: 'display:flex;gap:12px;align-items:center' },
+      el('div', { style: 'font-size:0.85rem;font-weight:600' }, 'Filter:'),
+      sel));
+  }
+  draw();
+  return wrap;
+}
+
+async function viewPortalActivityLog() {
+  return await renderActivityLog({
+    productFilter: null,
+    title: '📜 Activity Log',
+    subtitle: 'Combined feed across every product · click filter to narrow'
+  });
+}
+
+async function viewProductActivityLog(product) {
+  return await renderActivityLog({
+    productFilter: product.slug,
+    title: (product.tabs?.find(t => t.id === 'activity')?.icon || '📜') + ' Activity Log',
+    subtitle: product.name + ' — actions taken while this product was active'
+  });
+}
+
 // Placeholder view for any tab declared by a product in
 // products.config.js. Backend for each product goes live later —
 // this stub tells the operator what they're looking at + why it's
@@ -875,10 +984,18 @@ function shell(content) {
         : null,
       impersonateSwitcher,
       adminSection,
-      // Portal Settings — global (auth + products list). Always
-      // accessible for admin, distinct from any product's own
-      // Settings tab. Renders as a discreet footer link above sign-out
-      // so it doesn't compete with the primary product/tenant nav.
+      // Portal-wide links — Activity Log + Portal Settings. Always
+      // accessible for admin regardless of product context, distinct
+      // from any product's own Settings / Activity tab. Rendered as
+      // discreet footer links above sign-out so they don't compete
+      // with the primary product/tenant nav.
+      state.isAdmin
+        ? el('button', {
+            class: 'signout' + (state.view === 'portal_activity_log' ? ' active' : ''),
+            style: 'opacity:0.85;font-size:0.82rem;padding-bottom:2px',
+            onclick: () => { state.view = 'portal_activity_log'; render(); closeNav(); }
+          }, '📜 Activity Log')
+        : null,
       state.isAdmin
         ? el('button', {
             class: 'signout' + (state.view === 'portal_settings' ? ' active' : ''),
@@ -10929,16 +11046,26 @@ async function render() {
         const tabId = rest.join('_');
         const tab = (product.tabs || []).find(t => t.id === tabId);
         if (tab) {
-          view = viewProductPlaceholder(product, tab);
+          // Special case: the 'activity' tab renders the real product-
+          // scoped Activity Log instead of the "coming soon" placeholder.
+          // Other tabs stay as placeholders until per-tab views land.
+          view = tabId === 'activity'
+            ? await viewProductActivityLog(product)
+            : viewProductPlaceholder(product, tab);
           root.appendChild(shell(view));
           return;
         }
       }
     }
-    // Global Portal Settings — always available for admin regardless
-    // of product context.
+    // Global Portal Settings + Portal Activity Log — always available
+    // for admin regardless of product context.
     if (state.view === 'portal_settings' && state.isAdmin) {
       view = viewPortalSettings();
+      root.appendChild(shell(view));
+      return;
+    }
+    if (state.view === 'portal_activity_log' && state.isAdmin) {
+      view = await viewPortalActivityLog();
       root.appendChild(shell(view));
       return;
     }

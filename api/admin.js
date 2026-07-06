@@ -18,6 +18,7 @@
 
 import { requireAdmin, methodGuard, readJson } from '../lib/auth.js';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { logFromReq } from '../lib/activity-log.js';
 import { twilioForClient, estimateSegments, truncateForSms } from '../lib/twilio.js';
 import { getBillingClient } from '../lib/credits.js';
 import { sendMail, passwordResetEmail } from '../lib/mailer.js';
@@ -3770,7 +3771,38 @@ async function applyPendingMigrations(req, res) {
        ON CONFLICT (id) DO NOTHING;`,
     // Same media_url column on blasts so the operator sees which past
     // blasts included an image when reviewing history.
-    `ALTER TABLE public.blasts ADD COLUMN IF NOT EXISTS media_url text;`
+    `ALTER TABLE public.blasts ADD COLUMN IF NOT EXISTS media_url text;`,
+
+    // ----- 0033: cross-product admin_activity_log -----
+    // Table lives in the PORTAL's Supabase so it outlives any single
+    // product's schema changes. product_slug is nullable — actions that
+    // aren't scoped to a product (portal-wide settings edits, etc.)
+    // record null. See supabase/migrations/0033_admin_activity_log.sql
+    // for the full RLS block; those policies are also re-applied here
+    // so re-running Pending Migrations converges the same way.
+    `CREATE TABLE IF NOT EXISTS public.admin_activity_log (
+       id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       actor_email  text,
+       product_slug text,
+       action       text NOT NULL,
+       target_type  text,
+       target_id    text,
+       metadata     jsonb,
+       created_at   timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS admin_activity_log_created_at_idx
+       ON public.admin_activity_log (created_at DESC);`,
+    `CREATE INDEX IF NOT EXISTS admin_activity_log_product_slug_idx
+       ON public.admin_activity_log (product_slug)
+       WHERE product_slug IS NOT NULL;`,
+    `CREATE INDEX IF NOT EXISTS admin_activity_log_action_idx
+       ON public.admin_activity_log (action);`,
+    `ALTER TABLE public.admin_activity_log ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS admin_activity_log_admin_read ON public.admin_activity_log;`,
+    `CREATE POLICY admin_activity_log_admin_read ON public.admin_activity_log
+       FOR SELECT TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`
   ];
 
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
@@ -3878,7 +3910,7 @@ async function backfillTwilioReserve(req, res) {
 // the number in any human-friendly form; normalizes to E.164 before
 // writing. Optionally also updates subaccount_sid + auth_token when
 // the caller has provisioned a dedicated subaccount for the tenant.
-async function setTwilioNumber(req, res) {
+async function setTwilioNumber(req, res, ctx) {
   const body = await readJson(req);
   const { client_id, twilio_phone_number, twilio_subaccount_sid, twilio_auth_token } = body || {};
   if (!client_id) return res.status(400).json({ error: 'client_id required' });
@@ -3909,6 +3941,16 @@ async function setTwilioNumber(req, res) {
   const { data, error } = await supabaseAdmin
     .from('clients').update(patch).eq('id', client_id).select().single();
   if (error) return res.status(400).json({ error: error.message });
+  logFromReq(req, ctx, {
+    action: 'set_twilio_number',
+    target_type: 'tenant',
+    target_id: client_id,
+    metadata: {
+      set_phone_number: patch.twilio_phone_number || null,
+      set_subaccount:   'twilio_subaccount_sid' in patch,
+      set_auth_token:   'twilio_auth_token' in patch
+    }
+  });
   return res.status(200).json({ client: data });
 }
 
@@ -3923,7 +3965,7 @@ async function setTwilioNumber(req, res) {
 // Body: { client_id, parent_client_id }
 //   parent_client_id: null to REMOVE inheritance; otherwise the uuid
 //   of another clients row to inherit from.
-async function setParentClient(req, res) {
+async function setParentClient(req, res, ctx) {
   const body = await readJson(req);
   const { client_id, parent_client_id } = body || {};
   if (!client_id) return res.status(400).json({ error: 'client_id required' });
@@ -3942,7 +3984,53 @@ async function setParentClient(req, res) {
   const { data, error } = await supabaseAdmin
     .from('clients').update(patch).eq('id', client_id).select().single();
   if (error) return res.status(400).json({ error: error.message });
+  logFromReq(req, ctx, {
+    action: 'set_parent_client',
+    target_type: 'tenant',
+    target_id: client_id,
+    metadata: { parent_client_id: parent_client_id || null, cleared_own_twilio: !!parent_client_id }
+  });
   return res.status(200).json({ client: data });
+}
+
+// Read the cross-product admin activity log. Supports:
+//   ?product_slug=<slug>  filter to one product (or '_null' for
+//                         portal-wide rows only)
+//   ?action=<slug>        filter to a single action id
+//   ?limit=<n>            max rows (default 200, cap 1000)
+// Returns rows ordered newest-first. Reads bypass RLS via supabaseAdmin
+// (service role) — the endpoint itself is admin-gated at the router.
+async function adminActivityLog(req, res) {
+  const url = new URL(req.url, 'http://x');
+  const productSlug = url.searchParams.get('product_slug');
+  const actionFilter = url.searchParams.get('action_filter');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '200', 10) || 200, 1000);
+
+  let q = supabaseAdmin.from('admin_activity_log')
+    .select('id, actor_email, product_slug, action, target_type, target_id, metadata, created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (productSlug === '_null') {
+    q = q.is('product_slug', null);
+  } else if (productSlug) {
+    q = q.eq('product_slug', productSlug);
+  }
+  if (actionFilter) q = q.eq('action', actionFilter);
+
+  const { data, error } = await q;
+  if (error) {
+    // Table not yet applied — return empty list + a hint so the UI
+    // can render a helpful "not yet migrated" panel.
+    if (/relation .*admin_activity_log.* does not exist/i.test(error.message || '')) {
+      return res.status(200).json({
+        entries: [],
+        table_missing: true,
+        hint: 'Run Pending Migrations to apply 0033 (admin_activity_log table).'
+      });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+  return res.status(200).json({ entries: data || [] });
 }
 
 async function setBookingUrl(req, res) {
@@ -4064,13 +4152,20 @@ async function taesPartners(req, res) {
 // the cascade. Frontend hits this via POST /api/admin?action=
 // taes-delete-participant with { id } in the body — we translate that
 // to a DELETE against TAES.
-async function taesDeleteParticipant(req, res) {
+async function taesDeleteParticipant(req, res, ctx) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
   const body = await readJson(req);
   const id = String(body?.id || '').trim();
   if (!id) return res.status(400).json({ error: 'id_required' });
   try {
     const data = await taesFetch(`participant/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    logFromReq(req, ctx, {
+      action: 'delete_taes_participant',
+      product_slug: 'ai-exit-strategy',
+      target_type: 'participant',
+      target_id: id,
+      metadata: { deleted: data?.deleted || null }
+    });
     return res.status(200).json(data);
   } catch (e) {
     return res.status(e.status || 502).json({ error: e.message });
@@ -4082,7 +4177,7 @@ async function taesDeleteParticipant(req, res) {
 // policy). The subject + body come from the composer modal in the SPA.
 // No participant-lookup — the caller passes the target email directly;
 // the frontend reads it off the loaded profile.
-async function taesSendEmail(req, res) {
+async function taesSendEmail(req, res, ctx) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
   const body = await readJson(req);
   const to      = String(body?.to      || '').trim();
@@ -4093,6 +4188,13 @@ async function taesSendEmail(req, res) {
   }
   try {
     const r = await sendMail({ to, subject, text });
+    logFromReq(req, ctx, {
+      action: 'send_taes_email',
+      product_slug: 'ai-exit-strategy',
+      target_type: 'participant_email',
+      target_id: to,
+      metadata: { subject }
+    });
     return res.status(200).json({ ok: true, id: r?.data?.id || null });
   } catch (e) {
     return res.status(502).json({ error: 'email_failed: ' + e.message });
@@ -4127,7 +4229,7 @@ async function taesUploadPhoto(req, res) {
   }
 }
 
-async function taesSendSms(req, res) {
+async function taesSendSms(req, res, ctx) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
   const body = await readJson(req);
   const to = String(body?.to || '').trim();
@@ -4179,6 +4281,13 @@ async function taesSendSms(req, res) {
     from_number: twilioSrc.twilio_phone_number,
     credits_charged: 0
   });
+  logFromReq(req, ctx, {
+    action: 'send_taes_sms',
+    product_slug: 'ai-exit-strategy',
+    target_type: 'phone',
+    target_id: to,
+    metadata: { sid: twilioMsg.sid, from: twilioSrc.twilio_phone_number }
+  });
   return res.status(200).json({ ok: true, sid: twilioMsg.sid });
 }
 
@@ -4203,8 +4312,9 @@ export default async function handler(req, res) {
       case 'set-ga4':        return await setGa4(req, res);
       case 'set-stripe-key': return await setStripeKey(req, res);
       case 'set-booking-url':return await setBookingUrl(req, res);
-      case 'set-twilio-number': return await setTwilioNumber(req, res);
-      case 'set-parent-client': return await setParentClient(req, res);
+      case 'set-twilio-number': return await setTwilioNumber(req, res, ctx);
+      case 'set-parent-client': return await setParentClient(req, res, ctx);
+      case 'admin-activity-log': return await adminActivityLog(req, res);
       case 'backfill-twilio-reserve': return await backfillTwilioReserve(req, res);
       case 'apply-pending-migrations': return await applyPendingMigrations(req, res);
       case 'twilio-cost':              return await twilioCostSetting(req, res);
@@ -4228,9 +4338,9 @@ export default async function handler(req, res) {
       case 'taes-roster':               return await taesRoster(req, res);
       case 'taes-participant':          return await taesParticipant(req, res);
       case 'taes-attention':            return await taesAttention(req, res);
-      case 'taes-delete-participant':   return await taesDeleteParticipant(req, res);
-      case 'taes-send-email':           return await taesSendEmail(req, res);
-      case 'taes-send-sms':             return await taesSendSms(req, res);
+      case 'taes-delete-participant':   return await taesDeleteParticipant(req, res, ctx);
+      case 'taes-send-email':           return await taesSendEmail(req, res, ctx);
+      case 'taes-send-sms':             return await taesSendSms(req, res, ctx);
       case 'taes-upload-photo':         return await taesUploadPhoto(req, res);
       case 'taes-partners':             return await taesPartners(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
