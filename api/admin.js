@@ -3808,8 +3808,21 @@ async function applyPendingMigrations(req, res) {
   const url = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
   const results = [];
   let success = 0, failed = 0;
-  for (let i = 0; i < statements.length; i++) {
-    const sql = statements[i];
+
+  // Batch statements so the whole run fits under Vercel's function
+  // timeout. 187 sequential HTTPs @ ~200ms = ~37s (over the Hobby-plan
+  // 10s cap, close to Pro's 60s). Grouping ~20 per POST cuts the round
+  // trips ~20x. The Supabase Management API accepts multiple
+  // semicolon-separated statements in one query body, and Postgres
+  // runs them as a single transaction — so IF NOT EXISTS / IF EXISTS
+  // idempotency across the batch still holds.
+  //
+  // Two-phase failure handling: if a whole batch errors, we retry each
+  // statement in that batch individually so the operator gets per-
+  // statement error visibility. Batches that succeed short-circuit
+  // that fallback so the fast path stays fast.
+  const BATCH_SIZE = 20;
+  const runOne = async (sql, i) => {
     try {
       const r = await fetch(url, {
         method: 'POST',
@@ -3827,6 +3840,34 @@ async function applyPendingMigrations(req, res) {
     } catch (e) {
       results.push({ i, ok: false, error: e.message, sql_preview: sql.slice(0, 60) + '…' });
       failed++;
+    }
+  };
+
+  for (let start = 0; start < statements.length; start += BATCH_SIZE) {
+    const batch = statements.slice(start, start + BATCH_SIZE);
+    const joined = batch.join('\n');
+    let batchOk = false;
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: joined })
+      });
+      if (r.ok) batchOk = true;
+    } catch { /* fall through to per-statement retry */ }
+
+    if (batchOk) {
+      for (let j = 0; j < batch.length; j++) {
+        results.push({ i: start + j, ok: true, batched: true, sql_preview: batch[j].slice(0, 60) + '…' });
+        success++;
+      }
+    } else {
+      // Retry each statement in this failing batch individually so we
+      // can point at the specific breakage. Sequential; the fallback
+      // is rare so total wall-clock still stays well under the timeout.
+      for (let j = 0; j < batch.length; j++) {
+        await runOne(batch[j], start + j);
+      }
     }
   }
   return res.status(200).json({ project_ref: projectRef, total: statements.length, success, failed, results });
