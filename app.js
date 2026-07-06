@@ -29,7 +29,15 @@ const state = {
   // Non-null when the authed client (or impersonated client) has an active
   // booking_calendars row. Drives whether the Bookings tab appears in the
   // sidebar and feeds the booking link widget on the Bookings view.
-  bookingCalendar: null
+  bookingCalendar: null,
+  // Selected product from the sidebar product switcher. When set, the
+  // api() helper attaches x-product-slug on every request so server
+  // routes route to the correct product's Supabase project via
+  // getProductClientFromReq(). Persists across reloads.
+  currentProduct: localStorage.getItem('ge8_product') || null,
+  // Cached { products: [...] } response from GET /api/products. Loaded
+  // once when a master admin session boots. Only populated for admins.
+  productsList: null
 };
 
 function toast(msg, isError = false) {
@@ -42,6 +50,12 @@ async function api(path, opts = {}, _retried = false) {
   const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
   if (state.token) headers.authorization = `Bearer ${state.token}`;
   if (state.isAdmin && state.impersonating) headers['x-admin-as-client'] = state.impersonating;
+  // Multi-tenant product context. When the operator has picked a
+  // product in the sidebar switcher, every server call carries the
+  // slug so product-scoped routes can resolve the right Supabase
+  // project via getProductClientFromReq(). Never blocked on server
+  // side — product-agnostic routes ignore the header.
+  if (state.currentProduct) headers['x-product-slug'] = state.currentProduct;
   const res = await fetch(path, {
     ...opts,
     headers,
@@ -135,6 +149,68 @@ async function loadImpersonateTabs() {
   } catch (e) {
     container.innerHTML = '';
     container.appendChild(el('div', { class: 'err', style: 'font-size:0.75rem' }, 'Failed to load clients'));
+  }
+}
+
+// ─── Product portfolio switcher ────────────────────────────────────
+// Setter — persists the chosen product slug so subsequent api() calls
+// carry x-product-slug and product-scoped server routes resolve the
+// correct Supabase project via getProductClientFromReq().
+function setCurrentProduct(slug) {
+  if (slug) {
+    state.currentProduct = slug;
+    localStorage.setItem('ge8_product', slug);
+  } else {
+    state.currentProduct = null;
+    localStorage.removeItem('ge8_product');
+  }
+}
+
+// Populates the sidebar product-switcher <select> from GET /api/products.
+// Only invoked for master admin. Renders each product with its
+// connection status ("· coming soon" suffix when env vars aren't set)
+// so the operator can see at a glance which products are wired up.
+async function loadProductSwitcher() {
+  if (!state.isAdmin) return;
+  const host = document.getElementById('product-switcher-host');
+  if (!host) return;
+  try {
+    // Cache the response on state so re-renders don't re-fetch. Only
+    // re-fetch when the list is cold.
+    if (!state.productsList) {
+      const r = await api('/api/products');
+      state.productsList = r?.products || [];
+    }
+    host.innerHTML = '';
+    const products = state.productsList || [];
+    if (!products.length) {
+      host.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem' }, 'No products registered'));
+      return;
+    }
+    const sel = el('select', {
+      style: 'width:100%;font-size:0.85rem;padding:6px 8px;background:rgba(0,0,0,0.35);color:#e6edf3;border:1px solid rgba(255,255,255,0.1);border-radius:6px'
+    });
+    sel.appendChild(el('option', { value: '' }, '— None —'));
+    for (const p of products) {
+      const suffix = p.connected ? '' : ' · coming soon';
+      const opt = el('option', { value: p.slug }, p.name + suffix);
+      if (state.currentProduct === p.slug) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.onchange = () => {
+      setCurrentProduct(sel.value || null);
+      render();
+    };
+    host.appendChild(sel);
+    // Small hint line: currently-selected product's domain, or a
+    // "pick a product" nudge when none is selected.
+    const active = products.find(p => p.slug === state.currentProduct);
+    host.appendChild(el('div', {
+      class: 'muted', style: 'font-size:0.68rem;margin-top:4px'
+    }, active ? active.domain || '' : 'Select a product to scope queries'));
+  } catch (e) {
+    host.innerHTML = '';
+    host.appendChild(el('div', { class: 'err', style: 'font-size:0.75rem' }, 'Failed to load products'));
   }
 }
 
@@ -505,6 +581,23 @@ function shell(content) {
     : null;
   if (impersonateSwitcher) loadImpersonateTabs();
 
+  // Product switcher — cross-portfolio picker for the operator's
+  // connected products (Dance is a Sport, TAES, etc.). Distinct from
+  // the tenant-impersonation switcher above: THAT view lets admin
+  // pretend to be an SMS-SaaS customer; THIS one scopes every server
+  // read to a specific product's Supabase project via x-product-slug.
+  // Only rendered for master admin — the product portfolio is the
+  // operator's cross-tenant view.
+  const productSwitcher = state.isAdmin
+    ? el('div', { class: 'product-switcher', style: 'padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:8px' },
+        el('div', { class: 'muted', style: 'font-size:0.68rem;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px' }, 'Product'),
+        el('div', { id: 'product-switcher-host' },
+          el('div', { class: 'muted', style: 'font-size:0.75rem' }, 'Loading…')
+        )
+      )
+    : null;
+  if (productSwitcher) loadProductSwitcher();
+
   const adminSection = state.isAdmin && state.impersonating
     ? el('div', { class: 'admin-section' },
         el('button', { class: 'btn-stop-impersonate', onclick: () => { setImpersonation(null); render(); } },
@@ -651,6 +744,7 @@ function shell(content) {
             el('div', { class: 'num' }, state.client?.twilio_phone_number || 'No number assigned')
           )
         : null,
+      productSwitcher,
       (state.client || state.isAdmin)
         ? el('div', { class: 'nav' }, ...navButtons)
         : null,
