@@ -4359,6 +4359,9 @@ async function taesAttention(req, res) {
 async function taesPartners(req, res) {
   return taesProxy(res, 'partners');
 }
+async function taesReviews(req, res) {
+  return taesProxy(res, 'reviews');
+}
 
 // Delete a TAES participant + everything they submitted. Proxies to
 // the TAES /api/portal/participant/[id] DELETE endpoint which handles
@@ -4557,6 +4560,7 @@ export default async function handler(req, res) {
       case 'taes-send-sms':             return await taesSendSms(req, res, ctx);
       case 'taes-upload-photo':         return await taesUploadPhoto(req, res);
       case 'taes-partners':             return await taesPartners(req, res);
+      case 'taes-reviews':              return await taesReviews(req, res);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);

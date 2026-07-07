@@ -10202,7 +10202,7 @@ async function viewTaes() {
     el('div', { class: 'muted' }, 'The AI Exit Strategy — roster & progress')));
 
   const sub = state._taesSub || 'roster';
-  const tabs = [['roster', 'Roster'], ['attention', 'Attention'], ['partners', 'Partners']];
+  const tabs = [['roster', 'Roster'], ['attention', 'Attention'], ['reviews', 'Reviews'], ['partners', 'Partners']];
   wrap.appendChild(el('div', { class: 'row', style: 'gap:8px;margin-bottom:12px' },
     ...tabs.map(([id, label]) => el('button', {
       class: 'btn' + (sub === id ? ' primary' : ''),
@@ -10263,6 +10263,58 @@ async function viewTaes() {
             el('td', { class: 'muted' }, typeof f.details === 'object' ? JSON.stringify(f.details) : (f.details || '')),
             el('td', { class: 'muted' }, taesFmtDate(f.updatedAt)))))
         ) : el('p', { class: 'muted' }, 'Nobody needs attention right now. 🎉')));
+    } else if (sub === 'reviews') {
+      // Reviews captured at the end of the TAES Website module. Each row
+      // pairs a participant with what surprised them + what they'd tell
+      // a friend + consent + showcase state. Minor participants can't
+      // be pushed to the public showcase until parental consent is on
+      // file (parent_consent_on_file=true) — this view surfaces that
+      // gating explicitly.
+      const r = await api('/api/admin?action=taes-reviews');
+      const reviews = r.reviews || [];
+      const badge = (color, bg, text) => el('span', {
+        style: 'display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.7rem;font-weight:600;background:' + bg + ';color:' + color
+      }, text);
+      const showcaseBadge = (rev) => {
+        if (rev.pushedToShowcase) return badge('#86efac', 'rgba(34,197,94,0.15)', '● Live · ' + taesFmtDate(rev.pushedAt));
+        if (rev.isMinor && !rev.parentConsentOnFile) return badge('#fca5a5', 'rgba(239,68,68,0.12)', '🚫 Needs guardian consent');
+        if (!rev.permissionToShare) return badge('#fbd38d', 'rgba(251,191,36,0.14)', 'No share permission');
+        return badge('#93c5fd', 'rgba(59,130,246,0.14)', 'Eligible · not pushed');
+      };
+      content.replaceChildren(el('div', { class: 'panel' },
+        el('h2', {}, 'Reviews (' + reviews.length + ')'),
+        el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:12px' },
+          'Submitted at the end of the Website module. Newest first.'),
+        reviews.length ? el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, 'When'),
+            el('th', {}, 'Participant'),
+            el('th', {}, 'Would tell a friend?'),
+            el('th', {}, 'What surprised them'),
+            el('th', {}, 'Site'),
+            el('th', {}, 'Showcase status'))),
+          el('tbody', {}, ...reviews.map((rev) => el('tr', {},
+            el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' },
+              taesFmtDate(rev.createdAt)),
+            el('td', {},
+              el('div', {}, rev.participantName || '—'),
+              rev.participantEmail
+                ? el('div', { class: 'muted', style: 'font-size:0.72rem' }, rev.participantEmail)
+                : null,
+              rev.isMinor
+                ? el('div', { style: 'font-size:0.68rem;margin-top:2px' }, badge('#fde68a', 'rgba(251,191,36,0.14)', '👶 Minor'))
+                : null),
+            el('td', { style: 'max-width:260px' },
+              rev.wouldTellAFriend || el('span', { class: 'muted' }, '—')),
+            el('td', { style: 'max-width:260px' },
+              rev.whatSurprisedYou || el('span', { class: 'muted' }, '—')),
+            el('td', { class: 'muted', style: 'font-size:0.75rem' },
+              rev.siteUrl
+                ? el('a', { href: rev.siteUrl, target: '_blank', rel: 'noopener' }, rev.siteSubdomain || rev.siteUrl)
+                : '—'),
+            el('td', {}, showcaseBadge(rev))
+          )))
+        ) : el('p', { class: 'muted' }, 'No reviews yet. Reviews land here as TAES participants complete the Website module.')));
     } else {
       const r = await api('/api/admin?action=taes-partners');
       const partners = r.partners || [];
