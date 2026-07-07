@@ -3962,6 +3962,32 @@ async function applyPendingMigrations(req, res) {
        USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
               OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
 
+    // ----- The Locs & Wellness Co. portal_tabs -----
+    // Mirrors iSlay Studios exactly (Overview → Leads → Merch →
+    // Messaging → Analytics → Settings) minus the 'applications' tab
+    // — L&W is a booking-driven salon service, not an artist
+    // application funnel. Merch tab is present so Leslie can upload
+    // products the same way iSlay does; the existing merch tables +
+    // /api/portal/merch endpoints already support any tenant whose
+    // portal_tabs includes 'merch'. Slug-scoped + idempotent.
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","merch","messaging","analytics","settings"]'::jsonb
+     WHERE slug = 'locs-and-wellness'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","merch","messaging","analytics","settings"]'::jsonb;`,
+    // Generate a portal_api_key so a future L&W storefront can
+    // authenticate to /api/external/orders (same shape iSlay + WPFF
+    // use). Idempotent — skipped if already set.
+    `UPDATE public.clients
+       SET portal_api_key = 'lawco_' || replace(gen_random_uuid()::text, '-', '')
+     WHERE slug = 'locs-and-wellness'
+       AND portal_api_key IS NULL;`,
+    // Platform fee — 10% matches the WPFF/iSlay default.
+    `UPDATE public.clients
+       SET platform_fee_pct = 10
+     WHERE slug = 'locs-and-wellness'
+       AND platform_fee_pct IS NULL;`,
+
     // ----- Danceisasport portal_tabs -----
     // 8 product-namespaced tab ids (danceisasport_<tabId>) matching
     // lib/products.config.js. Namespaced form so that:
@@ -4312,7 +4338,12 @@ async function listAdmins(req, res) {
 // than re-implementing that logic against the raw DB. Auth: PORTAL_API_KEY.
 const TAES_BASE = (process.env.TAES_PORTAL_URL || 'https://www.theaiexitstrategy.com').replace(/\/$/, '');
 
-async function taesFetch(path, { method = 'GET', jsonBody = null } = {}) {
+// path options:
+//   basePath='portal' (default) → hits /api/portal/<path>
+//   basePath='admin'            → hits /api/admin/<path>
+// The admin path is used for showcase writes (push-review, push-website,
+// consent) — those existing routes accept PORTAL_API_KEY too now.
+async function taesFetch(path, { method = 'GET', jsonBody = null, basePath = 'portal' } = {}) {
   const key = process.env.PORTAL_API_KEY;
   if (!key) {
     const err = new Error('PORTAL_API_KEY is not set in this project — add it in Vercel, then redeploy.');
@@ -4325,7 +4356,7 @@ async function taesFetch(path, { method = 'GET', jsonBody = null } = {}) {
     headers['content-type'] = 'application/json';
     init.body = JSON.stringify(jsonBody);
   }
-  const r = await fetch(`${TAES_BASE}/api/portal/${path}`, init);
+  const r = await fetch(`${TAES_BASE}/api/${basePath}/${path}`, init);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     const err = new Error(data.error || `TAES API responded ${r.status}`);
@@ -4361,6 +4392,71 @@ async function taesPartners(req, res) {
 }
 async function taesReviews(req, res) {
   return taesProxy(res, 'reviews');
+}
+
+// Push a review to the TAES public showcase. Blocked server-side for
+// minors without recorded parental consent — surfaced back to the SPA
+// as a 403 with the specific reason so the operator sees the gating.
+async function taesPushReview(req, res, ctx) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const id = String(body?.review_id || '').trim();
+  if (!id) return res.status(400).json({ error: 'review_id_required' });
+  try {
+    const data = await taesFetch(`showcase/push-review/${encodeURIComponent(id)}`, {
+      method: 'POST', jsonBody: {}, basePath: 'admin'
+    });
+    logFromReq(req, ctx, {
+      action: 'push_taes_review', product_slug: 'ai-exit-strategy',
+      target_type: 'review', target_id: id
+    });
+    return res.status(200).json(data);
+  } catch (e) {
+    return res.status(e.status || 502).json({ error: e.message });
+  }
+}
+
+// Push a website (student site) to the public showcase. Same minor
+// consent gate as push-review — the TAES route enforces both.
+async function taesPushWebsite(req, res, ctx) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const id = String(body?.project_id || '').trim();
+  if (!id) return res.status(400).json({ error: 'project_id_required' });
+  try {
+    const data = await taesFetch(`showcase/push-website/${encodeURIComponent(id)}`, {
+      method: 'POST', jsonBody: {}, basePath: 'admin'
+    });
+    logFromReq(req, ctx, {
+      action: 'push_taes_website', product_slug: 'ai-exit-strategy',
+      target_type: 'website_project', target_id: id
+    });
+    return res.status(200).json(data);
+  } catch (e) {
+    return res.status(e.status || 502).json({ error: e.message });
+  }
+}
+
+// Record parental consent for a minor participant. Unlocks their
+// review + site for showcase publishing. Portal SPA hits this from
+// the Reviews sub-tab when the operator confirms consent is on file.
+async function taesRecordConsent(req, res, ctx) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const id = String(body?.participant_id || '').trim();
+  if (!id) return res.status(400).json({ error: 'participant_id_required' });
+  try {
+    const data = await taesFetch(`showcase/consent/${encodeURIComponent(id)}`, {
+      method: 'POST', jsonBody: {}, basePath: 'admin'
+    });
+    logFromReq(req, ctx, {
+      action: 'record_taes_consent', product_slug: 'ai-exit-strategy',
+      target_type: 'participant', target_id: id
+    });
+    return res.status(200).json(data);
+  } catch (e) {
+    return res.status(e.status || 502).json({ error: e.message });
+  }
 }
 
 // Delete a TAES participant + everything they submitted. Proxies to
@@ -4561,6 +4657,9 @@ export default async function handler(req, res) {
       case 'taes-upload-photo':         return await taesUploadPhoto(req, res);
       case 'taes-partners':             return await taesPartners(req, res);
       case 'taes-reviews':              return await taesReviews(req, res);
+      case 'taes-push-review':          return await taesPushReview(req, res, ctx);
+      case 'taes-push-website':         return await taesPushWebsite(req, res, ctx);
+      case 'taes-record-consent':       return await taesRecordConsent(req, res, ctx);
       case 'trash':                     return await listTrash(req, res, ctx);
       case 'restore-record':            return await restoreTrashRecord(req, res);
       case 'ensure-default-clients': return await ensureDefaultClients(req, res);

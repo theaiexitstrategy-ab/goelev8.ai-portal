@@ -10039,7 +10039,10 @@ function taesProfileNodes(d, opts) {
   // its own `mods` binding — don't shadow it here.
   const progressMods = d.modules || [];
   const total = progressMods.length;
-  const done = progressMods.filter((m) => (m.status || '').toLowerCase() === 'complete').length;
+  // TAES stores completion status as 'completed' (past tense) — matches
+  // lib/tracker/roster.ts on the TAES side. Earlier we filtered on
+  // 'complete' which never matched, so every profile showed 0/N.
+  const done = progressMods.filter((m) => (m.status || '').toLowerCase() === 'completed').length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const quizAvg = (() => {
     const scores = progressMods.map((m) => m.quiz_score).filter((s) => s != null);
@@ -10269,7 +10272,8 @@ async function viewTaes() {
       // a friend + consent + showcase state. Minor participants can't
       // be pushed to the public showcase until parental consent is on
       // file (parent_consent_on_file=true) — this view surfaces that
-      // gating explicitly.
+      // gating explicitly, and lets the operator record consent +
+      // push review/site in one place.
       const r = await api('/api/admin?action=taes-reviews');
       const reviews = r.reviews || [];
       const badge = (color, bg, text) => el('span', {
@@ -10281,10 +10285,70 @@ async function viewTaes() {
         if (!rev.permissionToShare) return badge('#fbd38d', 'rgba(251,191,36,0.14)', 'No share permission');
         return badge('#93c5fd', 'rgba(59,130,246,0.14)', 'Eligible · not pushed');
       };
+      // Re-fetch + re-render so a push/consent action's effect is
+      // visible in place. Cheap — reviews response is tiny.
+      const reload = () => { state._taesSub = 'reviews'; render(); };
+      const pushBtn = (label, handler, disabled, disabledReason) => {
+        const b = el('button', {
+          class: 'btn sm', style: 'font-size:0.7rem;padding:4px 8px',
+          title: disabled ? disabledReason : '',
+          onclick: disabled ? undefined : async (e) => {
+            e.currentTarget.disabled = true;
+            e.currentTarget.textContent = '…';
+            try { await handler(); toast(label + ' — done'); reload(); }
+            catch (err) {
+              toast(label + ' failed: ' + (err.message || 'unknown'), true, 6000);
+              e.currentTarget.disabled = false;
+              e.currentTarget.textContent = label;
+            }
+          }
+        }, label);
+        if (disabled) b.disabled = true;
+        return b;
+      };
+      const rowActions = (rev) => {
+        const btns = [];
+        if (rev.isMinor && !rev.parentConsentOnFile) {
+          btns.push(pushBtn('✓ Consent on file', async () => {
+            await api('/api/admin?action=taes-record-consent', {
+              method: 'POST', body: { participant_id: rev.participantId }
+            });
+          }, false));
+        }
+        if (!rev.pushedToShowcase) {
+          const blockedByMinor = rev.isMinor && !rev.parentConsentOnFile;
+          const blockedByShare = !rev.permissionToShare;
+          btns.push(pushBtn('📣 Push review',
+            async () => {
+              await api('/api/admin?action=taes-push-review', {
+                method: 'POST', body: { review_id: rev.id }
+              });
+            },
+            blockedByMinor || blockedByShare,
+            blockedByMinor ? 'Guardian consent required first' : blockedByShare ? 'Participant did not opt in to share' : ''
+          ));
+        }
+        if (rev.websiteProjectId) {
+          // Sites can be pushed independently of the review. Same
+          // minor consent gate applies server-side.
+          const blockedByMinor = rev.isMinor && !rev.parentConsentOnFile;
+          btns.push(pushBtn('🌐 Approve site',
+            async () => {
+              await api('/api/admin?action=taes-push-website', {
+                method: 'POST', body: { project_id: rev.websiteProjectId }
+              });
+            },
+            blockedByMinor,
+            blockedByMinor ? 'Guardian consent required first' : ''
+          ));
+        }
+        if (!btns.length) btns.push(el('span', { class: 'muted', style: 'font-size:0.7rem' }, '—'));
+        return el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, ...btns);
+      };
       content.replaceChildren(el('div', { class: 'panel' },
         el('h2', {}, 'Reviews (' + reviews.length + ')'),
         el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:12px' },
-          'Submitted at the end of the Website module. Newest first.'),
+          'Submitted at the end of the Website module. Newest first. Use the row actions to record guardian consent, push a review to the showcase, or approve a site for the showcase.'),
         reviews.length ? el('table', {},
           el('thead', {}, el('tr', {},
             el('th', {}, 'When'),
@@ -10292,7 +10356,8 @@ async function viewTaes() {
             el('th', {}, 'Would tell a friend?'),
             el('th', {}, 'What surprised them'),
             el('th', {}, 'Site'),
-            el('th', {}, 'Showcase status'))),
+            el('th', {}, 'Showcase status'),
+            el('th', {}, 'Actions'))),
           el('tbody', {}, ...reviews.map((rev) => el('tr', {},
             el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' },
               taesFmtDate(rev.createdAt)),
@@ -10312,7 +10377,8 @@ async function viewTaes() {
               rev.siteUrl
                 ? el('a', { href: rev.siteUrl, target: '_blank', rel: 'noopener' }, rev.siteSubdomain || rev.siteUrl)
                 : '—'),
-            el('td', {}, showcaseBadge(rev))
+            el('td', {}, showcaseBadge(rev)),
+            el('td', {}, rowActions(rev))
           )))
         ) : el('p', { class: 'muted' }, 'No reviews yet. Reviews land here as TAES participants complete the Website module.')));
     } else {
