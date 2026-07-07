@@ -8605,6 +8605,16 @@ async function viewAdmin() {
     el('h1', {}, 'Master Admin'),
     el('div', { class: 'muted' }, 'Cross-tenant operations · only visible to platform admins')));
 
+  // Hoisted so every panel below can subscribe to the clients-loaded
+  // event without hitting a temporal-dead-zone ReferenceError. The
+  // client-mgmt panel (further down) is what actually populates
+  // allClients and fires the onClientsLoaded callbacks; other panels
+  // that need the list (e.g. the Provisioning dropdown) push their
+  // fill fn onto onClientsLoaded up here and get called back when
+  // the fetch resolves.
+  let allClients = [];
+  const onClientsLoaded = [];
+
   // Seed defaults once; also deletes any stale DLP row so it doesn't keep
   // showing up as a duplicate/acronym for Daniels Legacy Planning.
   await api('/api/admin?action=ensure-default-clients', { method: 'POST' }).catch(() => {});
@@ -9564,8 +9574,8 @@ async function viewAdmin() {
   tablePanel.appendChild(cardGridHost);
   wrap.appendChild(tablePanel);
 
-  let allClients = [];
-  const onClientsLoaded = [];
+  // allClients + onClientsLoaded are hoisted to the top of viewAdmin
+  // so earlier panels (like the Provisioning dropdown) can subscribe.
   const refresh = async () => {
     const r = await api('/api/admin?action=list-clients');
     allClients = (r.clients || []).filter(c =>
