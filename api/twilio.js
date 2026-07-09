@@ -405,6 +405,86 @@ export default async function handler(req, res) {
       return res.status(200).send(`<Response><Message>${reply}</Message></Response>`);
     }
 
+    // ── Keyword fast-path ─────────────────────────────────────────
+    // Before handing off to Vapi, check whether the incoming message
+    // is an exact match for a per-tenant artist keyword (e.g. texting
+    // "Leslie" to iSlay Studios' number). If so, reply immediately
+    // with that artist's welcome + booking link and skip the AI
+    // concierge. Falls through untouched when nothing matches so the
+    // existing Vapi conversation flow keeps handling free-form text.
+    //
+    // Matching rules (per product spec):
+    //   - normalize = body.trim().toLowerCase()
+    //   - exact match against the ENTIRE body (not "contains") so
+    //     ambiguous text like "Leslie tomorrow?" falls through to AI
+    //   - skip when contact.opted_out is true (TCPA — don't message
+    //     unsubscribed recipients even on inbound-triggered replies)
+    if (!contact?.opted_out) {
+      const normalized = body.trim().toLowerCase();
+      if (normalized) {
+        const { data: kwRows } = await supabaseAdmin
+          .from('artist_sms_keywords')
+          .select('artist_name, role, booking_url, welcome_message, booking_type, keywords')
+          .eq('client_id', client.id)
+          .eq('active', true);
+        const match = (kwRows || []).find(row =>
+          Array.isArray(row.keywords) &&
+          row.keywords.some(k => String(k || '').trim().toLowerCase() === normalized)
+        );
+        if (match) {
+          const actionPhrase = match.booking_type === 'message'
+            ? 'Message us here to book'
+            : 'Grab your spot here';
+          const rolePart = match.role ? `, our ${match.role}` : '';
+          const businessName = client.name || 'the studio';
+          const kwReply = match.welcome_message
+            || `Hey! You've reached ${businessName} 👑 You're all set to book with ${match.artist_name}${rolePart}. ${actionPhrase}:\n${match.booking_url}\n\nReply STOP to opt out.`;
+
+          // Log the outbound so it threads correctly in the portal
+          // Messages tab. NOTE: deliberately skips truncateForSms —
+          // the booking URL has to survive intact even if that means
+          // Twilio bills an extra segment.
+          await supabaseAdmin.from('messages').insert({
+            client_id: client.id,
+            contact_id: contact?.id || null,
+            lead_id: leadId,
+            direction: 'outbound',
+            body: kwReply,
+            segments: estimateSegments(kwReply),
+            status: 'sent',
+            to_number: from,
+            from_number: to
+          });
+
+          // Best-effort lead capture for CRM visibility. Non-fatal —
+          // a failed insert here shouldn't prevent the customer from
+          // getting their reply.
+          try {
+            await supabaseAdmin.from('leads').insert({
+              client_id:       client.id,
+              phone:           from,
+              name:            (contact?.name && contact.name !== from) ? contact.name : null,
+              artist_selected: match.artist_name,
+              booking_url:     match.booking_url,
+              source:          'sms_keyword',
+              lead_source:     'sms_keyword',
+              lead_status:     'New'
+            });
+          } catch (e) {
+            console.error('[twilio/inbound] sms_keyword lead insert failed:', e.message);
+          }
+
+          const encodeXml = (s) => String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+          res.setHeader('Content-Type', 'text/xml');
+          return res
+            .status(200)
+            .send(`<Response><Message>${encodeXml(kwReply)}</Message></Response>`);
+        }
+      }
+    }
+
     // Forward the original Twilio payload to Vapi so the SMS assistant
     // can continue its conversation. Return Vapi's TwiML response to
     // Twilio. If Vapi is unreachable, return an empty TwiML so Twilio
