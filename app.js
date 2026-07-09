@@ -10084,6 +10084,21 @@ function taesProfileNodes(d, opts) {
       enrolled: taesFmtDate(p.created_at),
     })));
 
+  body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },
+    el('h3', {}, 'Review approval'),
+    el('p', { class: 'muted', style: 'font-size:0.82rem;margin:0 0 10px' }, 'If they left a review but didn’t approve sharing it, send a one-tap reminder (push → SMS → email).'),
+    el('button', {
+      class: 'btn',
+      onclick: async (e) => {
+        const b = e.currentTarget; const orig = b.textContent; b.disabled = true; b.textContent = 'Sending…';
+        try {
+          const r = await api('/api/admin?action=taes-review-reminder&id=' + encodeURIComponent(p.id), { method: 'POST' });
+          toast(r && r.alreadyApproved ? 'They already approved sharing 👍' : ('Reminder sent via ' + ((r && r.channel) || 'message') + ' ✓'));
+        } catch (err) { toast((err && err.message) || 'Could not send reminder', true); }
+        b.disabled = false; b.textContent = orig;
+      },
+    }, '📣 Send approval reminder')));
+
   if (d.website) {
     const w = d.website;
     body.appendChild(el('div', { class: 'panel', style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px' },

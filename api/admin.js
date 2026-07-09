@@ -4414,6 +4414,17 @@ async function taesPartners(req, res) {
 async function taesReviews(req, res) {
   return taesProxy(res, 'reviews');
 }
+// Remind a graduate to approve sharing their review (push -> SMS -> email).
+async function taesReviewReminder(req, res) {
+  const url = new URL(req.url, 'http://x');
+  const id = url.searchParams.get('id');
+  if (!id) return res.status(400).json({ error: 'id_required' });
+  try {
+    return res.status(200).json(await taesFetch(`review-reminder/${encodeURIComponent(id)}`, { method: 'POST' }));
+  } catch (e) {
+    return res.status(e.status || 502).json({ error: e.message });
+  }
+}
 
 // Push a review to the TAES public showcase. Blocked server-side for
 // minors without recorded parental consent — surfaced back to the SPA
@@ -4678,6 +4689,7 @@ export default async function handler(req, res) {
       case 'taes-upload-photo':         return await taesUploadPhoto(req, res);
       case 'taes-partners':             return await taesPartners(req, res);
       case 'taes-reviews':              return await taesReviews(req, res);
+      case 'taes-review-reminder':      return await taesReviewReminder(req, res);
       case 'taes-push-review':          return await taesPushReview(req, res, ctx);
       case 'taes-push-website':         return await taesPushWebsite(req, res, ctx);
       case 'taes-record-consent':       return await taesRecordConsent(req, res, ctx);
