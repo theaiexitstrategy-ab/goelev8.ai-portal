@@ -913,7 +913,8 @@ const TAB_LABELS = {
   admin_sales: 'Sales',
   taes:      'TAES',
   booking_admin: 'book.goelev8.ai',
-  wellness_clients: 'Wellness Clients'
+  wellness_clients: 'Wellness Clients',
+  website:   'Website'
 };
 
 const TAB_ICONS = {
@@ -938,7 +939,8 @@ const TAB_ICONS = {
   admin_sales: '💰',
   taes:      '🎓',
   booking_admin: '🗓️',
-  wellness_clients: '🌿'
+  wellness_clients: '🌿',
+  website:   '🌐'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
@@ -11259,6 +11261,485 @@ async function openLocsClientDetail(clientId) {
   modal.replaceChildren(...nodes);
 }
 
+// ─── Locs & Wellness Co. — Website (edit my site) ──────────────────
+// One-tab CMS for locsandwellness.com. Reads locs_site_content via
+// /api/portal/locs-site?action=list; each section renders as a
+// collapsible editor; Save-per-section upserts the whole section
+// object (backend + live-site homepage merge is shallow on top-level
+// keys, arrays replace wholesale). Media fields upload to the public
+// locs-site bucket and store either the storage path OR a full https
+// URL — the live site's resolveImage() handles either.
+//
+// Schema below MUST match lib/marketing/content.ts SiteContent in the
+// source repo (c:/Users/aaron/OneDrive/Desktop/Locs and Wellness/
+// locsandwellness/lib/marketing/content.ts). Drift here breaks the
+// homepage. Quiz is edited via a bespoke sub-editor because its shape
+// (questions → options → key enum + results dict) doesn't fit the
+// generic renderer.
+const LOCS_SITE_SCHEMA = [
+  { key: 'hero', label: 'Hero', fields: [
+    { k: 'headline', l: 'Headline', t: 'text' },
+    { k: 'tagline',  l: 'Tagline',  t: 'textarea' },
+    { k: 'cta',      l: 'CTA button text', t: 'text' },
+    { k: 'ctaUrl',   l: 'CTA URL',  t: 'url' },
+    { k: 'image',    l: 'Hero image or video', t: 'media', accept: 'image/*,video/*' },
+  ]},
+  { key: 'method', label: 'The Method', fields: [
+    { k: 'title', l: 'Title', t: 'text' },
+    { k: 'intro', l: 'Intro', t: 'textarea' },
+    { k: 'steps', l: 'Steps', t: 'objectList', item: [
+      { k: 'n',     l: 'Number label', t: 'text' },
+      { k: 'title', l: 'Title', t: 'text' },
+      { k: 'body',  l: 'Body',  t: 'textarea' },
+    ]},
+  ]},
+  { key: 'services', label: 'Services', shape: 'array', item: [
+    { k: 'title',      l: 'Title', t: 'text' },
+    { k: 'body',       l: 'Body',  t: 'textarea' },
+    { k: 'bookingUrl', l: 'Booking URL', t: 'url' },
+    { k: 'image',      l: 'Image or video', t: 'media', accept: 'image/*,video/*' },
+  ]},
+  { key: 'scalpWellness', label: 'Scalp Wellness', fields: [
+    { k: 'title', l: 'Title', t: 'text' },
+    { k: 'intro', l: 'Intro', t: 'textarea' },
+    { k: 'pills', l: 'Pill chips', t: 'stringList' },
+  ]},
+  { key: 'products', label: 'Products & Home Care', fields: [
+    { k: 'title', l: 'Title', t: 'text' },
+    { k: 'intro', l: 'Intro', t: 'textarea' },
+    { k: 'items', l: 'Products', t: 'objectList', item: [
+      { k: 'name',  l: 'Name', t: 'text' },
+      { k: 'body',  l: 'Body', t: 'textarea' },
+      { k: 'image', l: 'Image', t: 'media', accept: 'image/*' },
+    ]},
+  ]},
+  { key: 'ebooks', label: 'E-books / Learn with me', fields: [
+    { k: 'title', l: 'Title', t: 'text' },
+    { k: 'intro', l: 'Intro', t: 'textarea' },
+    { k: 'items', l: 'E-books', t: 'objectList', item: [
+      { k: 'title',     l: 'Title', t: 'text' },
+      { k: 'body',      l: 'Body',  t: 'textarea' },
+      { k: 'buttonUrl', l: 'Button URL', t: 'url' },
+      { k: 'cover',     l: 'Cover image', t: 'media', accept: 'image/*' },
+    ]},
+  ]},
+  { key: 'about', label: 'About / Meet Leslie', fields: [
+    { k: 'title',          l: 'Title',    t: 'text' },
+    { k: 'bio',            l: 'Bio paragraphs', t: 'stringList' },
+    { k: 'certifications', l: 'Certifications', t: 'stringList' },
+    { k: 'headshot',       l: 'Headshot image', t: 'media', accept: 'image/*' },
+  ]},
+  { key: 'testimonials', label: 'Testimonials', fields: [
+    { k: 'showBeforeAfter', l: 'Show before/after row', t: 'boolean' },
+    { k: 'items', l: 'Testimonials', t: 'objectList', item: [
+      { k: 'quote',       l: 'Quote', t: 'textarea' },
+      { k: 'name',        l: 'Name', t: 'text' },
+      { k: 'service',     l: 'Service', t: 'text' },
+      { k: 'beforeImage', l: 'Before image', t: 'media', accept: 'image/*' },
+      { k: 'afterImage',  l: 'After image',  t: 'media', accept: 'image/*' },
+    ]},
+  ]},
+  { key: 'finalCta', label: 'Final CTA', fields: [
+    { k: 'headline', l: 'Headline', t: 'text' },
+    { k: 'subtext',  l: 'Subtext',  t: 'textarea' },
+    { k: 'cta',      l: 'CTA button text', t: 'text' },
+    { k: 'ctaUrl',   l: 'CTA URL',  t: 'url' },
+  ]},
+];
+const QUIZ_KEYS = ['sisterlocks', 'traditional', 'large', 'scalp', 'styling'];
+
+// Section-key → default shape, mirrored from content.ts DEFAULTS so an
+// unsaved section still renders a form (rather than "no data"). Only
+// the SHAPE matters; the copy is pulled from the loaded row when set.
+const LOCS_SITE_DEFAULT_SHAPES = {
+  hero:          { headline: '', tagline: '', cta: '', ctaUrl: '', image: '' },
+  method:        { title: '', intro: '', steps: [] },
+  services:      [],
+  scalpWellness: { title: '', intro: '', pills: [] },
+  products:      { title: '', intro: '', items: [] },
+  ebooks:        { title: '', intro: '', items: [] },
+  about:         { title: '', bio: [], certifications: [], headshot: '' },
+  testimonials:  { showBeforeAfter: false, items: [] },
+  finalCta:      { headline: '', subtext: '', cta: '', ctaUrl: '' },
+  quiz:          { intro: '', questions: [], results: {
+    sisterlocks: { title: '', body: '' }, traditional: { title: '', body: '' },
+    large: { title: '', body: '' }, scalp: { title: '', body: '' }, styling: { title: '', body: '' }
+  } }
+};
+
+// Resolve a media field value into a URL for the editor's live
+// thumbnail. Bare storage path → prefix; full URL → use as-is.
+// Empty → return null so the caller renders the placeholder.
+function locsResolveMediaUrl(val, prefix) {
+  if (!val) return null;
+  const s = String(val).trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  return (prefix || '') + s.replace(/^\/+/, '');
+}
+function locsIsVideoPath(val) {
+  return /\.(mp4|webm|ogg|mov)(\?|$)/i.test(String(val || ''));
+}
+
+// Generic field-editor factory. Takes ({ field, get, set }) where get()
+// returns the current value and set(v) mutates the working section
+// object. onChange fires so the "Unsaved changes" indicator lights up.
+// Media fields also need mediaCtx (uploader + prefix).
+function locsRenderField({ field, get, set, onChange, mediaCtx }) {
+  const wrap = el('div', { style: 'margin-bottom:12px' });
+  wrap.appendChild(el('div', { class: 'muted', style: 'font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px' }, field.l));
+  const commit = (v) => { set(v); onChange(); };
+
+  if (field.t === 'text' || field.t === 'url') {
+    const inp = el('input', { type: field.t === 'url' ? 'url' : 'text', value: get() ?? '', style: 'width:100%' });
+    inp.oninput = () => commit(inp.value);
+    wrap.appendChild(inp);
+  } else if (field.t === 'textarea') {
+    const ta = el('textarea', { rows: 3, style: 'width:100%;min-height:80px' }, get() ?? '');
+    ta.oninput = () => commit(ta.value);
+    wrap.appendChild(ta);
+  } else if (field.t === 'boolean') {
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = !!get();
+    cb.onchange = () => commit(cb.checked);
+    wrap.appendChild(el('label', { style: 'display:flex;align-items:center;gap:8px;cursor:pointer' },
+      cb, el('span', {}, 'Enabled')));
+  } else if (field.t === 'stringList') {
+    const list = Array.isArray(get()) ? get().slice() : [];
+    const host = el('div', {});
+    const drawList = () => {
+      host.innerHTML = '';
+      list.forEach((val, i) => {
+        const row = el('div', { style: 'display:flex;gap:6px;margin-bottom:4px' });
+        const inp = el('input', { type: 'text', value: val, style: 'flex:1' });
+        inp.oninput = () => { list[i] = inp.value; commit(list); };
+        const del = el('button', { class: 'btn ghost sm', style: 'color:#fca5a5', onclick: () => {
+          list.splice(i, 1); commit(list); drawList();
+        }}, '×');
+        row.append(inp, del);
+        host.appendChild(row);
+      });
+      const add = el('button', { class: 'btn sm ghost', style: 'font-size:0.75rem', onclick: () => {
+        list.push(''); commit(list); drawList();
+      }}, '+ Add');
+      host.appendChild(add);
+    };
+    drawList();
+    wrap.appendChild(host);
+  } else if (field.t === 'objectList') {
+    const list = Array.isArray(get()) ? get().slice() : [];
+    const host = el('div', {});
+    const drawList = () => {
+      host.innerHTML = '';
+      list.forEach((row, i) => {
+        const card = el('div', { style: 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:12px;margin-bottom:10px' });
+        card.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' },
+          el('strong', { style: 'font-size:0.85rem' }, '#' + (i + 1)),
+          el('button', { class: 'btn ghost sm', style: 'color:#fca5a5', onclick: () => {
+            list.splice(i, 1); commit(list); drawList();
+          }}, '× Remove')));
+        for (const sub of field.item) {
+          card.appendChild(locsRenderField({
+            field: sub,
+            get: () => row?.[sub.k],
+            set: (v) => { row[sub.k] = v; list[i] = row; },
+            onChange, mediaCtx
+          }));
+        }
+        host.appendChild(card);
+      });
+      const add = el('button', { class: 'btn sm ghost', onclick: () => {
+        const blank = {};
+        for (const sub of field.item) blank[sub.k] = sub.t === 'boolean' ? false : (sub.t === 'stringList' || sub.t === 'objectList' ? [] : '');
+        list.push(blank); commit(list); drawList();
+      }}, '+ Add');
+      host.appendChild(add);
+    };
+    drawList();
+    wrap.appendChild(host);
+  } else if (field.t === 'media') {
+    const stateBox = el('div', { style: 'display:flex;gap:10px;align-items:flex-start' });
+    const thumbHost = el('div', { style: 'width:140px;height:100px;border-radius:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:0.7rem;color:var(--muted,#888);flex:0 0 auto' });
+    const meta = el('div', { style: 'flex:1;font-size:0.75rem;display:flex;flex-direction:column;gap:6px' });
+    const pathIn = el('input', { type: 'text', style: 'width:100%;font-size:0.72rem', placeholder: 'https://… or path in locs-site bucket' });
+    pathIn.value = get() || '';
+    pathIn.oninput = () => { commit(pathIn.value); renderThumb(); };
+    const btnRow = el('div', { style: 'display:flex;gap:6px' });
+    const upBtn = el('button', { class: 'btn sm', style: 'font-size:0.72rem' }, '⬆ Upload');
+    const clearBtn = el('button', { class: 'btn ghost sm', style: 'font-size:0.72rem;color:#fca5a5' }, '× Clear');
+    clearBtn.onclick = () => { pathIn.value = ''; commit(''); renderThumb(); };
+    upBtn.onclick = async () => {
+      upBtn.disabled = true; upBtn.textContent = 'Picking…';
+      try {
+        const picker = document.createElement('input');
+        picker.type = 'file';
+        picker.accept = field.accept || 'image/*';
+        picker.onchange = async () => {
+          const file = picker.files?.[0];
+          if (!file) { upBtn.disabled = false; upBtn.textContent = '⬆ Upload'; return; }
+          upBtn.textContent = 'Uploading…';
+          try {
+            const dataUrl = await new Promise((resolve, reject) => {
+              const r = new FileReader();
+              r.onload = () => resolve(r.result); r.onerror = () => reject(new Error('read_failed'));
+              r.readAsDataURL(file);
+            });
+            const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, '-');
+            const uploadPath = field.k + '/' + Date.now() + '-' + safeName;
+            const resp = await api('/api/portal/locs-site?action=upload-media', {
+              method: 'POST', body: { path: uploadPath, data_url: dataUrl, mime: file.type }
+            });
+            pathIn.value = resp.path || '';
+            commit(resp.path || '');
+            renderThumb();
+            toast('Uploaded ' + safeName);
+          } catch (e) { toast('Upload failed: ' + (e.message || 'unknown'), true); }
+          finally { upBtn.disabled = false; upBtn.textContent = '⬆ Upload'; }
+        };
+        picker.click();
+      } catch { upBtn.disabled = false; upBtn.textContent = '⬆ Upload'; }
+    };
+    btnRow.append(upBtn, clearBtn);
+    meta.append(pathIn, btnRow);
+    const renderThumb = () => {
+      thumbHost.innerHTML = '';
+      const url = locsResolveMediaUrl(pathIn.value, mediaCtx?.prefix);
+      if (!url) { thumbHost.appendChild(el('span', {}, 'No media')); return; }
+      if (locsIsVideoPath(pathIn.value)) {
+        thumbHost.appendChild(el('video', { src: url, style: 'max-width:100%;max-height:100%', controls: true }));
+      } else {
+        thumbHost.appendChild(el('img', { src: url, style: 'max-width:100%;max-height:100%;object-fit:cover' }));
+      }
+    };
+    renderThumb();
+    stateBox.append(thumbHost, meta);
+    wrap.appendChild(stateBox);
+  } else {
+    wrap.appendChild(el('span', { class: 'err' }, 'Unknown field type: ' + field.t));
+  }
+  return wrap;
+}
+
+// Bespoke quiz editor — copy-only per the spec (tally→result logic
+// stays fixed; option keys are constrained to QUIZ_KEYS).
+function locsRenderQuizEditor(getCur, setCur, onChange) {
+  const wrap = el('div', {});
+  const draw = () => {
+    wrap.innerHTML = '';
+    const cur = getCur();
+    // Intro
+    wrap.appendChild(locsRenderField({
+      field: { l: 'Intro', t: 'textarea' },
+      get: () => cur.intro || '',
+      set: (v) => { cur.intro = v; setCur(cur); },
+      onChange
+    }));
+    // Questions
+    wrap.appendChild(el('h4', { style: 'margin:12px 0 6px;font-size:0.85rem;color:#a7f3d0' }, 'Questions'));
+    const qList = Array.isArray(cur.questions) ? cur.questions : [];
+    qList.forEach((q, i) => {
+      const card = el('div', { style: 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:12px;margin-bottom:10px' });
+      card.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' },
+        el('strong', {}, 'Q' + (i + 1)),
+        el('button', { class: 'btn ghost sm', style: 'color:#fca5a5', onclick: () => {
+          qList.splice(i, 1); cur.questions = qList; setCur(cur); onChange(); draw();
+        }}, '× Remove')));
+      const qIn = el('input', { type: 'text', value: q.q || '', style: 'width:100%;margin-bottom:8px' });
+      qIn.oninput = () => { q.q = qIn.value; setCur(cur); onChange(); };
+      card.appendChild(qIn);
+      card.appendChild(el('div', { class: 'muted', style: 'font-size:0.7rem;margin-bottom:4px' }, 'Options'));
+      const opts = Array.isArray(q.options) ? q.options : [];
+      opts.forEach((opt, oi) => {
+        const row = el('div', { style: 'display:flex;gap:6px;margin-bottom:4px' });
+        const lbl = el('input', { type: 'text', value: opt.label || '', placeholder: 'Label', style: 'flex:1' });
+        lbl.oninput = () => { opt.label = lbl.value; setCur(cur); onChange(); };
+        const kSel = el('select', { style: 'width:130px' },
+          ...QUIZ_KEYS.map(k => el('option', { value: k }, k)));
+        kSel.value = QUIZ_KEYS.includes(opt.key) ? opt.key : QUIZ_KEYS[0];
+        kSel.onchange = () => { opt.key = kSel.value; setCur(cur); onChange(); };
+        const del = el('button', { class: 'btn ghost sm', style: 'color:#fca5a5', onclick: () => {
+          opts.splice(oi, 1); q.options = opts; setCur(cur); onChange(); draw();
+        }}, '×');
+        row.append(lbl, kSel, del);
+        card.appendChild(row);
+      });
+      const addOpt = el('button', { class: 'btn sm ghost', style: 'font-size:0.72rem', onclick: () => {
+        opts.push({ label: '', key: QUIZ_KEYS[0] }); q.options = opts; setCur(cur); onChange(); draw();
+      }}, '+ Add option');
+      card.appendChild(addOpt);
+      wrap.appendChild(card);
+    });
+    const addQ = el('button', { class: 'btn sm ghost', onclick: () => {
+      qList.push({ q: '', options: [] }); cur.questions = qList; setCur(cur); onChange(); draw();
+    }}, '+ Add question');
+    wrap.appendChild(addQ);
+
+    // Results (title + body per fixed key)
+    wrap.appendChild(el('h4', { style: 'margin:14px 0 6px;font-size:0.85rem;color:#a7f3d0' }, 'Results'));
+    const results = cur.results || {};
+    for (const k of QUIZ_KEYS) {
+      results[k] = results[k] || { title: '', body: '' };
+      const card = el('div', { style: 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:12px;margin-bottom:8px' });
+      card.appendChild(el('div', { style: 'font-size:0.78rem;color:#a7f3d0;margin-bottom:6px' }, k));
+      const t = el('input', { type: 'text', value: results[k].title || '', placeholder: 'Title', style: 'width:100%;margin-bottom:6px' });
+      t.oninput = () => { results[k].title = t.value; cur.results = results; setCur(cur); onChange(); };
+      const b = el('textarea', { rows: 2, style: 'width:100%' }, results[k].body || '');
+      b.oninput = () => { results[k].body = b.value; cur.results = results; setCur(cur); onChange(); };
+      card.append(t, b);
+      wrap.appendChild(card);
+    }
+  };
+  draw();
+  return wrap;
+}
+
+async function viewWebsiteEditor() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, '🌐 Website'),
+    el('div', { style: 'display:flex;gap:12px;align-items:center' },
+      el('div', { class: 'muted' }, 'Edit any section of locsandwellness.com. Save is per-section.'),
+      el('a', { href: 'https://locsandwellness.com', target: '_blank', rel: 'noopener', style: 'font-size:0.85rem' }, 'View live site ↗'))));
+
+  const host = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading current site content…'));
+  wrap.appendChild(host);
+
+  let payload;
+  try {
+    payload = await api('/api/portal/locs-site?action=list');
+  } catch (e) {
+    host.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + e.message));
+    return wrap;
+  }
+  host.innerHTML = '';
+
+  const byKey = payload?.byKey || {};
+  const mediaCtx = { prefix: payload?.siteBucketPublicPrefix || '' };
+
+  // Build a section editor as a <details> element. Each has its own
+  // working copy + Save button so mistakes on one section can't wipe
+  // another. Live saved-timestamp shown in the summary.
+  for (const section of LOCS_SITE_SCHEMA) {
+    const savedTS = (payload?.rows || []).find((r) => r.key === section.key)?.updated_at;
+    let working;
+    if (section.shape === 'array') {
+      working = Array.isArray(byKey[section.key]) ? JSON.parse(JSON.stringify(byKey[section.key])) : [];
+    } else {
+      working = { ...(LOCS_SITE_DEFAULT_SHAPES[section.key] || {}), ...(byKey[section.key] || {}) };
+    }
+    let dirty = false;
+    const status = el('span', { class: 'muted', style: 'font-size:0.72rem;font-weight:400' },
+      savedTS ? 'Saved · ' + new Date(savedTS).toLocaleString() : 'Not yet saved');
+    const summary = el('summary', {
+      style: 'cursor:pointer;padding:14px 16px;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px'
+    },
+      el('span', {}, section.label),
+      status);
+    const details = el('details', {
+      style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px'
+    }, summary);
+
+    const editorHost = el('div', { style: 'padding:0 16px 16px' });
+
+    const onChange = () => {
+      dirty = true;
+      status.textContent = '● Unsaved changes';
+      status.style.color = '#fbd38d';
+    };
+
+    if (section.shape === 'array') {
+      // services: top-level array of {title, body, bookingUrl, image}
+      editorHost.appendChild(locsRenderField({
+        field: { l: section.label, t: 'objectList', item: section.item },
+        get: () => working,
+        set: (v) => { working = v; },
+        onChange, mediaCtx
+      }));
+    } else if (section.key === 'quiz') {
+      // handled separately below
+    } else {
+      for (const f of section.fields) {
+        editorHost.appendChild(locsRenderField({
+          field: f,
+          get: () => working[f.k],
+          set: (v) => { working[f.k] = v; },
+          onChange, mediaCtx
+        }));
+      }
+    }
+
+    // Quiz editor is inserted here manually because its shape doesn't
+    // fit LOCS_SITE_SCHEMA's field list.
+    if (section.key === 'quiz') { /* not built here — see below */ }
+
+    // Save row
+    const saveBtn = el('button', { class: 'btn primary', style: 'font-size:0.82rem' }, 'Save section');
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        await api('/api/portal/locs-site?action=save', {
+          method: 'POST', body: { key: section.key, data: working }
+        });
+        dirty = false;
+        status.textContent = 'Saved · just now';
+        status.style.color = '';
+        toast(section.label + ' saved');
+      } catch (e) {
+        toast('Save failed: ' + (e.message || 'unknown'), true);
+      } finally {
+        saveBtn.disabled = false; saveBtn.textContent = 'Save section';
+      }
+    };
+    editorHost.appendChild(el('div', { style: 'display:flex;justify-content:flex-end;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);margin-top:10px' }, saveBtn));
+    details.appendChild(editorHost);
+    host.appendChild(details);
+  }
+
+  // Quiz section — inserted between Hero and Method in page order, but
+  // built via its bespoke editor. Do it after the main loop so the
+  // schema-driven flow above stays simple.
+  {
+    const savedTS = (payload?.rows || []).find((r) => r.key === 'quiz')?.updated_at;
+    let working = { ...(LOCS_SITE_DEFAULT_SHAPES.quiz), ...(byKey.quiz || {}) };
+    working.questions = Array.isArray(working.questions) ? working.questions : [];
+    working.results = working.results || { ...(LOCS_SITE_DEFAULT_SHAPES.quiz.results) };
+    const status = el('span', { class: 'muted', style: 'font-size:0.72rem;font-weight:400' },
+      savedTS ? 'Saved · ' + new Date(savedTS).toLocaleString() : 'Not yet saved');
+    const summary = el('summary', {
+      style: 'cursor:pointer;padding:14px 16px;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px'
+    }, el('span', {}, 'Quiz (copy only — tally logic stays fixed)'), status);
+    const details = el('details', {
+      style: 'margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px'
+    }, summary);
+    const editorHost = el('div', { style: 'padding:0 16px 16px' });
+    editorHost.appendChild(locsRenderQuizEditor(
+      () => working,
+      (v) => { working = v; },
+      () => { status.textContent = '● Unsaved changes'; status.style.color = '#fbd38d'; }
+    ));
+    const saveBtn = el('button', { class: 'btn primary', style: 'font-size:0.82rem' }, 'Save section');
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        await api('/api/portal/locs-site?action=save', {
+          method: 'POST', body: { key: 'quiz', data: working }
+        });
+        status.textContent = 'Saved · just now';
+        status.style.color = '';
+        toast('Quiz saved');
+      } catch (e) { toast('Save failed: ' + (e.message || 'unknown'), true); }
+      finally { saveBtn.disabled = false; saveBtn.textContent = 'Save section'; }
+    };
+    editorHost.appendChild(el('div', { style: 'display:flex;justify-content:flex-end;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);margin-top:10px' }, saveBtn));
+    details.appendChild(editorHost);
+    // Insert after Hero (index 0). Falls through to append if only 1 host child so far.
+    if (host.children.length >= 1) host.insertBefore(details, host.children[1] || null);
+    else host.appendChild(details);
+  }
+
+  return wrap;
+}
+
 async function viewAnalytics() {
   const wrap = el('div', {});
   const topbar = el('div', { class: 'topbar' },
@@ -11944,6 +12425,7 @@ async function render() {
       case 'taes':      view = (state.isAdmin || state.client?.slug === 'ai-exit-strategy') ? await viewTaes() : await viewOverview(); break;
       case 'analytics': view = await viewAnalytics(); break;
       case 'wellness_clients': view = (state.isAdmin || state.client?.slug === 'locs-and-wellness') ? await viewWellnessClients() : await viewOverview(); break;
+      case 'website':          view = (state.isAdmin || state.client?.slug === 'locs-and-wellness') ? await viewWebsiteEditor() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
   } catch (e) {

@@ -3971,10 +3971,10 @@ async function applyPendingMigrations(req, res) {
     // /api/portal/merch endpoints already support any tenant whose
     // portal_tabs includes 'merch'. Slug-scoped + idempotent.
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","merch","messaging","analytics","wellness_clients","settings"]'::jsonb
+       SET portal_tabs = '["overview","leads","merch","messaging","analytics","wellness_clients","website","settings"]'::jsonb
      WHERE slug = 'locs-and-wellness'
        AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","merch","messaging","analytics","wellness_clients","settings"]'::jsonb;`,
+           '["overview","leads","merch","messaging","analytics","wellness_clients","website","settings"]'::jsonb;`,
     // Generate a portal_api_key so a future L&W storefront can
     // authenticate to /api/external/orders (same shape iSlay + WPFF
     // use). Idempotent — skipped if already set.
