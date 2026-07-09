@@ -912,7 +912,8 @@ const TAB_LABELS = {
   admin:     'Master Admin',
   admin_sales: 'Sales',
   taes:      'TAES',
-  booking_admin: 'book.goelev8.ai'
+  booking_admin: 'book.goelev8.ai',
+  wellness_clients: 'Wellness Clients'
 };
 
 const TAB_ICONS = {
@@ -936,7 +937,8 @@ const TAB_ICONS = {
   admin:     '🛡️',
   admin_sales: '💰',
   taes:      '🎓',
-  booking_admin: '🗓️'
+  booking_admin: '🗓️',
+  wellness_clients: '🌿'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
@@ -10888,6 +10890,375 @@ async function viewBookingAdmin() {
 // ============================================================
 // ANALYTICS (admin-only — ab@goelev8.ai)
 // ============================================================
+// ─── Locs & Wellness Co. — Wellness Clients ─────────────────────
+// Ports Leslie's admin roster + client-detail from the source React
+// console (c:/Users/aaron/OneDrive/Desktop/Locs and Wellness/
+// locsandwellness/app/locs/(admin)/*) into the SPA. Backend at
+// /api/portal/wellness-clients handles auth + service-role queries
+// against the locs_* tables; this view just renders.
+//
+// UX shape:
+//   - Roster panel (name, email, loc stage, latest concern, intake
+//     status, last visit) — sorted newest-updated first.
+//   - Row click → openLocsClientDetail(id) opens a modal with:
+//       Client · Loc profile · Health & lifestyle · Scalp history
+//       Journal (with signed-URL photo grid)
+//       Clinical: Pro assessments · Elemental patterns · Zone maps
+//                  · Summaries (with visible_to_client badge) · Notes
+//     All clinical sections are versioned — history newest-first.
+
+function locsFmtDate(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d) ? String(v) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function locsFmtBool(v) { return v == null ? '—' : (v ? 'Yes' : 'No'); }
+function locsFmtList(v) { return Array.isArray(v) && v.length ? v.join(', ') : '—'; }
+function locsRow(label, value) {
+  return el('div', { style: 'display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:0.82rem;border-top:1px solid rgba(255,255,255,0.04)' },
+    el('span', { class: 'muted' }, label),
+    el('span', { style: 'text-align:right;color:var(--text,#e0e0e0)' }, (value === null || value === undefined || value === '') ? '—' : String(value))
+  );
+}
+function locsCard(title, ...children) {
+  return el('div', { class: 'panel', style: 'padding:14px 16px;margin-bottom:12px' },
+    el('h3', { style: 'margin:0 0 6px;font-size:0.95rem;color:#a7f3d0' }, title),
+    ...children);
+}
+function locsSectionHeader(icon, title, subtitle) {
+  return el('div', { style: 'margin:8px 0 8px' },
+    el('div', { style: 'font-size:1rem;font-weight:600;color:#e0e0e0' }, icon + ' ' + title),
+    subtitle ? el('div', { class: 'muted', style: 'font-size:0.75rem' }, subtitle) : null);
+}
+
+async function viewWellnessClients() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, '🌿 Wellness Clients'),
+    el('div', { class: 'muted' }, 'Intake · loc profile · journal · clinical assessments')
+  ));
+  const host = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading roster…'));
+  wrap.appendChild(host);
+
+  let items = [];
+  try {
+    const r = await api('/api/portal/wellness-clients');
+    items = r?.items || [];
+  } catch (e) {
+    host.replaceChildren(el('div', { class: 'muted' },
+      'Could not load roster: ' + (e.message || 'unknown'),
+      el('div', { style: 'font-size:0.75rem;margin-top:6px' },
+        'The Wellness Clients tab is only visible to the Locs & Wellness tenant or master admin. If you see this error while impersonating another tenant, that\'s expected.')
+    ));
+    return wrap;
+  }
+
+  host.innerHTML = '';
+  host.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px' },
+    el('h2', { style: 'margin:0' }, items.length + ' client' + (items.length === 1 ? '' : 's')),
+    el('div', { class: 'muted', style: 'font-size:0.78rem' }, 'Click a row for full profile · clinical layer is admin-only')));
+
+  if (!items.length) {
+    host.appendChild(el('p', { class: 'muted' }, 'No clients have completed intake yet.'));
+    return wrap;
+  }
+
+  const stagePill = (stage) => {
+    if (!stage) return el('span', { class: 'muted' }, '—');
+    const colors = {
+      starter:  '#fef3c7', budding: '#fde68a', teenage: '#fdba74',
+      mature:   '#86efac', freeform: '#a5b4fc'
+    };
+    return el('span', { style: 'padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:600;background:rgba(255,255,255,0.05);color:' + (colors[stage] || '#e0e0e0') }, stage);
+  };
+  const concernPill = (n) => {
+    if (n == null) return el('span', { class: 'muted' }, '—');
+    const color = n >= 8 ? '#fca5a5' : n >= 5 ? '#fbd38d' : '#86efac';
+    return el('span', { style: 'font-weight:600;color:' + color }, n + '/10');
+  };
+
+  const tbl = el('table', {},
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'Name'),
+      el('th', {}, 'Email'),
+      el('th', {}, 'Loc stage'),
+      el('th', { style: 'text-align:right' }, 'Concern'),
+      el('th', {}, 'Intake'),
+      el('th', {}, 'Last visit'))),
+    el('tbody', {}, ...items.map((it) => el('tr', {
+      style: 'cursor:pointer',
+      onclick: () => openLocsClientDetail(it.id)
+    },
+      el('td', {}, it.fullName || el('span', { class: 'muted' }, '(no name yet)')),
+      el('td', { class: 'muted', style: 'font-size:0.8rem' }, it.email || ''),
+      el('td', {}, stagePill(it.locStage)),
+      el('td', { style: 'text-align:right' }, concernPill(it.concernRating)),
+      el('td', { class: 'muted', style: 'font-size:0.75rem' },
+        it.intakeSubmittedAt
+          ? locsFmtDate(it.intakeUpdatedAt || it.intakeSubmittedAt)
+          : el('span', { style: 'color:#fbd38d' }, 'Pending')),
+      el('td', { class: 'muted', style: 'font-size:0.75rem' }, locsFmtDate(it.lastVisit)))))
+  );
+  host.appendChild(tbl);
+  return wrap;
+}
+
+async function openLocsClientDetail(clientId) {
+  const modal = el('div', {
+    class: 'modal',
+    style: 'width:min(920px,96vw);max-height:92vh;overflow-y:auto;padding:0;border-radius:14px;background:#0d1117'
+  });
+  const bg = el('div', {
+    class: 'modal-bg',
+    style: 'background:rgba(0,0,0,0.7);backdrop-filter:blur(4px)',
+    onclick: (e) => { if (e.target === bg) bg.remove(); }
+  }, modal);
+  document.body.appendChild(bg);
+  modal.appendChild(el('div', { style: 'padding:48px;text-align:center' },
+    el('div', { class: 'muted' }, 'Loading profile…')));
+
+  let d;
+  try {
+    d = await api('/api/portal/wellness-clients?action=detail&id=' + encodeURIComponent(clientId));
+  } catch (e) {
+    modal.replaceChildren(el('div', { style: 'padding:24px' },
+      el('h2', {}, 'Could not load client'),
+      el('p', { class: 'err' }, e.message || 'unknown'),
+      el('button', { class: 'btn', onclick: () => bg.remove() }, 'Close')));
+    return;
+  }
+
+  const c = d.client || {};
+  const h = d.health || {};
+  const s = d.scalpHistory || {};
+  const l = d.locProfile || {};
+  const clin = d.clinical || {};
+
+  // ── Header ─────────────────────────────────────────────────────
+  const closeBtn = el('button', {
+    style: 'position:absolute;top:14px;right:14px;background:rgba(0,0,0,0.35);color:#fff;border:none;width:34px;height:34px;border-radius:50%;font-size:1.2rem;cursor:pointer;z-index:2',
+    onclick: () => bg.remove()
+  }, '×');
+  const hero = el('div', { style:
+    'position:relative;padding:28px 24px 20px;text-align:center;' +
+    'background:linear-gradient(135deg,#065f46 0%,#0f766e 50%,#0e7490 100%);' +
+    'border-radius:14px 14px 0 0;color:#fff'
+  },
+    closeBtn,
+    el('h1', { style: 'margin:0;font-size:1.4rem' }, c.full_name || '(no name yet)'),
+    el('div', { style: 'margin-top:4px;font-size:0.85rem;opacity:0.85' },
+      (c.email || '—') + ' · Intake ' + locsFmtDate(c.intake_submitted_at))
+  );
+
+  const body = el('div', { style: 'padding:20px 24px 24px' });
+  const nodes = [hero, body];
+
+  // ── Two-column: left = intake reference, right = clinical layer ─
+  const grid = el('div', { style: 'display:grid;grid-template-columns:minmax(0,300px) 1fr;gap:20px' });
+
+  // LEFT column — read-only intake reference
+  const left = el('div', {});
+  left.appendChild(locsCard('Client',
+    locsRow('Phone', c.phone),
+    locsRow('DOB', locsFmtDate(c.dob)),
+    locsRow('Occupation', c.occupation),
+    locsRow('Referred by', c.referred_by)));
+  left.appendChild(locsCard('Loc profile',
+    locsRow('Stage', l.loc_stage),
+    locsRow('Method', l.loc_method),
+    locsRow('Started', locsFmtDate(l.loc_age_start_date)),
+    locsRow('Last retwist', locsFmtDate(l.last_retwist_date)),
+    locsRow('Retwist cycle', l.retwist_frequency_weeks ? l.retwist_frequency_weeks + ' wks' : null),
+    locsRow('Loc count', l.loc_count),
+    locsRow('Style', l.current_style),
+    locsRow('Notes', l.maintenance_notes)));
+  left.appendChild(locsCard('Health & lifestyle',
+    locsRow('Overall health', h.overall_health),
+    locsRow('Conditions', h.medical_conditions),
+    locsRow('Hormonal', h.hormonal_imbalances),
+    locsRow('Pregnant/nursing', locsFmtBool(h.pregnant_or_nursing)),
+    locsRow('Medications', h.medications_supplements),
+    locsRow('Stress', h.stress_level),
+    locsRow('Sleep', h.sleep_quality),
+    locsRow('Diet', h.diet_type),
+    locsRow('Water', h.water_intake),
+    locsRow('Exercise', h.exercise_routine),
+    locsRow('Smoke/alcohol', h.smokes_or_drinks)));
+  left.appendChild(locsCard('Scalp & hair history',
+    locsRow('Main concerns', locsFmtList(s.main_concerns)),
+    s.concern_other ? locsRow('Other', s.concern_other) : null,
+    locsRow('Onset', s.concern_onset),
+    locsRow('Trend', s.concern_trend),
+    locsRow('Seen specialist', locsFmtBool(s.seen_specialist)),
+    locsRow('Family history', locsFmtBool(s.family_history_hair_loss)),
+    locsRow('Recent treatments', locsFmtBool(s.recent_treatments)),
+    locsRow('Wash frequency', s.wash_frequency),
+    locsRow('Products', s.current_products),
+    locsRow('Symptoms', locsFmtList(s.scalp_symptoms)),
+    locsRow('Concern rating', s.concern_rating != null ? s.concern_rating + '/10' : null)));
+
+  // RIGHT column — clinical layer (versioned)
+  const right = el('div', {});
+  right.appendChild(locsSectionHeader('🔬', 'Clinical layer', 'Admin-only. Every panel below is versioned — newest first.'));
+
+  // Journal
+  const jHost = el('div', { class: 'panel', style: 'padding:14px 16px;margin-bottom:12px' },
+    el('h3', { style: 'margin:0 0 6px;font-size:0.95rem;color:#a7f3d0' },
+      '📔 Journal · ' + (d.journal?.length || 0) + ' entries'));
+  if (!d.journal?.length) {
+    jHost.appendChild(el('p', { class: 'muted', style: 'font-size:0.82rem' }, 'No entries yet.'));
+  } else {
+    for (const j of d.journal.slice(0, 8)) {
+      const row = el('div', { style: 'padding:8px 0;border-top:1px solid rgba(255,255,255,0.04)' });
+      row.appendChild(el('div', { style: 'display:flex;justify-content:space-between;font-size:0.8rem' },
+        el('strong', {}, locsFmtDate(j.entry_date)),
+        el('span', { class: 'muted' },
+          [j.mood, j.scalp_feel].filter(Boolean).join(' · ') || '')));
+      if (Array.isArray(j.symptoms_today) && j.symptoms_today.length) {
+        row.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' },
+          'Symptoms: ' + j.symptoms_today.join(', ')));
+      }
+      if (j.products_used) {
+        row.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' },
+          'Products: ' + j.products_used));
+      }
+      if (j.notes) row.appendChild(el('div', { style: 'font-size:0.8rem;margin-top:4px' }, j.notes));
+      if (Array.isArray(j.photo_urls) && j.photo_urls.length) {
+        row.appendChild(el('div', { style: 'display:flex;gap:6px;margin-top:6px;flex-wrap:wrap' },
+          ...j.photo_urls.map((u) => el('a', { href: u, target: '_blank', rel: 'noopener' },
+            el('img', { src: u, style: 'width:64px;height:64px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.04)' })))));
+      }
+      jHost.appendChild(row);
+    }
+    if (d.journal.length > 8) {
+      jHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:6px' },
+        '+ ' + (d.journal.length - 8) + ' older entries not shown'));
+    }
+  }
+  right.appendChild(jHost);
+
+  // Pro assessments (versioned)
+  const proHost = el('div', { class: 'panel', style: 'padding:14px 16px;margin-bottom:12px' },
+    el('h3', { style: 'margin:0 0 6px;font-size:0.95rem;color:#a7f3d0' },
+      '🔍 Pro assessments · ' + (clin.proHistory?.length || 0)));
+  if (!clin.proHistory?.length) {
+    proHost.appendChild(el('p', { class: 'muted', style: 'font-size:0.82rem' }, 'No assessments yet.'));
+  } else {
+    for (const p of clin.proHistory) {
+      const item = el('details', { style: 'padding:6px 0;border-top:1px solid rgba(255,255,255,0.04)' });
+      const sm = el('summary', { style: 'cursor:pointer;font-size:0.82rem;list-style:none;display:flex;justify-content:space-between' },
+        el('span', {}, locsFmtDate(p.assessed_at) + (p.assessed_by ? ' · ' + p.assessed_by : '')),
+        el('span', { class: 'muted', style: 'font-size:0.72rem' }, [p.sebum_level, p.barrier_status].filter(Boolean).join(' · ')));
+      item.appendChild(sm);
+      const body = el('div', { style: 'padding:6px 0 8px' });
+      [['Sebum', p.sebum_level], ['Barrier', p.barrier_status], ['Microbiome', p.microbiome_balance],
+       ['Inflammation', p.inflammation_level], ['Follicle', p.follicle_activity],
+       ['Sensitivity', p.scalp_sensitivity], ['Hydration', p.hydration_level]
+      ].forEach(([k, v]) => body.appendChild(locsRow(k, v)));
+      item.appendChild(body);
+      proHost.appendChild(item);
+    }
+  }
+  right.appendChild(proHost);
+
+  // Elemental patterns (versioned)
+  const eHost = el('div', { class: 'panel', style: 'padding:14px 16px;margin-bottom:12px' },
+    el('h3', { style: 'margin:0 0 6px;font-size:0.95rem;color:#a7f3d0' },
+      '🔥💧🌬️🪨 Elemental patterns · ' + (clin.elementalHistory?.length || 0)));
+  if (!clin.elementalHistory?.length) {
+    eHost.appendChild(el('p', { class: 'muted', style: 'font-size:0.82rem' }, 'No elemental assessments yet.'));
+  } else {
+    for (const e of clin.elementalHistory) {
+      const row = el('div', { style: 'padding:8px 0;border-top:1px solid rgba(255,255,255,0.04);font-size:0.82rem' });
+      row.appendChild(el('div', { style: 'display:flex;justify-content:space-between;margin-bottom:4px' },
+        el('strong', {}, locsFmtDate(e.assessed_at)),
+        el('span', { class: 'muted' }, 'Primary: ' + (e.primary_element || '—'))));
+      row.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem' },
+        `🔥 ${e.fire_intensity ?? 0} · 💧 ${e.water_intensity ?? 0} · 🌬️ ${e.air_intensity ?? 0} · 🪨 ${e.earth_intensity ?? 0}` +
+        (Array.isArray(e.secondary_elements) && e.secondary_elements.length
+          ? ' · secondary: ' + e.secondary_elements.join(', ') : '')));
+      eHost.appendChild(row);
+    }
+  }
+  right.appendChild(eHost);
+
+  // Zone maps (versioned snapshots)
+  const zHost = el('div', { class: 'panel', style: 'padding:14px 16px;margin-bottom:12px' },
+    el('h3', { style: 'margin:0 0 6px;font-size:0.95rem;color:#a7f3d0' },
+      '🗺️ Scalp zone maps · ' + (clin.zoneSnapshots?.length || 0) + ' snapshots'));
+  if (!clin.zoneSnapshots?.length) {
+    zHost.appendChild(el('p', { class: 'muted', style: 'font-size:0.82rem' }, 'No zone maps yet.'));
+  } else {
+    for (const snap of clin.zoneSnapshots.slice(0, 3)) {
+      const item = el('details', { style: 'padding:6px 0;border-top:1px solid rgba(255,255,255,0.04)' });
+      item.appendChild(el('summary', { style: 'cursor:pointer;font-size:0.82rem;list-style:none' },
+        locsFmtDate(snap.assessedAt) + ' · ' + Object.keys(snap.zones).length + ' zones'));
+      const table = el('div', { style: 'padding:6px 0 8px' });
+      for (const [zoneName, zoneRow] of Object.entries(snap.zones)) {
+        table.appendChild(el('div', { style: 'font-size:0.78rem;padding:3px 0' },
+          el('strong', {}, zoneName.replace(/_/g, ' ')),
+          ' — 🔥 ' + (zoneRow.fire ?? 0) + ' · 💧 ' + (zoneRow.water ?? 0) +
+          ' · 🌬️ ' + (zoneRow.air ?? 0) + ' · 🪨 ' + (zoneRow.earth ?? 0),
+          zoneRow.notes ? el('span', { class: 'muted' }, ' · ' + zoneRow.notes) : null));
+      }
+      item.appendChild(table);
+      zHost.appendChild(item);
+    }
+    if (clin.zoneSnapshots.length > 3) {
+      zHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:6px' },
+        '+ ' + (clin.zoneSnapshots.length - 3) + ' older snapshots not shown'));
+    }
+  }
+  right.appendChild(zHost);
+
+  // Summaries (versioned + visible_to_client badge)
+  const sHost = el('div', { class: 'panel', style: 'padding:14px 16px;margin-bottom:12px' },
+    el('h3', { style: 'margin:0 0 6px;font-size:0.95rem;color:#a7f3d0' },
+      '📝 Overall summaries · ' + (clin.summaries?.length || 0)));
+  if (!clin.summaries?.length) {
+    sHost.appendChild(el('p', { class: 'muted', style: 'font-size:0.82rem' }, 'No summaries authored yet.'));
+  } else {
+    for (const sm of clin.summaries) {
+      const row = el('div', { style: 'padding:8px 0;border-top:1px solid rgba(255,255,255,0.04);font-size:0.82rem' });
+      row.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center' },
+        el('strong', {}, locsFmtDate(sm.assessed_at)),
+        sm.visible_to_client
+          ? el('span', { style: 'font-size:0.7rem;padding:2px 8px;border-radius:10px;background:rgba(34,197,94,0.15);color:#86efac' }, '● Visible to client')
+          : el('span', { style: 'font-size:0.7rem;padding:2px 8px;border-radius:10px;background:rgba(255,255,255,0.06);color:var(--muted,#888)' }, 'Draft')));
+      if (sm.dominant_element) row.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-top:2px' }, 'Dominant: ' + sm.dominant_element));
+      if (Array.isArray(sm.secondary_elements) && sm.secondary_elements.length) {
+        row.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem' }, 'Secondary: ' + sm.secondary_elements.join(', ')));
+      }
+      if (sm.key_imbalances) row.appendChild(el('div', { style: 'margin-top:4px' }, el('em', {}, 'Imbalances: '), sm.key_imbalances));
+      if (sm.recommended_focus) row.appendChild(el('div', { style: 'margin-top:4px' }, el('em', {}, 'Focus: '), sm.recommended_focus));
+      if (sm.professional_plan_preview) row.appendChild(el('div', { style: 'margin-top:4px' }, el('em', {}, 'Plan preview: '), sm.professional_plan_preview));
+      sHost.appendChild(row);
+    }
+  }
+  right.appendChild(sHost);
+
+  // Admin notes
+  const nHost = el('div', { class: 'panel', style: 'padding:14px 16px' },
+    el('h3', { style: 'margin:0 0 6px;font-size:0.95rem;color:#a7f3d0' },
+      '🔒 Admin notes · ' + (clin.notes?.length || 0)));
+  if (!clin.notes?.length) {
+    nHost.appendChild(el('p', { class: 'muted', style: 'font-size:0.82rem' }, 'No private notes.'));
+  } else {
+    for (const n of clin.notes) {
+      nHost.appendChild(el('div', { style: 'padding:6px 0;border-top:1px solid rgba(255,255,255,0.04);font-size:0.82rem' },
+        el('div', { class: 'muted', style: 'font-size:0.72rem' },
+          locsFmtDate(n.created_at) + (n.author ? ' · ' + n.author : '')),
+        el('div', { style: 'margin-top:2px;white-space:pre-wrap' }, n.note)));
+    }
+  }
+  right.appendChild(nHost);
+
+  grid.appendChild(left);
+  grid.appendChild(right);
+  body.appendChild(grid);
+  modal.replaceChildren(...nodes);
+}
+
 async function viewAnalytics() {
   const wrap = el('div', {});
   const topbar = el('div', { class: 'topbar' },
@@ -11572,6 +11943,7 @@ async function render() {
       case 'admin_sales':   view = state.isAdmin ? await viewAdminSales()   : await viewOverview(); break;
       case 'taes':      view = (state.isAdmin || state.client?.slug === 'ai-exit-strategy') ? await viewTaes() : await viewOverview(); break;
       case 'analytics': view = await viewAnalytics(); break;
+      case 'wellness_clients': view = (state.isAdmin || state.client?.slug === 'locs-and-wellness') ? await viewWellnessClients() : await viewOverview(); break;
       default:          view = await viewOverview();
     }
   } catch (e) {
