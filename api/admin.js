@@ -671,7 +671,28 @@ async function setGa4(req, res) {
   const body = await readJson(req);
   const { client_id, ga4_property_id } = body || {};
   if (!client_id) return res.status(400).json({ error: 'client_id required' });
-  const value = (ga4_property_id || '').toString().trim() || null;
+  const raw = (ga4_property_id || '').toString().trim();
+  // Empty → clear the field. Anything set must be the NUMERIC Property
+  // ID (e.g. '536786842'), never the G-prefixed Measurement ID (e.g.
+  // 'G-DLPHJ60W0L'). The GA4 Data API rejects the Measurement ID with a
+  // 400 that reads exactly the same as this pre-flight — save the round
+  // trip and tell the operator what to fix now.
+  let value = null;
+  if (raw) {
+    if (/^G-/i.test(raw)) {
+      return res.status(400).json({
+        error: 'ga4_measurement_id_not_property_id',
+        hint: 'You entered a Measurement ID (starts with "G-"). The GA4 Data API needs the numeric Property ID from GA4 Admin → Property Settings (looks like 123456789, no letters).'
+      });
+    }
+    if (!/^\d+$/.test(raw)) {
+      return res.status(400).json({
+        error: 'ga4_property_id_must_be_numeric',
+        hint: 'GA4 Property ID must be all digits (e.g. 536786842). Find it in GA4 Admin → Property Settings → Property ID.'
+      });
+    }
+    value = raw;
+  }
   const { data, error } = await supabaseAdmin
     .from('clients').update({ ga4_property_id: value })
     .eq('id', client_id).select('id, name, ga4_property_id').single();

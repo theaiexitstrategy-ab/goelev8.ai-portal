@@ -8576,7 +8576,7 @@ function openClientSettingsModal(c, refresh, allClients) {
         onclick: close, ontouchend: close }, '×')
     ),
     field('GA4 Property ID',
-      'Numeric GA4 property (e.g. 123456789). Leave blank to clear.',
+      'Numeric GA4 Property ID only (e.g. 536786842). NOT the Measurement ID (starts with G-). Find it in Google Analytics → GA4 property → Admin → Property Settings. Leave blank to clear.',
       ga4In),
     field('Booking URL',
       'Custom domain for this tenant\'s booking widget (no protocol). Drives the Vapi assistant + welcome SMS.',
@@ -11787,6 +11787,27 @@ async function viewAnalytics() {
 
   if (ga.error) {
     cards.innerHTML = '';
+    // Special-case the "Invalid property ID" 400 from the GA4 Data API
+    // — that's the operator saving a Measurement ID (G-XXXX) where the
+    // numeric Property ID was needed. Give them the fix in-line instead
+    // of a raw Google error.
+    const msg = String(ga.error || '');
+    const gPrefixMatch = msg.match(/Invalid property ID:\s*(G-[A-Z0-9]+)/i);
+    if (gPrefixMatch) {
+      cards.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'err', style: 'font-weight:600;margin-bottom:8px' },
+          '⚠ Wrong GA4 ID saved — that\'s a Measurement ID, not the Property ID'),
+        el('div', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5' },
+          'You have ',
+          el('code', { style: 'background:rgba(0,0,0,0.35);padding:1px 6px;border-radius:4px' }, gPrefixMatch[1]),
+          ' saved. The GA4 Data API needs the numeric ',
+          el('strong', {}, 'Property ID'),
+          ' (looks like 536786842, all digits).'),
+        el('div', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5;margin-top:8px' },
+          'To fix: Google Analytics → GA4 property → ⚙ Admin → Property Settings → copy the "Property ID" (top of the page, all digits). Then Master Admin → this tenant → ⚙ Settings → GA4 Property ID → paste and Save.')
+      ));
+      return wrap;
+    }
     cards.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'GA4 error: ' + ga.error)));
     return wrap;
   }
