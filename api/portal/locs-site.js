@@ -35,6 +35,128 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB — hero videos can be
                                             // larger than typical
                                             // MMS/logo uploads.
 
+// Canonical DEFAULTS mirrored from the source repo's
+// lib/marketing/content.ts. The live homepage renders each section
+// as: getSiteContent() → shallow-merge saved row OVER these defaults.
+// The editor must prefill from the SAME merged shape or Leslie sees
+// blank forms for sections she hasn't touched (which look "missing"
+// even though the live site shows the default copy). Update HERE if
+// content.ts DEFAULTS change on the source.
+const BOOKING_URL = 'https://lawco.glossgenius.com';
+const LOCS_SITE_DEFAULTS = {
+  hero: {
+    headline: 'Cultivating healthy scalp, hair, and locs — for each individual.',
+    tagline:  'Every loc tells a story. My job is to honor yours.',
+    cta:      'Book a consultation',
+    ctaUrl:   BOOKING_URL,
+    image:    ''
+  },
+  quiz: {
+    intro: 'A few quick questions to point you toward the right first step.',
+    questions: [
+      { q: 'Where are you in your loc journey?', options: [
+        { label: 'Starting fresh', key: 'traditional' },
+        { label: 'Maintaining existing locs', key: 'traditional' },
+        { label: 'Ready for a new style', key: 'styling' },
+        { label: 'Dealing with scalp concerns', key: 'scalp' },
+      ]},
+      { q: 'What matters most right now?', options: [
+        { label: 'Scalp health & relief', key: 'scalp' },
+        { label: 'A precise, versatile look', key: 'sisterlocks' },
+        { label: 'Bold, statement locs', key: 'large' },
+        { label: 'A fresh style for an event', key: 'styling' },
+      ]},
+      { q: 'Your ideal loc size?', options: [
+        { label: 'Micro / Sisterlocks', key: 'sisterlocks' },
+        { label: 'Traditional', key: 'traditional' },
+        { label: 'Large / Wicks', key: 'large' },
+        { label: 'Not sure yet', key: 'traditional' },
+      ]},
+    ],
+    results: {
+      sisterlocks: { title: 'Sisterlocks / Microlocs',  body: 'Precise, versatile micro-locs look like a beautiful fit. Let’s talk sizing and a maintenance rhythm that keeps them healthy.' },
+      traditional: { title: 'Traditional Locs',          body: 'Classic locs with palm rolling or interlocking suit you. We’ll build a plan for strong, healthy growth.' },
+      large:       { title: 'Large Locs / Wicks',        body: 'Bold, statement locs are calling. Let’s shape and groom them to suit your look and lifestyle.' },
+      scalp:       { title: 'Scalp Wellness Consultation', body: 'Let’s start at the scalp — an assessment, gentle cleansing, and a wellness plan so your locs thrive from the root.' },
+      styling:     { title: 'Loc Styling',               body: 'From everyday looks to premium event styles — let’s find the perfect one for your moment.' },
+    }
+  },
+  method: {
+    title: 'The Locs & Wellness Method',
+    intro: 'A calm, considered path from first conversation to lasting home care.',
+    steps: [
+      { n: '01', title: 'Consultation',                 body: 'We start by listening — your history, your scalp, your goals for your locs.' },
+      { n: '02', title: 'Personalized recommendations', body: 'A plan built around your hair type, lifestyle, and where you want to go.' },
+      { n: '03', title: 'Professional service',         body: 'Skilled, unhurried hands-on care in a peaceful studio setting.' },
+      { n: '04', title: 'Home care guidance',           body: 'Simple, sustainable routines so your progress continues between visits.' },
+    ]
+  },
+  services: [
+    { title: 'Sisterlocks / Microlocs', body: 'Precise, versatile micro-sized locs installed and maintained with care.', bookingUrl: BOOKING_URL, image: '' },
+    { title: 'Traditional Locs',        body: 'Palm rolling, interlocking, and crochet methods for classic, healthy locs.', bookingUrl: BOOKING_URL, image: '' },
+    { title: 'Large Locs / Wicks',      body: 'Bold, statement locs and wicks shaped and groomed to suit you.',            bookingUrl: BOOKING_URL, image: '' },
+    { title: 'Loc Styling',             body: 'From simple everyday looks to premium styles for your special moments.',   bookingUrl: BOOKING_URL, image: '' },
+  ],
+  scalpWellness: {
+    title: 'Scalp Wellness',
+    intro: 'The clinical, wellness-focused side of loc care — because healthy locs start at the scalp.',
+    pills: ['Scalp assessments', 'Cleansing', 'Exfoliation', 'Hydration', 'Wellness treatments']
+  },
+  products: {
+    title: 'Products & Home Care',
+    intro: 'A short, honest shelf of what I actually reach for — expanding soon.',
+    items: [
+      { name: 'Hydrating Scalp Mist',  body: 'Lightweight daily moisture for a calm, balanced scalp.',  image: '' },
+      { name: 'Gentle Cleansing Wash', body: 'Residue-free clarifying wash that respects your locs.',   image: '' },
+      { name: 'Sealing Loc Oil',       body: 'A finishing oil to seal in moisture and add soft shine.', image: '' },
+    ]
+  },
+  ebooks: {
+    title: 'Learn with me',
+    intro: 'Guides to help you care for your scalp and locs between visits.',
+    items: [
+      { title: 'The Healthy Scalp Starter', body: 'The fundamentals of a balanced, thriving scalp.', buttonUrl: '', cover: '' },
+      { title: 'Loc Maintenance at Home',   body: 'A simple weekly rhythm to keep your locs strong.', buttonUrl: '', cover: '' },
+    ]
+  },
+  about: {
+    title: 'Meet Leslie',
+    bio: [
+      'The Locs & Wellness Co. was born from a simple belief: every loc tells a story, and my job is to honor yours.',
+      'I care for scalp, hair, and locs as one connected system — blending skilled technique with genuine wellness, so you leave feeling seen, not rushed.'
+    ],
+    certifications: ['Certified Loctician', 'Scalp & Trichology Care (placeholder)', 'Sisterlocks-trained (placeholder)'],
+    headshot: ''
+  },
+  testimonials: {
+    showBeforeAfter: false,
+    items: [
+      { quote: 'Placeholder quote — carried from the live site; Leslie can edit or replace.', name: 'Tanya M.',   service: 'Traditional Retwist',    beforeImage: '', afterImage: '' },
+      { quote: 'Placeholder quote — carried from the live site; Leslie can edit or replace.', name: 'Darius K.',  service: 'Large Locs Grooming',    beforeImage: '', afterImage: '' },
+      { quote: 'Placeholder quote — carried from the live site; Leslie can edit or replace.', name: 'Janelle R.', service: 'Interlocking',           beforeImage: '', afterImage: '' },
+    ]
+  },
+  finalCta: {
+    headline: 'Ready to begin your loc wellness journey?',
+    subtext:  'Book a consultation and let’s build a plan for your healthiest scalp, hair, and locs.',
+    cta:      'Schedule your consultation',
+    ctaUrl:   BOOKING_URL
+  }
+};
+
+// Mirrors lib/marketing/site.ts mergeSection() rules:
+//   - saved null → default
+//   - default is an Array → saved (or default) wholesale (no
+//     property-merge; the editor submits the full array)
+//   - else → shallow spread: { ...default, ...saved }
+function mergeSection(key, saved) {
+  const def = LOCS_SITE_DEFAULTS[key];
+  if (saved == null || typeof saved !== 'object' || Array.isArray(saved) || Array.isArray(def)) {
+    return saved == null ? def : saved;
+  }
+  return { ...def, ...saved };
+}
+
 // Section keys allowed for save — mirrors SECTION_KEYS in content.ts.
 // Rejecting unknown keys keeps the CMS store predictable if a client
 // mistake sends a typo'd key.
@@ -57,15 +179,31 @@ async function listContent(res) {
     .from('locs_site_content')
     .select('key, data, updated_at, updated_by');
   if (error) return res.status(500).json({ error: error.message });
+  // Which sections have an actual saved row (vs. showing defaults).
+  // Editor uses this to render "Saved · <ts>" vs "Currently defaults
+  // — save to persist edits" per section.
+  const savedKeys = new Set((data || []).map((r) => r.key));
+  const savedByKey = {};
+  for (const r of data || []) savedByKey[r.key] = r.data;
+  // Merge every section's saved row over its default — same rules as
+  // lib/marketing/site.ts on the source. Editor prefills from this so
+  // Leslie sees what's on the live site right now, not empty forms.
   const byKey = {};
-  for (const r of data || []) byKey[r.key] = r.data;
+  for (const key of Object.keys(LOCS_SITE_DEFAULTS)) {
+    byKey[key] = mergeSection(key, savedByKey[key]);
+  }
   // Public URL prefix for the locs-site bucket — the SPA prepends this
   // to any bare storage path stored on a media field to render a live
   // thumbnail. Matches resolveImage() in the source lib/marketing/
   // image.ts: bare path → prefix, full https URL → use as-is.
   const { data: pub } = supabaseAdmin.storage.from(SITE_BUCKET).getPublicUrl('');
   const siteBucketPublicPrefix = (pub?.publicUrl || '').replace(/\/$/, '') + '/';
-  return res.status(200).json({ rows: data || [], byKey, siteBucketPublicPrefix });
+  return res.status(200).json({
+    rows: data || [],
+    byKey,                            // merged: defaults + saved
+    savedKeys: Array.from(savedKeys), // for the "Currently defaults" indicator
+    siteBucketPublicPrefix
+  });
 }
 
 async function saveSection(req, res, ctx) {

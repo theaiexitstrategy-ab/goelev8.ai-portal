@@ -11348,24 +11348,11 @@ const LOCS_SITE_SCHEMA = [
 ];
 const QUIZ_KEYS = ['sisterlocks', 'traditional', 'large', 'scalp', 'styling'];
 
-// Section-key → default shape, mirrored from content.ts DEFAULTS so an
-// unsaved section still renders a form (rather than "no data"). Only
-// the SHAPE matters; the copy is pulled from the loaded row when set.
-const LOCS_SITE_DEFAULT_SHAPES = {
-  hero:          { headline: '', tagline: '', cta: '', ctaUrl: '', image: '' },
-  method:        { title: '', intro: '', steps: [] },
-  services:      [],
-  scalpWellness: { title: '', intro: '', pills: [] },
-  products:      { title: '', intro: '', items: [] },
-  ebooks:        { title: '', intro: '', items: [] },
-  about:         { title: '', bio: [], certifications: [], headshot: '' },
-  testimonials:  { showBeforeAfter: false, items: [] },
-  finalCta:      { headline: '', subtext: '', cta: '', ctaUrl: '' },
-  quiz:          { intro: '', questions: [], results: {
-    sisterlocks: { title: '', body: '' }, traditional: { title: '', body: '' },
-    large: { title: '', body: '' }, scalp: { title: '', body: '' }, styling: { title: '', body: '' }
-  } }
-};
+// DEFAULTS now live server-side (api/portal/locs-site.js
+// LOCS_SITE_DEFAULTS, mirroring content.ts). The list endpoint merges
+// saved-over-default per section and returns it in byKey, so the SPA
+// prefills from real live-site content instead of empty shapes. See
+// listContent() in the backend.
 
 // Resolve a media field value into a URL for the editor's live
 // thumbnail. Bare storage path → prefix; full URL → use as-is.
@@ -11614,22 +11601,28 @@ async function viewWebsiteEditor() {
   host.innerHTML = '';
 
   const byKey = payload?.byKey || {};
+  const savedKeys = new Set(payload?.savedKeys || []);
   const mediaCtx = { prefix: payload?.siteBucketPublicPrefix || '' };
 
   // Build a section editor as a <details> element. Each has its own
   // working copy + Save button so mistakes on one section can't wipe
-  // another. Live saved-timestamp shown in the summary.
+  // another. The pre-fill is the SERVER-MERGED shape (backend defaults
+  // + saved row), so unsaved sections still show what's on the live
+  // site right now instead of empty forms.
   for (const section of LOCS_SITE_SCHEMA) {
     const savedTS = (payload?.rows || []).find((r) => r.key === section.key)?.updated_at;
-    let working;
-    if (section.shape === 'array') {
-      working = Array.isArray(byKey[section.key]) ? JSON.parse(JSON.stringify(byKey[section.key])) : [];
-    } else {
-      working = { ...(LOCS_SITE_DEFAULT_SHAPES[section.key] || {}), ...(byKey[section.key] || {}) };
-    }
+    const isSaved = savedKeys.has(section.key);
+    // Deep clone so mutations here can't leak back into byKey (which
+    // is shared with the quiz block below).
+    const merged = byKey[section.key];
+    let working = merged == null
+      ? (section.shape === 'array' ? [] : {})
+      : JSON.parse(JSON.stringify(merged));
     let dirty = false;
     const status = el('span', { class: 'muted', style: 'font-size:0.72rem;font-weight:400' },
-      savedTS ? 'Saved · ' + new Date(savedTS).toLocaleString() : 'Not yet saved');
+      isSaved
+        ? 'Saved · ' + new Date(savedTS).toLocaleString()
+        : el('span', { style: 'color:#93c5fd' }, 'Currently defaults · save to persist edits'));
     const summary = el('summary', {
       style: 'cursor:pointer;padding:14px 16px;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px'
     },
@@ -11700,11 +11693,16 @@ async function viewWebsiteEditor() {
   // schema-driven flow above stays simple.
   {
     const savedTS = (payload?.rows || []).find((r) => r.key === 'quiz')?.updated_at;
-    let working = { ...(LOCS_SITE_DEFAULT_SHAPES.quiz), ...(byKey.quiz || {}) };
+    const isSaved = savedKeys.has('quiz');
+    // Deep clone the merged (server-side default + saved) quiz shape.
+    let working = byKey.quiz ? JSON.parse(JSON.stringify(byKey.quiz))
+                             : { intro: '', questions: [], results: {} };
     working.questions = Array.isArray(working.questions) ? working.questions : [];
-    working.results = working.results || { ...(LOCS_SITE_DEFAULT_SHAPES.quiz.results) };
+    working.results = working.results || {};
     const status = el('span', { class: 'muted', style: 'font-size:0.72rem;font-weight:400' },
-      savedTS ? 'Saved · ' + new Date(savedTS).toLocaleString() : 'Not yet saved');
+      isSaved
+        ? 'Saved · ' + new Date(savedTS).toLocaleString()
+        : el('span', { style: 'color:#93c5fd' }, 'Currently defaults · save to persist edits'));
     const summary = el('summary', {
       style: 'cursor:pointer;padding:14px 16px;font-weight:600;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px'
     }, el('span', {}, 'Quiz (copy only — tally logic stays fixed)'), status);
