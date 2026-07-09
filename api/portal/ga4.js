@@ -262,9 +262,19 @@ export default async function handler(req, res) {
       events: eventTotals
     });
   } catch (e) {
+    // Include the service account email so the SPA can name it in the
+    // 403 "add me as a Viewer on the GA4 property" fix flow. Best-
+    // effort: fall back to null if the env var isn't parseable (which
+    // would produce its own distinct error above anyway).
+    let serviceAccountEmail = null;
+    try {
+      const raw = process.env.GA4_SERVICE_ACCOUNT_JSON;
+      if (raw) serviceAccountEmail = JSON.parse(raw)?.client_email || null;
+    } catch { /* leave null */ }
     return res.status(200).json({
       configured: true,
       error: e.message,
+      service_account_email: serviceAccountEmail,
       sessions: 0,
       page_views: 0,
       users: 0,

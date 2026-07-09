@@ -11787,11 +11787,9 @@ async function viewAnalytics() {
 
   if (ga.error) {
     cards.innerHTML = '';
-    // Special-case the "Invalid property ID" 400 from the GA4 Data API
-    // — that's the operator saving a Measurement ID (G-XXXX) where the
-    // numeric Property ID was needed. Give them the fix in-line instead
-    // of a raw Google error.
     const msg = String(ga.error || '');
+    // Special-case: 400 'Invalid property ID: G-XXXX' — operator saved
+    // the Measurement ID where the numeric Property ID was needed.
     const gPrefixMatch = msg.match(/Invalid property ID:\s*(G-[A-Z0-9]+)/i);
     if (gPrefixMatch) {
       cards.appendChild(el('div', { class: 'card' },
@@ -11805,6 +11803,32 @@ async function viewAnalytics() {
           ' (looks like 536786842, all digits).'),
         el('div', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5;margin-top:8px' },
           'To fix: Google Analytics → GA4 property → ⚙ Admin → Property Settings → copy the "Property ID" (top of the page, all digits). Then Master Admin → this tenant → ⚙ Settings → GA4 Property ID → paste and Save.')
+      ));
+      return wrap;
+    }
+    // Special-case: 403 'User does not have sufficient permissions' —
+    // Property ID is fine but the service account isn't a Viewer on
+    // this tenant's GA4 property. Same one-time step for every
+    // tenant; if it works for Flex/WPFF but not for THIS one, this
+    // tenant just needs the same permission grant.
+    if (/403[^0-9]|PERMISSION_DENIED|sufficient permissions/i.test(msg)) {
+      const svc = ga.service_account_email;
+      cards.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'err', style: 'font-weight:600;margin-bottom:8px' },
+          '⚠ Service account not authorized on this GA4 property'),
+        el('div', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5' },
+          'The Property ID is saved correctly, but the portal\'s Google service account isn\'t a Viewer on this tenant\'s GA4 property yet. One-time fix per tenant.'),
+        el('div', { style: 'margin-top:10px;padding:10px 12px;background:rgba(0,0,0,0.3);border-radius:6px;font-size:0.8rem' },
+          el('div', { class: 'muted', style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px' }, 'Service account email to add'),
+          svc
+            ? el('code', { style: 'font-size:0.82rem;word-break:break-all' }, svc)
+            : el('span', { class: 'muted' }, '(GA4_SERVICE_ACCOUNT_JSON not set — configure that env var first)')),
+        el('ol', { style: 'font-size:0.82rem;line-height:1.6;margin:10px 0 0;padding-left:20px;color:var(--muted,#9ca3af)' },
+          el('li', {}, 'Google Analytics → open this tenant\'s GA4 property'),
+          el('li', {}, 'Bottom-left ⚙ Admin → under Property → click ', el('strong', {}, 'Property Access Management')),
+          el('li', {}, 'Click the ', el('strong', {}, '+'), ' → ', el('strong', {}, 'Add users')),
+          el('li', {}, 'Paste the email above, role = ', el('strong', {}, 'Viewer'), ' (uncheck "Notify new users by email"), then Add'),
+          el('li', {}, 'Come back here and refresh — data appears within ~1 minute'))
       ));
       return wrap;
     }
