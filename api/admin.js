@@ -758,7 +758,8 @@ async function ensureDefaultClients(req, res) {
     { slug: 'ai-exit-strategy',   name: 'The AI Exit Strategy',      business_name: 'The AI Exit Strategy' },
     { slug: 'allthingzblackhair', name: 'AllThingzBlackHair',        business_name: 'AllThingzBlackHair' },
     { slug: 'willpower-fitness',  name: 'Will Power Fitness Factory', business_name: 'Will Power Fitness Factory' },
-    { slug: 'danceisasport',      name: 'Dance is a Sport',          business_name: 'Dance is a Sport' }
+    { slug: 'danceisasport',      name: 'Dance is a Sport',          business_name: 'Dance is a Sport' },
+    { slug: 'freeflow-fitness-stl', name: 'Free Flow Fitness',       business_name: 'Free Flow Fitness LLC' }
   ];
   const { data: existing } = await supabaseAdmin
     .from('clients').select('id, slug, name, business_name');
@@ -4008,6 +4009,115 @@ async function applyPendingMigrations(req, res) {
        SET platform_fee_pct = 10
      WHERE slug = 'locs-and-wellness'
        AND platform_fee_pct IS NULL;`,
+
+    // ----- Free Flow Fitness portal_tabs + tenant config -----
+    // Same shape as WPFF (booking-driven service business): Overview →
+    // Leads → Bookings → Messaging → Analytics → Settings. No merch,
+    // no applications. Slug-scoped + idempotent.
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","bookings","messaging","analytics","settings"]'::jsonb
+     WHERE slug = 'freeflow-fitness-stl'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","bookings","messaging","analytics","settings"]'::jsonb;`,
+    `UPDATE public.clients
+       SET portal_api_key = 'ffit_' || replace(gen_random_uuid()::text, '-', '')
+     WHERE slug = 'freeflow-fitness-stl'
+       AND portal_api_key IS NULL;`,
+    `UPDATE public.clients SET platform_fee_pct = 10
+     WHERE slug = 'freeflow-fitness-stl' AND platform_fee_pct IS NULL;`,
+
+    // ----- 0034: freeflow_bookings + freeflow_billing_statements -----
+    // Dedicated tables (client requirement — do not reuse shared
+    // bookings/leads). Full DDL + RLS mirrored in
+    // supabase/migrations/0034_freeflow_fitness.sql; re-applied here
+    // so Master Admin → Run Pending Migrations converges the same
+    // way as a fresh migration file apply.
+    `CREATE TABLE IF NOT EXISTS public.freeflow_bookings (
+       id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       tenant_slug           text NOT NULL DEFAULT 'freeflow_fitness_stl',
+       service_type          text NOT NULL CHECK (service_type IN ('party','private_lesson')),
+       package_id            text,
+       package_name          text,
+       first_name            text NOT NULL,
+       last_name             text NOT NULL,
+       email                 text NOT NULL,
+       phone                 text NOT NULL,
+       sms_consent           boolean NOT NULL DEFAULT false,
+       preferred_date        date,
+       preferred_time        text,
+       guest_count           int,
+       occasion              text,
+       dance_style           text,
+       preferred_times       text,
+       goals                 text,
+       experience_level      text,
+       notes                 text,
+       deposit_cents         int,
+       stripe_session_id     text,
+       payment_status        text NOT NULL DEFAULT 'none'
+                             CHECK (payment_status IN ('none','deposit_pending','deposit_paid','refunded')),
+       booking_status        text NOT NULL DEFAULT 'new_request',
+       confirmation_sms_sent boolean NOT NULL DEFAULT false,
+       billing_counted       boolean NOT NULL DEFAULT false,
+       billing_period        text,
+       lead_source           text DEFAULT 'freeflow_funnel',
+       created_at            timestamptz NOT NULL DEFAULT now(),
+       updated_at            timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS freeflow_bookings_created_at_idx
+       ON public.freeflow_bookings (created_at DESC);`,
+    `CREATE INDEX IF NOT EXISTS freeflow_bookings_billing_period_idx
+       ON public.freeflow_bookings (billing_period);`,
+    `CREATE INDEX IF NOT EXISTS freeflow_bookings_stripe_session_idx
+       ON public.freeflow_bookings (stripe_session_id) WHERE stripe_session_id IS NOT NULL;`,
+    `ALTER TABLE public.freeflow_bookings ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS freeflow_bookings_admin_all ON public.freeflow_bookings;`,
+    `CREATE POLICY freeflow_bookings_admin_all ON public.freeflow_bookings
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS freeflow_bookings_tenant_all ON public.freeflow_bookings;`,
+    `CREATE POLICY freeflow_bookings_tenant_all ON public.freeflow_bookings
+       FOR ALL TO authenticated
+       USING (EXISTS (
+         SELECT 1 FROM public.client_users cu
+         JOIN public.clients c ON c.id = cu.client_id
+         WHERE cu.user_id = auth.uid() AND c.slug = 'freeflow-fitness-stl'
+       ))
+       WITH CHECK (EXISTS (
+         SELECT 1 FROM public.client_users cu
+         JOIN public.clients c ON c.id = cu.client_id
+         WHERE cu.user_id = auth.uid() AND c.slug = 'freeflow-fitness-stl'
+       ));`,
+    `CREATE TABLE IF NOT EXISTS public.freeflow_billing_statements (
+       id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       tenant_slug       text NOT NULL DEFAULT 'freeflow_fitness_stl',
+       period            text NOT NULL,
+       base_fee_cents    int  NOT NULL DEFAULT 5000,
+       free_quota        int  NOT NULL DEFAULT 5,
+       total_bookings    int  NOT NULL DEFAULT 0,
+       billable_bookings int  NOT NULL DEFAULT 0,
+       overage_cents     int  NOT NULL DEFAULT 0,
+       total_cents       int  NOT NULL DEFAULT 0,
+       status            text NOT NULL DEFAULT 'open'
+                         CHECK (status IN ('open','finalized','invoiced','paid')),
+       stripe_invoice_id text,
+       finalized_at      timestamptz,
+       invoiced_at       timestamptz,
+       paid_at           timestamptz,
+       created_at        timestamptz NOT NULL DEFAULT now(),
+       UNIQUE (tenant_slug, period)
+     );`,
+    `ALTER TABLE public.freeflow_billing_statements ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS freeflow_statements_admin_all ON public.freeflow_billing_statements;`,
+    `CREATE POLICY freeflow_statements_admin_all ON public.freeflow_billing_statements
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
 
     // ----- Danceisasport portal_tabs -----
     // 8 product-namespaced tab ids (danceisasport_<tabId>) matching
