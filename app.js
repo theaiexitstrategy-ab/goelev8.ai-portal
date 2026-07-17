@@ -8728,6 +8728,27 @@ async function viewAdmin() {
   migPanel.appendChild(migStatus);
   migPanel.appendChild(migOut);
 
+  // ─── Advanced maintenance & diagnostics — collapsed by default ────
+  // Everything below this line was cluttering the master-admin panel:
+  // one-off backfills (dedupe, merch orders, booking times), health
+  // probes (Stripe webhook, Connect status), and inspect utilities
+  // (recent sessions, single booking, TAES schema). Primary actions
+  // (Run Pending Migrations above; Sync Tabs, Provisioning, Trash,
+  // Verify Migrations further down) stay visible. Everything else
+  // hides in this <details> so the panel reads as intended actions
+  // rather than a wall of buttons.
+  const advPanel = el('details', {
+    style: 'margin-top:16px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px'
+  },
+    el('summary', {
+      style: 'cursor:pointer;padding:10px 14px;font-size:0.85rem;font-weight:600;list-style:none;color:#a7f3d0'
+    }, '🔧 Advanced maintenance & diagnostics'),
+    el('div', { style: 'padding:12px 14px 14px;font-size:0.85rem;color:var(--muted,#9ca3af);margin-bottom:8px' },
+      'Rare backfills + health probes + inspect utilities. Safe to ignore unless you\'re debugging a specific issue.'));
+  const advHost = el('div', { style: 'padding:0 14px 14px' });
+  advPanel.appendChild(advHost);
+  migPanel.appendChild(advPanel);
+
   // Dedupe leads — merges any leads sharing a phone/email into the
   // oldest row, repoints bookings + calls + messages + nudges, and
   // deletes the dupes. Idempotent.
@@ -8748,8 +8769,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Merge Duplicate Leads';
     }
   } }, 'Merge Duplicate Leads');
-  migPanel.appendChild(dedupeBtn);
-  migPanel.appendChild(dedupeOut);
+  advHost.appendChild(dedupeBtn);
+  advHost.appendChild(dedupeOut);
 
   // Dedupe contacts — groups contacts per-client by normalized phone
   // (digits + leading '+'), merges into the oldest row, repoints FK
@@ -8773,8 +8794,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Merge Duplicate Contacts';
     }
   } }, 'Merge Duplicate Contacts');
-  migPanel.appendChild(dedupeContactsBtn);
-  migPanel.appendChild(dedupeContactsOut);
+  advHost.appendChild(dedupeContactsBtn);
+  advHost.appendChild(dedupeContactsOut);
 
   // ─── Backfill external merch orders ───────────────────────────────
   // Scans recent Stripe Checkout Sessions on every connected account
@@ -8804,8 +8825,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Backfill Merch Orders';
     }
   } }, 'Backfill Merch Orders');
-  migPanel.appendChild(backfillOrdersBtn);
-  migPanel.appendChild(backfillOrdersOut);
+  advHost.appendChild(backfillOrdersBtn);
+  advHost.appendChild(backfillOrdersOut);
 
   // ─── Stripe Connect status across every tenant ────────────────────
   // Quick read on which tenants have OAuthed Stripe in their Settings
@@ -8867,8 +8888,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Connect Status';
     }
   } }, 'Connect Status');
-  migPanel.appendChild(connectBtn);
-  migPanel.appendChild(connectOut);
+  advHost.appendChild(connectBtn);
+  advHost.appendChild(connectOut);
 
   // ─── Stripe Webhook Health ────────────────────────────────────────
   // Lists every webhook endpoint configured on the platform Stripe
@@ -8928,8 +8949,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Stripe Webhook Health';
     }
   } }, 'Stripe Webhook Health');
-  migPanel.appendChild(webhookBtn);
-  migPanel.appendChild(webhookOut);
+  advHost.appendChild(webhookBtn);
+  advHost.appendChild(webhookOut);
 
   // ─── Inspect Recent Stripe Sessions ────────────────────────────────
   // For a specific tenant, list recent Checkout Sessions on their
@@ -8996,8 +9017,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Inspect Stripe Sessions';
     }
   } }, 'Inspect Stripe Sessions');
-  migPanel.appendChild(inspectBtn);
-  migPanel.appendChild(inspectOut);
+  advHost.appendChild(inspectBtn);
+  advHost.appendChild(inspectOut);
 
   // ─── Per-tenant Pickup Configuration ──────────────────────────────
   // Sets clients.pickup_enabled + pickup_location for a single tenant
@@ -9028,8 +9049,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Pickup Config';
     }
   } }, 'Pickup Config');
-  migPanel.appendChild(pickupBtn);
-  migPanel.appendChild(pickupOut);
+  advHost.appendChild(pickupBtn);
+  advHost.appendChild(pickupOut);
 
   // ─── Backfill Booking Times (timezone fix) ────────────────────────
   // Re-derives bookings.starts_at from bookings.booking_date for any
@@ -9084,8 +9105,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Backfill Booking Times';
     }
   } }, 'Backfill Booking Times');
-  migPanel.appendChild(tzBackfillBtn);
-  migPanel.appendChild(tzBackfillOut);
+  advHost.appendChild(tzBackfillBtn);
+  advHost.appendChild(tzBackfillOut);
 
   // ─── Inspect a Single Booking (timezone debug) ────────────────────
   // Use when 'Backfill Booking Times' didn't help and the operator
@@ -9115,8 +9136,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Inspect Booking';
     }
   } }, 'Inspect Booking');
-  migPanel.appendChild(inspectBookingBtn);
-  migPanel.appendChild(inspectBookingOut);
+  advHost.appendChild(inspectBookingBtn);
+  advHost.appendChild(inspectBookingOut);
 
   // ─── Provision Tenant ─────────────────────────────────────────────
   // Manual trigger for lib/provisioning.js. Wires brand fields onto
@@ -9150,8 +9171,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Provision Tenant';
     }
   } }, 'Provision Tenant');
-  migPanel.appendChild(provisionBtn);
-  migPanel.appendChild(provisionOut);
+  advHost.appendChild(provisionBtn);
+  advHost.appendChild(provisionOut);
 
   // ─── Backfill Leads → Contacts ────────────────────────────────────
   // Inserts a contacts row for every lead that doesn't already have
@@ -9177,8 +9198,8 @@ async function viewAdmin() {
       e.currentTarget.textContent = 'Backfill Leads → Contacts';
     }
   } }, 'Backfill Leads → Contacts');
-  migPanel.appendChild(leadsToContactsBtn);
-  migPanel.appendChild(leadsToContactsOut);
+  advHost.appendChild(leadsToContactsBtn);
+  advHost.appendChild(leadsToContactsOut);
 
   // Ensure every tenant has the standard tab set. After shipping a new
   // feature (Leads, Bookings, Analytics, etc.) click this to push the
@@ -9494,12 +9515,41 @@ async function viewAdmin() {
   reservePanel.appendChild(diagBtn);
   reservePanel.appendChild(diagOut);
 
+  // Live badge in the panel heading — flashes green on each successful
+  // auto-refresh so the operator sees the polling working. Text swaps
+  // to a paused muted style if the fetch fails so it's obvious when
+  // the numbers stopped updating.
+  const liveBadge = el('span', {
+    style: 'margin-left:10px;font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:10px;background:rgba(34,197,94,0.14);color:#86efac;transition:opacity 200ms ease'
+  }, '● Live');
+  reservePanel.querySelector('h2')?.appendChild(liveBadge);
+
   wrap.appendChild(reservePanel);
 
-  // Load reserve data
-  (async () => {
+  // Load + auto-refresh reserve data every 15s. Self-terminating:
+  // when the user navigates away from Master Admin, viewAdmin's DOM
+  // is removed, reserveBody is no longer connected — the next tick
+  // detects that via document.body.contains() and clears its own
+  // interval. No orphan intervals leaking between view renders.
+  const loadReserve = async () => {
+    if (!document.body.contains(reserveBody)) {
+      // Panel is gone (user navigated away or admin re-rendered).
+      // Stop polling from this closure — any newer viewAdmin render
+      // has its own fresh interval.
+      if (state._twilioReservePoll) {
+        clearInterval(state._twilioReservePoll);
+        state._twilioReservePoll = null;
+      }
+      return;
+    }
     try {
       const r = await api('/api/portal/twilio-reserve');
+      liveBadge.style.background = 'rgba(34,197,94,0.14)';
+      liveBadge.style.color = '#86efac';
+      liveBadge.textContent = '● Live';
+      // Brief flash on refresh — opacity dip then back to full.
+      liveBadge.style.opacity = '0.4';
+      setTimeout(() => { liveBadge.style.opacity = '1'; }, 220);
       reserveBody.innerHTML = '';
 
       // Setup-not-ready states get a clear banner + one-click fix.
@@ -9563,8 +9613,17 @@ async function viewAdmin() {
       reserveBody.innerHTML = '';
       reserveBody.appendChild(el('p', { class: 'err' }, 'Failed to load: ' + e.message +
         ' — run migration 0022_twilio_reserve.sql in Supabase, then click Rebuild from history.'));
+      liveBadge.style.background = 'rgba(255,255,255,0.06)';
+      liveBadge.style.color = 'var(--muted,#9ca3af)';
+      liveBadge.textContent = '○ Paused';
     }
-  })();
+  };
+  // Kick off the first load immediately, then poll every 15s. Clear
+  // any prior interval so a viewAdmin re-render (impersonation stop,
+  // tab switch back) doesn't stack them.
+  if (state._twilioReservePoll) clearInterval(state._twilioReservePoll);
+  loadReserve();
+  state._twilioReservePoll = setInterval(loadReserve, 15_000);
 
   // ----- Client Accounts (clean card grid with logos) -----
   // Per-tenant config (GA4 ID, Stripe key, Booking URL, billing pause)
