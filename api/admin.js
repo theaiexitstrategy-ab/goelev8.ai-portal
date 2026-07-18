@@ -4010,6 +4010,12 @@ async function applyPendingMigrations(req, res) {
      WHERE slug = 'locs-and-wellness'
        AND platform_fee_pct IS NULL;`,
 
+    // ----- funnel_url on clients (records external funnel origin) -----
+    // Text column carrying the tenant's public funnel URL when they
+    // have a separate site posting into /api/freeflow/bookings etc.
+    // No default — set per-tenant via a slug-scoped UPDATE.
+    `ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS funnel_url text;`,
+
     // ----- Free Flow Fitness portal_tabs + tenant config -----
     // Same shape as WPFF (booking-driven service business): Overview →
     // Leads → Bookings → Messaging → Analytics → Settings. No merch,

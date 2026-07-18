@@ -11812,6 +11812,306 @@ async function viewWebsiteEditor() {
   return wrap;
 }
 
+// ─── Free Flow Fitness — Overview / Bookings / Leads ───────────────
+// Data source: /api/freeflow/bookings (GET) — service-role read
+// gated to master admin OR the freeflow-fitness-stl tenant. Same
+// underlying rows for all three tabs, presented differently. Fetch
+// helper caches the response on the wrap so re-renders during the
+// same session don't re-hit the endpoint.
+async function ffFetchBookings(qs = '') {
+  const url = '/api/freeflow/bookings' + (qs ? ('?' + qs) : '');
+  return await api(url);
+}
+function ffFmtDate(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d) ? String(v) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function ffFmtDateTime(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d) ? String(v) : d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+function ffMoney(cents) {
+  if (cents == null) return '—';
+  return '$' + ((cents || 0) / 100).toFixed(2).replace(/\.00$/, '');
+}
+function ffPaymentPill(status) {
+  const style = {
+    deposit_paid:    'background:rgba(34,197,94,0.14);color:#86efac',
+    deposit_pending: 'background:rgba(251,191,36,0.14);color:#fde68a',
+    refunded:        'background:rgba(239,68,68,0.14);color:#fca5a5',
+    none:            'background:rgba(255,255,255,0.06);color:var(--muted,#9ca3af)'
+  }[status] || 'background:rgba(255,255,255,0.06);color:var(--muted,#9ca3af)';
+  return el('span', { style: 'padding:2px 8px;border-radius:10px;font-size:0.7rem;font-weight:600;' + style },
+    status || 'none');
+}
+function ffBookingPill(status) {
+  const map = {
+    new_request: '#93c5fd',
+    confirmed:   '#86efac',
+    cancelled:   '#fca5a5'
+  };
+  const color = map[status] || '#e0e0e0';
+  return el('span', { style: 'padding:2px 8px;border-radius:10px;font-size:0.7rem;font-weight:600;background:rgba(255,255,255,0.06);color:' + color },
+    status || '—');
+}
+function ffStatCard(icon, label, value, sub) {
+  return el('div', { class: 'card' },
+    el('div', { class: 'label' }, icon + ' ' + label),
+    el('div', { class: 'value' }, value == null ? '—' : String(value)),
+    sub ? el('div', { class: 'sub muted' }, sub) : null);
+}
+
+async function viewFreeFlowOverview() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Overview'),
+    el('div', { class: 'muted' }, 'Free Flow Fitness — parties, private lessons, monthly usage')));
+  const host = el('div', {});
+  wrap.appendChild(host);
+  host.appendChild(el('div', { class: 'muted' }, 'Loading…'));
+
+  let payload;
+  try { payload = await ffFetchBookings('counts_only=1'); }
+  catch (e) {
+    host.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + (e.message || 'unknown')));
+    return wrap;
+  }
+  host.innerHTML = '';
+  const c = payload?.counts || {};
+  const cp = payload?.currentPeriod || {};
+
+  host.appendChild(el('div', { class: 'cards' },
+    ffStatCard('📋', 'Total submissions',    c.total || 0,        'all-time'),
+    ffStatCard('🆕', 'New requests',         c.new_request || 0,  'awaiting confirmation'),
+    ffStatCard('💰', 'Deposits paid',        c.deposit_paid || 0, 'confirmed bookings'),
+    ffStatCard('📅', 'This month',           c.this_month || 0,   'submissions in current period')
+  ));
+
+  wrap.appendChild(el('div', { class: 'panel', style: 'margin-top:14px' },
+    el('h3', {}, 'Current billing period · ' + (cp.period || '—')),
+    el('p', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5;margin-bottom:12px' },
+      'Studio pays GoElev8 for platform usage: ',
+      el('strong', {}, ffMoney(cp.base_fee_cents || 5000)),
+      ' base + first ',
+      el('strong', {}, String(cp.free_quota ?? 5)),
+      ' bookings/month free + $10 per booking after that.'),
+    el('div', { class: 'cards' },
+      ffStatCard('🎯', 'Bookings this month', cp.total_bookings || 0, 'counted against quota'),
+      ffStatCard('📊', 'Billable',            cp.billable_bookings || 0, 'over the free quota'),
+      ffStatCard('💵', 'Overage',             ffMoney(cp.overage_cents || 0), 'billable × $10'),
+      ffStatCard('🧾', 'Total this period',   ffMoney(cp.total_cents || cp.base_fee_cents || 5000), (cp.status || 'open').replace(/_/g, ' '))
+    )));
+
+  // Service + package breakdown
+  const svc = c.by_service || {};
+  const pkg = c.by_package || {};
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('h3', {}, 'By service'),
+    el('table', {},
+      el('thead', {}, el('tr', {}, el('th', {}, 'Type'), el('th', { style: 'text-align:right' }, 'Count'))),
+      el('tbody', {},
+        el('tr', {}, el('td', {}, '🎉 Party'),          el('td', { style: 'text-align:right' }, String(svc.party || 0))),
+        el('tr', {}, el('td', {}, '👤 Private lesson'), el('td', { style: 'text-align:right' }, String(svc.private_lesson || 0)))
+      )),
+    Object.keys(pkg).length
+      ? el('div', { style: 'margin-top:16px' },
+          el('h4', { style: 'font-size:0.9rem' }, 'Party packages'),
+          el('table', {},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Package'), el('th', { style: 'text-align:right' }, 'Count'))),
+            el('tbody', {}, ...Object.entries(pkg).map(([k, v]) => el('tr', {},
+              el('td', { class: 'mono' }, k),
+              el('td', { style: 'text-align:right' }, String(v)))))))
+      : null));
+
+  return wrap;
+}
+
+async function viewFreeFlowBookings() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Bookings'),
+    el('div', { class: 'muted' }, 'Parties + private lessons — funnel submissions')));
+
+  // Filter bar
+  const filters = { service_type: '', payment_status: '', booking_status: '' };
+  const filterHost = el('div', { class: 'panel', style: 'padding:10px 14px;margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center' });
+  const tableHost = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(filterHost);
+  wrap.appendChild(tableHost);
+
+  const buildQS = () => {
+    const parts = [];
+    for (const [k, v] of Object.entries(filters)) if (v) parts.push(`${k}=${encodeURIComponent(v)}`);
+    return parts.join('&');
+  };
+  const load = async () => {
+    tableHost.replaceChildren(el('div', { class: 'muted' }, 'Loading…'));
+    let payload;
+    try { payload = await ffFetchBookings(buildQS()); }
+    catch (e) {
+      tableHost.replaceChildren(el('p', { class: 'err' }, 'Failed: ' + (e.message || 'unknown')));
+      return;
+    }
+    const rows = payload?.rows || [];
+    tableHost.innerHTML = '';
+    tableHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:10px' },
+      rows.length + ' row' + (rows.length === 1 ? '' : 's')
+      + (payload?.count && payload.count > rows.length ? ' of ' + payload.count : '')));
+    if (!rows.length) {
+      tableHost.appendChild(el('p', { class: 'muted' },
+        'No submissions yet. Once the funnel is live, party requests + private lesson inquiries land here.'));
+      return;
+    }
+    tableHost.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Submitted'),
+        el('th', {}, 'Type'),
+        el('th', {}, 'Name'),
+        el('th', {}, 'Contact'),
+        el('th', {}, 'Package'),
+        el('th', {}, 'Preferred date'),
+        el('th', { style: 'text-align:right' }, 'Guests'),
+        el('th', {}, 'Occasion'),
+        el('th', { style: 'text-align:right' }, 'Deposit'),
+        el('th', {}, 'Payment'),
+        el('th', {}, 'Booking'))),
+      el('tbody', {}, ...rows.map(r => el('tr', {},
+        el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' }, ffFmtDateTime(r.created_at)),
+        el('td', {}, r.service_type === 'party'
+          ? el('span', { style: 'font-size:0.72rem' }, '🎉 party')
+          : el('span', { style: 'font-size:0.72rem' }, '👤 lesson')),
+        el('td', {}, (r.first_name || '') + ' ' + (r.last_name || '')),
+        el('td', { class: 'muted', style: 'font-size:0.75rem' },
+          r.email ? el('div', {}, r.email) : null,
+          r.phone ? el('div', {}, r.phone) : null),
+        el('td', { class: 'mono', style: 'font-size:0.75rem' },
+          r.package_name || r.package_id || (r.service_type === 'private_lesson' ? 'private lesson' : '—')),
+        el('td', { class: 'muted', style: 'font-size:0.75rem' },
+          r.preferred_date ? ffFmtDate(r.preferred_date) + (r.preferred_time ? ' · ' + r.preferred_time : '') : '—'),
+        el('td', { class: 'mono', style: 'text-align:right' }, r.guest_count != null ? r.guest_count : '—'),
+        el('td', { class: 'muted', style: 'font-size:0.78rem' }, r.occasion || '—'),
+        el('td', { style: 'text-align:right;font-weight:600' }, ffMoney(r.deposit_cents)),
+        el('td', {}, ffPaymentPill(r.payment_status)),
+        el('td', {}, ffBookingPill(r.booking_status))
+      )))
+    ));
+  };
+
+  const mkSelect = (key, options) => {
+    const sel = el('select', { style: 'padding:5px 8px;font-size:0.8rem' },
+      el('option', { value: '' }, options[0]),
+      ...options.slice(1).map(o => el('option', { value: o.value }, o.label)));
+    sel.onchange = () => { filters[key] = sel.value; load(); };
+    return sel;
+  };
+  filterHost.append(
+    el('span', { class: 'muted', style: 'font-size:0.78rem' }, 'Filter:'),
+    mkSelect('service_type', ['All services',
+      { value: 'party', label: '🎉 Parties only' },
+      { value: 'private_lesson', label: '👤 Private lessons only' }]),
+    mkSelect('payment_status', ['Any payment',
+      { value: 'deposit_paid',    label: '● Deposit paid' },
+      { value: 'deposit_pending', label: '◐ Pending' },
+      { value: 'none',            label: '○ No deposit (inquiry)' },
+      { value: 'refunded',        label: '↩ Refunded' }]),
+    mkSelect('booking_status', ['Any status',
+      { value: 'new_request', label: 'New request' },
+      { value: 'confirmed',   label: 'Confirmed' },
+      { value: 'cancelled',   label: 'Cancelled' }])
+  );
+  load();
+  return wrap;
+}
+
+async function viewFreeFlowLeads() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Leads'),
+    el('div', { class: 'muted' }, 'Every submission — contact info + notes')));
+  const host = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(host);
+
+  let payload;
+  try { payload = await ffFetchBookings(''); }
+  catch (e) {
+    host.replaceChildren(el('p', { class: 'err' }, 'Failed: ' + (e.message || 'unknown')));
+    return wrap;
+  }
+  const rows = payload?.rows || [];
+  host.innerHTML = '';
+  if (!rows.length) {
+    host.appendChild(el('p', { class: 'muted' }, 'No leads yet. Party requests + private-lesson inquiries land here as they arrive.'));
+    return wrap;
+  }
+  host.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:10px' },
+    rows.length + ' lead' + (rows.length === 1 ? '' : 's') + ' · newest first'));
+
+  // Card-style rows so private-lesson goals/experience get space to
+  // breathe (they'd get truncated in a tight table).
+  for (const r of rows) {
+    const card = el('div', {
+      style: 'padding:12px 14px;margin-bottom:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px'
+    });
+    // Header row: name + submitted-at + service type pill
+    card.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap' },
+      el('div', {},
+        el('div', { style: 'font-size:1rem;font-weight:600' },
+          (r.first_name || '') + ' ' + (r.last_name || '')),
+        el('div', { class: 'muted', style: 'font-size:0.78rem' },
+          [r.email, r.phone].filter(Boolean).join(' · '))),
+      el('div', { style: 'text-align:right' },
+        el('div', {}, r.service_type === 'party' ? '🎉 Party' : '👤 Private lesson'),
+        el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:2px' }, ffFmtDateTime(r.created_at))
+      )));
+    // Details row — service-type specific
+    if (r.service_type === 'party') {
+      const details = [];
+      if (r.package_name || r.package_id) details.push(['Package', r.package_name || r.package_id]);
+      if (r.preferred_date) details.push(['Preferred', ffFmtDate(r.preferred_date) + (r.preferred_time ? ' at ' + r.preferred_time : '')]);
+      if (r.guest_count) details.push(['Guests', r.guest_count]);
+      if (r.occasion)    details.push(['Occasion', r.occasion]);
+      if (r.dance_style) details.push(['Dance style', r.dance_style]);
+      if (details.length) {
+        card.appendChild(el('div', { style: 'margin-top:8px;font-size:0.82rem;display:grid;grid-template-columns:120px 1fr;gap:4px 12px' },
+          ...details.flatMap(([k, v]) => [
+            el('div', { class: 'muted' }, k),
+            el('div', {}, String(v))
+          ])));
+      }
+    } else if (r.service_type === 'private_lesson') {
+      const details = [];
+      if (r.preferred_times)  details.push(['Preferred times', r.preferred_times]);
+      if (r.experience_level) details.push(['Experience', r.experience_level]);
+      if (r.goals)            details.push(['Goals', r.goals]);
+      if (details.length) {
+        card.appendChild(el('div', { style: 'margin-top:8px;font-size:0.82rem;display:grid;grid-template-columns:130px 1fr;gap:4px 12px' },
+          ...details.flatMap(([k, v]) => [
+            el('div', { class: 'muted' }, k),
+            el('div', { style: 'white-space:pre-wrap' }, String(v))
+          ])));
+      }
+    }
+    // Notes if present
+    if (r.notes) {
+      card.appendChild(el('div', { style: 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04);font-size:0.82rem' },
+        el('span', { class: 'muted' }, 'Notes: '),
+        r.notes));
+    }
+    // Status footer
+    card.appendChild(el('div', { style: 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04);display:flex;gap:8px;flex-wrap:wrap;font-size:0.75rem' },
+      ffPaymentPill(r.payment_status),
+      ffBookingPill(r.booking_status),
+      r.lead_source ? el('span', { class: 'muted' }, 'via ' + r.lead_source) : null,
+      r.sms_consent ? el('span', { style: 'color:#86efac' }, '📱 SMS consent') : el('span', { class: 'muted' }, 'no SMS consent')
+    ));
+    host.appendChild(card);
+  }
+
+  return wrap;
+}
+
 async function viewAnalytics() {
   const wrap = el('div', {});
   const topbar = el('div', { class: 'topbar' },
@@ -12521,12 +12821,24 @@ async function render() {
     }
     switch (state.view) {
       case 'admin':     view = await viewAdmin(); break;
-      case 'overview':  view = await viewOverview(); break;
+      case 'overview':
+        view = state.client?.slug === 'freeflow-fitness-stl'
+          ? await viewFreeFlowOverview()
+          : await viewOverview();
+        break;
       case 'activity':  view = (state.isAdmin && state.user?.email === 'ab@goelev8.ai') ? await viewActivity() : await viewOverview(); break;
       case 'contacts':  view = await viewContacts(); break;
-      case 'leads':     view = await viewLeads(); break;
+      case 'leads':
+        view = state.client?.slug === 'freeflow-fitness-stl'
+          ? await viewFreeFlowLeads()
+          : await viewLeads();
+        break;
       case 'calls':     view = await viewCalls(); break;
-      case 'bookings':  view = await viewBookings(); break;
+      case 'bookings':
+        view = state.client?.slug === 'freeflow-fitness-stl'
+          ? await viewFreeFlowBookings()
+          : await viewBookings();
+        break;
       case 'messages':  view = await viewMessages(); break;
       case 'messaging': view = await viewMessaging(); break;
       case 'applications': view = await viewApplications(); break;

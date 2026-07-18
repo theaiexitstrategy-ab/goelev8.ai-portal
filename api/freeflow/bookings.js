@@ -24,7 +24,8 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 import { twilio } from '../../lib/twilio.js';
 import { stripe } from '../../lib/stripe.js';
 import { toE164 } from '../../lib/phone.js';
-import { countBookingForBilling } from '../../lib/freeflow-billing.js';
+import { countBookingForBilling, FREEFLOW_TENANT_SLUG } from '../../lib/freeflow-billing.js';
+import { requireUser } from '../../lib/auth.js';
 
 // Server-side authoritative deposit map. See TASK 2 in the source
 // prompt — private_lesson always null; body-painting inquiry-only.
@@ -83,9 +84,149 @@ async function readJson(req) {
   });
 }
 
+// ─── GET — list submissions for the portal dashboard ─────────────────
+// Same file so route + auth logic stays co-located with the write side.
+// Auth: master admin OR the Free Flow tenant login (client_users →
+// clients.slug='freeflow-fitness-stl'). Mirrors api/freeflow/statement.js.
+//
+// Query params:
+//   ?service_type=party|private_lesson
+//   ?payment_status=none|deposit_pending|deposit_paid|refunded
+//   ?booking_status=<any>
+//   ?from=YYYY-MM-DD  ?to=YYYY-MM-DD    (created_at range)
+//   ?limit=<n>       (default 200, max 500)
+//   ?offset=<n>
+//   ?counts_only=1   — return only aggregate counts + current period,
+//                       skip the row list (for the Overview stat cards)
+async function assertFreeFlowAccess(ctx) {
+  if (ctx.isAdmin) return { allowed: true };
+  if (!ctx.clientId) return { allowed: false, reason: 'no_tenant_context' };
+  const { data: c } = await supabaseAdmin
+    .from('clients').select('slug').eq('id', ctx.clientId).maybeSingle();
+  if (c?.slug === 'freeflow-fitness-stl') return { allowed: true };
+  return { allowed: false, reason: 'tenant_not_freeflow' };
+}
+
+async function handleList(req, res) {
+  const ctx = await requireUser(req, res, { requireClient: false });
+  if (!ctx) return;
+  const gate = await assertFreeFlowAccess(ctx);
+  if (!gate.allowed) return res.status(403).json({ error: 'forbidden', reason: gate.reason });
+
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const q = url.searchParams;
+  const countsOnly = q.get('counts_only') === '1';
+  const limit  = Math.min(parseInt(q.get('limit')  || '200', 10) || 200, 500);
+  const offset = Math.max(parseInt(q.get('offset') || '0',   10) || 0, 0);
+  const serviceType   = q.get('service_type');
+  const paymentStatus = q.get('payment_status');
+  const bookingStatus = q.get('booking_status');
+  const fromDate      = q.get('from');
+  const toDate        = q.get('to');
+
+  // Aggregate counts — one call, no filter, so the Overview cards
+  // reflect the whole tenant regardless of the current filter chip.
+  const { data: allRows, error: allErr } = await supabaseAdmin
+    .from('freeflow_bookings')
+    .select('id, service_type, package_id, payment_status, booking_status, created_at, deposit_cents')
+    .eq('tenant_slug', FREEFLOW_TENANT_SLUG)
+    .order('created_at', { ascending: false });
+  if (allErr) return res.status(500).json({ error: allErr.message });
+
+  const nowMonth = (() => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago', year: 'numeric', month: '2-digit'
+    }).formatToParts(new Date());
+    return `${parts.find(p => p.type === 'year').value}-${parts.find(p => p.type === 'month').value}`;
+  })();
+  const counts = {
+    total:          (allRows || []).length,
+    new_request:    0,
+    deposit_pending:0,
+    deposit_paid:   0,
+    confirmed:      0,
+    this_month:     0,
+    by_service:     { party: 0, private_lesson: 0 },
+    by_package:     {}
+  };
+  for (const r of allRows || []) {
+    counts.new_request     += r.booking_status === 'new_request' ? 1 : 0;
+    counts.deposit_pending += r.payment_status === 'deposit_pending' ? 1 : 0;
+    counts.deposit_paid    += r.payment_status === 'deposit_paid' ? 1 : 0;
+    counts.confirmed       += r.booking_status === 'confirmed' ? 1 : 0;
+    if (r.service_type in counts.by_service) counts.by_service[r.service_type] += 1;
+    if (r.package_id) counts.by_package[r.package_id] = (counts.by_package[r.package_id] || 0) + 1;
+    // this_month = created in the current America/Chicago YYYY-MM
+    const rowMonth = (() => {
+      try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/Chicago', year: 'numeric', month: '2-digit'
+        }).formatToParts(new Date(r.created_at));
+        return `${parts.find(p => p.type === 'year').value}-${parts.find(p => p.type === 'month').value}`;
+      } catch { return ''; }
+    })();
+    if (rowMonth === nowMonth) counts.this_month += 1;
+  }
+
+  // Current-period billing statement (base + overage + total) — sourced
+  // straight from freeflow_billing_statements so Overview and
+  // /api/freeflow/statement stay consistent.
+  let currentPeriod = null;
+  {
+    const { data: stmt } = await supabaseAdmin
+      .from('freeflow_billing_statements')
+      .select('*')
+      .eq('tenant_slug', FREEFLOW_TENANT_SLUG)
+      .eq('period', nowMonth)
+      .maybeSingle();
+    currentPeriod = stmt || {
+      period: nowMonth, base_fee_cents: 5000, free_quota: 5,
+      total_bookings: 0, billable_bookings: 0, overage_cents: 0,
+      total_cents: 5000, status: 'open', _placeholder: true
+    };
+  }
+
+  if (countsOnly) {
+    return res.status(200).json({ counts, currentPeriod });
+  }
+
+  // Filtered row list. Applied to the same result set we already
+  // pulled — cheap; freeflow_bookings is small.
+  let rows = allRows || [];
+  if (serviceType)   rows = rows.filter(r => r.service_type   === serviceType);
+  if (paymentStatus) rows = rows.filter(r => r.payment_status === paymentStatus);
+  if (bookingStatus) rows = rows.filter(r => r.booking_status === bookingStatus);
+  if (fromDate)      rows = rows.filter(r => (r.created_at || '').slice(0, 10) >= fromDate);
+  if (toDate)        rows = rows.filter(r => (r.created_at || '').slice(0, 10) <= toDate);
+  const total = rows.length;
+  const page = rows.slice(offset, offset + limit);
+
+  // Fetch full detail for the paginated slice (previous SELECT only
+  // pulled columns needed for counts). Keep the query narrow — the
+  // page size is capped at 500.
+  let detailed = [];
+  if (page.length) {
+    const { data: full, error: detailErr } = await supabaseAdmin
+      .from('freeflow_bookings').select('*')
+      .in('id', page.map(r => r.id));
+    if (detailErr) return res.status(500).json({ error: detailErr.message });
+    // Preserve the sort order from the first query.
+    const byId = new Map((full || []).map(r => [r.id, r]));
+    detailed = page.map(r => byId.get(r.id)).filter(Boolean);
+  }
+
+  return res.status(200).json({
+    rows: detailed,
+    count: total,
+    limit, offset,
+    counts, currentPeriod
+  });
+}
+
 export default async function handler(req, res) {
+  if (req.method === 'GET') return await handleList(req, res);
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
+    res.setHeader('Allow', 'GET, POST');
     return res.status(405).json({ ok: false, error: 'method_not_allowed' });
   }
   // Auth
