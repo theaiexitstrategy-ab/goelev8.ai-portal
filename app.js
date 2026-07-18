@@ -11082,7 +11082,12 @@ async function viewWellnessClients() {
 async function openLocsClientDetail(clientId) {
   const modal = el('div', {
     class: 'modal',
-    style: 'width:min(920px,96vw);max-height:92vh;overflow-y:auto;padding:0;border-radius:14px;background:#0d1117'
+    // overflow-x:hidden so an accidental wide child (photo grid,
+    // long dermatology fields) doesn't turn the whole modal into a
+    // horizontal-scroll trap on phones. word-break:break-word so
+    // Leslie-typed medications lists / URLs in notes wrap into the
+    // cell instead of forcing width beyond the modal.
+    style: 'width:min(920px,96vw);max-height:92vh;overflow-y:auto;overflow-x:hidden;padding:0;border-radius:14px;background:#0d1117;word-break:break-word'
   });
   const bg = el('div', {
     class: 'modal-bg',
@@ -11115,22 +11120,30 @@ async function openLocsClientDetail(clientId) {
     style: 'position:absolute;top:14px;right:14px;background:rgba(0,0,0,0.35);color:#fff;border:none;width:34px;height:34px;border-radius:50%;font-size:1.2rem;cursor:pointer;z-index:2',
     onclick: () => bg.remove()
   }, '×');
+  // Responsive padding via clamp — 28px 24px 20px on desktop shrinks
+  // to ~18px 14px 14px on the smallest phones without a media query.
   const hero = el('div', { style:
-    'position:relative;padding:28px 24px 20px;text-align:center;' +
+    'position:relative;padding:clamp(20px,4vw,28px) clamp(14px,3vw,24px) clamp(14px,3vw,20px);text-align:center;' +
     'background:linear-gradient(135deg,#065f46 0%,#0f766e 50%,#0e7490 100%);' +
     'border-radius:14px 14px 0 0;color:#fff'
   },
     closeBtn,
-    el('h1', { style: 'margin:0;font-size:1.4rem' }, c.full_name || '(no name yet)'),
-    el('div', { style: 'margin-top:4px;font-size:0.85rem;opacity:0.85' },
+    // Name headline: shrinks from 1.4rem down to 1.15rem on narrow
+    // screens so a long full_name doesn't force a horizontal break.
+    el('h1', { style: 'margin:0;font-size:clamp(1.15rem,4vw,1.4rem);word-break:break-word' }, c.full_name || '(no name yet)'),
+    el('div', { style: 'margin-top:4px;font-size:0.85rem;opacity:0.85;word-break:break-word' },
       (c.email || '—') + ' · Intake ' + locsFmtDate(c.intake_submitted_at))
   );
 
-  const body = el('div', { style: 'padding:20px 24px 24px' });
+  const body = el('div', { style: 'padding:clamp(14px,3vw,20px) clamp(14px,3vw,24px) clamp(16px,3vw,24px)' });
   const nodes = [hero, body];
 
   // ── Two-column: left = intake reference, right = clinical layer ─
-  const grid = el('div', { style: 'display:grid;grid-template-columns:minmax(0,300px) 1fr;gap:20px' });
+  // repeat(auto-fit, minmax(280px, 1fr)) → two columns above ~580px
+  // viewport width (280+280+20gap), one column below. Left column
+  // (intake reference) stacks on top of Right (clinical layer) on
+  // phones, which reads naturally top-to-bottom.
+  const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:clamp(12px,3vw,20px)' });
 
   // LEFT column — read-only intake reference
   const left = el('div', {});
