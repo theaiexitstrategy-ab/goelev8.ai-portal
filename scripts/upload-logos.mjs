@@ -53,6 +53,12 @@ const LOGOS = [
     bucketKey: 'locs-and-wellness/logo.png',
     mime:      'image/png',
   },
+  {
+    slug:      'freeflow-fitness-stl',
+    localPath: path.join(HOME, 'OneDrive', 'Desktop', 'Free Flow Fitness', 'tiff free flow logo.png'),
+    bucketKey: 'freeflow-fitness-stl/logo.png',
+    mime:      'image/png',
+  },
 ];
 
 const BUCKET = 'client-assets';
