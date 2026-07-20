@@ -9934,10 +9934,20 @@ async function openTaesProfileModal(participantId, opts) {
       onClose: () => bg.remove()
     }));
   } catch (e) {
+    // Show the specific error message from TAES so the operator can
+    // diagnose which participant / query is failing. Since the TAES
+    // route was hardened to be per-query resilient (partialErrors),
+    // hitting this catch means the whole request failed — usually
+    // 401 (bad PORTAL_API_KEY), 404 (participant deleted between
+    // roster load and click), or 500 with the underlying Postgres
+    // error text now included in e.message.
     modal.replaceChildren(el('div', { style: 'padding:24px' },
       el('h2', {}, 'Could not load profile'),
-      el('p', { class: 'err' }, e.message || 'unknown'),
-      el('button', { class: 'btn', onclick: () => bg.remove() }, 'Close')));
+      el('p', { class: 'err', style: 'word-break:break-word' }, e.message || 'unknown'),
+      el('p', { class: 'muted', style: 'font-size:0.75rem;margin-top:8px' },
+        'Participant id: ',
+        el('code', { style: 'background:rgba(0,0,0,0.35);padding:1px 6px;border-radius:4px;font-size:0.72rem' }, participantId)),
+      el('button', { class: 'btn', style: 'margin-top:12px', onclick: () => bg.remove() }, 'Close')));
   }
 }
 
@@ -10091,6 +10101,26 @@ function taesProfileNodes(d, opts) {
   // ─── Body wrapper — padded panels stacked vertically ──────────────
   const body = el('div', { style: 'padding:20px 22px 24px' });
   nodes.push(body);
+
+  // Partial-load warning banner. Fires when the TAES route succeeded
+  // overall but at least one of its per-query fetches failed
+  // (participant loaded but modules didn't, etc.). Names the specific
+  // failing query + error so the operator can diagnose without
+  // sifting Vercel logs. Suppressed when everything loaded cleanly.
+  if (Array.isArray(d._partialErrors) && d._partialErrors.length) {
+    body.appendChild(el('div', {
+      style: 'margin-bottom:14px;padding:10px 14px;background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:8px;color:#fde68a;font-size:0.82rem'
+    },
+      el('div', { style: 'font-weight:600;margin-bottom:4px' },
+        '⚠ Partial load — ' + d._partialErrors.length + ' data source' + (d._partialErrors.length === 1 ? '' : 's') + ' failed'),
+      ...d._partialErrors.map(pe => el('div', {
+        style: 'font-size:0.75rem;margin-top:3px;line-height:1.4;word-break:break-word'
+      },
+        el('code', { style: 'background:rgba(0,0,0,0.35);padding:1px 6px;border-radius:4px;color:#fbbf24' }, pe.query),
+        ' — ',
+        pe.error))
+    ));
+  }
 
   // Progress tracker — big visual bar summarising the participant's
   // journey. completedModules / totalModules from the roster row was
