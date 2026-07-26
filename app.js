@@ -4420,7 +4420,7 @@ async function renderMerchProducts(container) {
     'islay-studios':        'islaystudiosllc.com/merch',
     'willpower-fitness':    'willpowerfitnessfactory.com/merch',
     'flex-facility':        'theflexfacility.com/merch',
-    'konquered-kocktails':  'konqueredkocktails.com/merch'
+    'konquered-balance':    'konqueredkocktails.com/merch'
   };
   const storefrontUrl = STOREFRONT_URLS[state.client?.slug];
   const subtitleText = storefrontUrl

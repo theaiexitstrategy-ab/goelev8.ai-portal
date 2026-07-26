@@ -760,8 +760,12 @@ async function ensureDefaultClients(req, res) {
     { slug: 'willpower-fitness',  name: 'Will Power Fitness Factory', business_name: 'Will Power Fitness Factory' },
     { slug: 'danceisasport',      name: 'Dance is a Sport',          business_name: 'Dance is a Sport' },
     { slug: 'freeflow-fitness-stl', name: 'Free Flow Fitness',       business_name: 'Free Flow Fitness LLC' },
-    { slug: 'konquered-balance',   name: 'Konquered Balance',         business_name: 'Konquered Balance LLC' },
-    { slug: 'konquered-kocktails', name: 'Konquered Kocktails',       business_name: 'Konquered Kocktails LLC' }
+    { slug: 'konquered-balance',   name: 'Konquered Balance',         business_name: 'Konquered Balance LLC' }
+    // Note: 'konquered-kocktails' was seeded briefly on 2026-07-25 as
+    // a separate merch tenant. Folded back into 'konquered-balance'
+    // on 2026-07-26 so Stephen has one unified portal (bookings +
+    // merch side by side). Storefront slug reads konquered-balance
+    // now — see STOREFRONT_URLS in app.js.
   ];
   const { data: existing } = await supabaseAdmin
     .from('clients').select('id, slug, name, business_name');
@@ -4201,53 +4205,38 @@ async function applyPendingMigrations(req, res) {
        WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
                    OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
 
-    // ----- Konquered Kocktails (merch tenant #4) -----
-    // 1:1 clone of Will Power Fitness's shape — Stephen sells physical
-    // goods (glassware, bottle openers, mixology kits) alongside the
-    // event-booking side (separate tenant: konquered-balance). Two
-    // clients rows, one business — merch and bookings stay cleanly
-    // separated in the DB. Slug MUST stay 'konquered-kocktails' —
-    // storefront's NEXT_PUBLIC_PORTAL_SLUG points here.
+    // ----- Konquered Balance — unified portal (bookings + merch) -----
+    // 8-tab layout: overview / leads / experience_bookings /
+    // experience_availability / merch / messaging / analytics /
+    // settings. Merch tab was originally on a separate 'konquered-
+    // kocktails' tenant; folded into this row on 2026-07-26 so
+    // Stephen has ONE portal covering the whole business.
+    //
+    // Slug-scoped + idempotent (IS DISTINCT FROM gate).
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb
-     WHERE slug = 'konquered-kocktails'
-       AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`,
-    `UPDATE public.clients SET platform_fee_pct = 10
-     WHERE slug = 'konquered-kocktails' AND platform_fee_pct IS NULL;`,
-    `UPDATE public.clients
-       SET portal_api_key = 'kk_' || replace(gen_random_uuid()::text, '-', '')
-     WHERE slug = 'konquered-kocktails' AND portal_api_key IS NULL;`,
-    // Royal Gold on Warm Black per Stephen's brand guide.
-    `UPDATE public.clients SET brand_color = '#C39A45'
-     WHERE slug = 'konquered-kocktails' AND (brand_color IS NULL OR brand_color = '');`,
-    `UPDATE public.clients SET timezone = 'America/Chicago'
-     WHERE slug = 'konquered-kocktails' AND (timezone IS NULL OR timezone = '');`,
-    // Real physical location in St. Charles, MO — in-person pickup is a
-    // genuine option, not a placeholder. Set on both KK (merch) and KB
-    // (booking-side settings uses the same field for the tenant's
-    // shipping address on outbound labels).
-    `UPDATE public.clients SET pickup_enabled = true
-     WHERE slug = 'konquered-kocktails' AND pickup_enabled IS DISTINCT FROM true;`,
-    `UPDATE public.clients
-       SET pickup_location = '920 Hemsath, Suite 100, St. Charles, MO 63303'
-     WHERE slug = 'konquered-kocktails'
-       AND (pickup_location IS NULL OR pickup_location = '');`,
-
-    // ----- Konquered Balance portal_tabs + tenant config -----
-    // 7-tab layout: overview / leads / experience_bookings /
-    // experience_availability / messaging / analytics / settings.
-    // Same booking-driven service shape as Free Flow but with an
-    // Availability editor (Stephen sets his own weekly rules;
-    // replaces the KK site's hardcoded SLOTS array). Slug-scoped +
-    // idempotent (IS DISTINCT FROM gate).
-    `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","experience_bookings","experience_availability","messaging","analytics","settings"]'::jsonb
+       SET portal_tabs = '["overview","leads","experience_bookings","experience_availability","merch","messaging","analytics","settings"]'::jsonb
      WHERE slug = 'konquered-balance'
        AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","experience_bookings","experience_availability","messaging","analytics","settings"]'::jsonb;`,
+           '["overview","leads","experience_bookings","experience_availability","merch","messaging","analytics","settings"]'::jsonb;`,
     `UPDATE public.clients SET platform_fee_pct = 10
      WHERE slug = 'konquered-balance' AND platform_fee_pct IS NULL;`,
+    // Merch-tab requirements — brand color, pickup config, portal_api_key.
+    // Royal Gold on Warm Black per Stephen's brand guide.
+    `UPDATE public.clients SET brand_color = '#C39A45'
+     WHERE slug = 'konquered-balance' AND (brand_color IS NULL OR brand_color = '');`,
+    `UPDATE public.clients SET pickup_enabled = true
+     WHERE slug = 'konquered-balance' AND pickup_enabled IS DISTINCT FROM true;`,
+    `UPDATE public.clients
+       SET pickup_location = '920 Hemsath, Suite 100, St. Charles, MO 63303'
+     WHERE slug = 'konquered-balance'
+       AND (pickup_location IS NULL OR pickup_location = '');`,
+    // portal_api_key authenticates the storefront (konqueredkocktails.com/
+    // merch) against /api/external/orders. Uses 'kb_' prefix now (was
+    // 'kk_' when it was a separate tenant); a rotate is cheap enough
+    // if the merch storefront is already deployed with the old value.
+    `UPDATE public.clients
+       SET portal_api_key = 'kb_' || replace(gen_random_uuid()::text, '-', '')
+     WHERE slug = 'konquered-balance' AND portal_api_key IS NULL;`,
 
     // ----- 0035: generic experience-booking platform tables -----
     // Multi-tenant from day one. tenant_write_keys (public-endpoint
