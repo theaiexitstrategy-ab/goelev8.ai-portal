@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // © 2026 GoElev8.ai | Aaron Bryant. All rights reserved. Unauthorized use prohibited.
 //
-// One-shot: provision Stephen Simmons as owner of BOTH Konquered
-// tenants — konquered-kocktails (merch) and konquered-balance
-// (experience bookings). Same auth user, two client_users links.
+// One-shot: provision Stephen Simmons as owner of Konquered Balance.
+// (Originally provisioned two tenants — merch + bookings — but they
+// were folded into a single 'konquered-balance' tenant on 2026-07-26
+// so only one client_users link is needed now.)
 //
 // Mirrors scripts/provision-freeflow-owner.mjs:
 //   1. Look up both clients rows (must exist via ensureDefaultClients).
@@ -38,10 +39,10 @@ const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_R
 });
 
 const OWNER_EMAIL = 'stephen@konqueredbalance.com';
-const OWNER_PASS  = process.env.KK_OWNER_PASSWORD || 'Konquer2026!';
+const OWNER_PASS  = process.env.KB_OWNER_PASSWORD || 'Konquered123!!!';
 const OWNER_NAME  = 'Stephen Simmons';
 const OWNER_PHONE = '+13145039198';
-const SLUGS       = ['konquered-kocktails', 'konquered-balance'];
+const SLUGS       = ['konquered-balance'];
 
 console.log(`\nProvisioning ${OWNER_EMAIL} → ${SLUGS.join(' + ')}`);
 

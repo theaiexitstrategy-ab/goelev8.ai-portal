@@ -12568,18 +12568,294 @@ async function viewKbLeads() {
   return wrap;
 }
 
+const KB_DOW_LABELS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const KB_DOW_SHORT  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+// Format 'HH:MM:SS' or 'HH:MM' as '7:00 PM' for display. Bare display
+// only — the input controls use <input type="time"> which speaks
+// 'HH:MM' directly.
+function kbFmtTime(t) {
+  if (!t) return '—';
+  const [h, m] = String(t).split(':').map(Number);
+  const hh = ((h + 11) % 12) + 1;
+  const ampm = h < 12 ? 'AM' : 'PM';
+  return `${hh}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+// 'HH:MM:SS' → 'HH:MM' for <input type="time"> value.
+function kbTimeInputVal(t) {
+  if (!t) return '';
+  const parts = String(t).split(':');
+  return `${parts[0]}:${parts[1]}`;
+}
+// datetime-local input value ⇄ ISO string. datetime-local speaks
+// 'YYYY-MM-DDTHH:MM' in the browser's LOCAL timezone; we treat that
+// as America/Chicago wall time (tenant timezone) and convert to UTC
+// for storage. Simple approach: use the browser's local tz (Stephen's
+// browser is in Central time so this works). If a user in another tz
+// edits, they'll enter their local wall time — acceptable trade-off
+// vs. a full tz-aware picker.
+function kbDtLocalToIso(v) {
+  if (!v) return null;
+  return new Date(v).toISOString();
+}
+function kbIsoToDtLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 async function viewKbAvailability() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Availability'),
-    el('div', { class: 'muted' }, 'Weekly recurring open windows — controls what the funnel calendar shows')));
-  wrap.appendChild(el('div', { class: 'panel' },
-    el('p', { class: 'muted' },
-      'The availability editor is coming next. In the meantime, edit ',
-      el('code', {}, 'experience_availability_rules'),
-      ' + ',
-      el('code', {}, 'experience_availability_blocks'),
-      ' directly in Supabase (client_id = the konquered-balance tenant), and the funnel calendar API will reflect the changes on the next request.')));
+    el('div', { class: 'muted' }, 'Weekly open windows + blocked ranges — controls what konqueredkocktails.com shows guests')));
+
+  const info = el('div', { class: 'panel', style: 'padding:12px 14px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2)' },
+    el('div', { style: 'font-size:0.82rem;line-height:1.5' },
+      '⏰ ', el('strong', {}, 'How this works: '),
+      'Rules define your recurring weekly hours. Blocks hide specific date ranges (holidays, personal time off). ',
+      'The funnel calendar computes availability as: ',
+      el('em', {}, 'rules − blocks − existing bookings'),
+      '. All times stored in ', el('code', {}, 'America/Chicago'), '.'));
+  wrap.appendChild(info);
+
+  // Two side-by-side panels (stack on narrow screens)
+  const rulesPanel  = el('div', { class: 'panel' });
+  const blocksPanel = el('div', { class: 'panel' });
+  wrap.appendChild(rulesPanel);
+  wrap.appendChild(blocksPanel);
+
+  // ── Data + shared load fn ───────────────────────────────────────
+  const clientQS = state.isAdmin ? '?client=konquered-balance' : '';
+  const buildClientParam = () => state.isAdmin ? 'client=konquered-balance' : '';
+  const loadAll = async () => {
+    let payload;
+    try { payload = await api('/api/portal/experience-availability' + clientQS); }
+    catch (e) {
+      rulesPanel.replaceChildren(el('p', { class: 'err' }, 'Failed to load rules: ' + (e.message || 'unknown')));
+      blocksPanel.replaceChildren(el('p', { class: 'err' }, 'Failed to load blocks: ' + (e.message || 'unknown')));
+      return;
+    }
+    renderRules(payload.rules || []);
+    renderBlocks(payload.blocks || []);
+  };
+
+  // ── Rules panel ─────────────────────────────────────────────────
+  function renderRules(rules) {
+    rulesPanel.innerHTML = '';
+    rulesPanel.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px' },
+      el('h3', { style: 'margin:0' }, '🗓️ Weekly hours'),
+      el('button', { class: 'btn primary', style: 'font-size:0.78rem', onclick: () => showRuleForm(null) }, '+ Add rule')));
+    if (!rules.length) {
+      rulesPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem' },
+        'No open hours defined yet. Add your first rule to make time slots available on the funnel.'));
+      return;
+    }
+    // Group by day of week
+    const byDow = {};
+    for (const r of rules) { (byDow[r.day_of_week] ||= []).push(r); }
+    for (let dow = 0; dow < 7; dow++) {
+      const dayRules = byDow[dow];
+      if (!dayRules?.length) continue;
+      const dayBox = el('div', { style: 'margin-bottom:10px;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px' });
+      dayBox.appendChild(el('div', { style: 'font-weight:600;font-size:0.85rem;margin-bottom:6px' }, KB_DOW_LABELS[dow]));
+      for (const rule of dayRules) {
+        const row = el('div', { style: 'display:flex;align-items:center;gap:10px;padding:4px 0;font-size:0.82rem;flex-wrap:wrap' },
+          el('span', { style: rule.active ? '' : 'opacity:0.5;text-decoration:line-through' },
+            kbFmtTime(rule.start_time), ' – ', kbFmtTime(rule.end_time),
+            el('span', { class: 'muted', style: 'margin-left:8px;font-size:0.72rem' },
+              `${rule.slot_duration_min}-min slots`,
+              rule.experience_key ? ` · ${rule.experience_key}` : '')),
+          el('div', { style: 'margin-left:auto;display:flex;gap:6px' },
+            el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px',
+              onclick: () => showRuleForm(rule) }, 'edit'),
+            el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px;color:#fca5a5',
+              onclick: () => deleteRule(rule) }, 'delete')));
+        dayBox.appendChild(row);
+      }
+      rulesPanel.appendChild(dayBox);
+    }
+  }
+
+  function showRuleForm(existing) {
+    const isEdit = !!existing;
+    const dowSel   = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+      ...KB_DOW_LABELS.map((label, i) => el('option', { value: String(i) }, label)));
+    dowSel.value = String(existing?.day_of_week ?? 6);
+    const startIn = el('input', { type: 'time', value: kbTimeInputVal(existing?.start_time) || '18:00', style: 'padding:5px 8px;font-size:0.82rem' });
+    const endIn   = el('input', { type: 'time', value: kbTimeInputVal(existing?.end_time)   || '22:00', style: 'padding:5px 8px;font-size:0.82rem' });
+    const durIn   = el('input', { type: 'number', min: '15', max: '480', step: '15',
+      value: String(existing?.slot_duration_min || 120), style: 'padding:5px 8px;font-size:0.82rem;width:80px' });
+    const expIn   = el('input', { type: 'text', placeholder: '(all experiences)',
+      value: existing?.experience_key || '', style: 'padding:5px 8px;font-size:0.82rem' });
+    const activeIn = el('input', { type: 'checkbox', style: 'width:16px;height:16px' });
+    if (existing?.active !== false) activeIn.checked = true;
+    if (!isEdit) activeIn.checked = true;
+
+    const dialog = el('div', {
+      style: 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999'
+    });
+    const modal = el('div', {
+      style: 'background:#151515;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 24px;max-width:440px;width:calc(100% - 32px);max-height:90vh;overflow-y:auto'
+    });
+    modal.appendChild(el('h3', { style: 'margin:0 0 14px' }, isEdit ? 'Edit rule' : 'Add rule'));
+    const row = (label, ctrl) => el('div', { style: 'display:grid;grid-template-columns:120px 1fr;align-items:center;gap:8px;margin-bottom:10px' },
+      el('label', { style: 'font-size:0.78rem;color:var(--muted,#9ca3af)' }, label), ctrl);
+    modal.append(
+      row('Day of week', dowSel),
+      row('Start time',  startIn),
+      row('End time',    endIn),
+      row('Slot length', el('div', {}, durIn, el('span', { class: 'muted', style: 'margin-left:6px;font-size:0.78rem' }, 'minutes'))),
+      row('Experience', el('div', {},
+        expIn,
+        el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:3px' }, 'Leave blank to apply to all experiences'))),
+      row('Active', activeIn),
+      el('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:16px' },
+        el('button', { class: 'btn', onclick: () => document.body.removeChild(dialog) }, 'Cancel'),
+        el('button', { class: 'btn primary', onclick: async (e) => {
+          e.target.disabled = true; e.target.textContent = 'Saving…';
+          try {
+            const body = {
+              day_of_week:       parseInt(dowSel.value, 10),
+              start_time:        startIn.value,
+              end_time:          endIn.value,
+              slot_duration_min: parseInt(durIn.value, 10),
+              experience_key:    expIn.value.trim() || null,
+              active:            activeIn.checked
+            };
+            if (isEdit) body.id = existing.id;
+            const qs = 'type=rule' + (buildClientParam() ? '&' + buildClientParam() : '');
+            await api('/api/portal/experience-availability?' + qs, { method: 'POST', body });
+            document.body.removeChild(dialog);
+            toast(isEdit ? 'Rule updated' : 'Rule added');
+            loadAll();
+          } catch (err) {
+            e.target.disabled = false; e.target.textContent = 'Save';
+            toast('Save failed: ' + (err.message || 'unknown'), true);
+          }
+        }}, 'Save')));
+    dialog.appendChild(modal);
+    dialog.onclick = (e) => { if (e.target === dialog) document.body.removeChild(dialog); };
+    document.body.appendChild(dialog);
+  }
+
+  async function deleteRule(rule) {
+    if (!confirm(`Delete rule: ${KB_DOW_SHORT[rule.day_of_week]} ${kbFmtTime(rule.start_time)}–${kbFmtTime(rule.end_time)} ?`)) return;
+    try {
+      const qs = `type=rule&id=${encodeURIComponent(rule.id)}` + (buildClientParam() ? '&' + buildClientParam() : '');
+      await api('/api/portal/experience-availability?' + qs, { method: 'DELETE' });
+      toast('Rule deleted'); loadAll();
+    } catch (e) { toast('Delete failed: ' + (e.message || 'unknown'), true); }
+  }
+
+  // ── Blocks panel ────────────────────────────────────────────────
+  function renderBlocks(blocks) {
+    blocksPanel.innerHTML = '';
+    blocksPanel.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px' },
+      el('h3', { style: 'margin:0' }, '🚫 Blocked ranges'),
+      el('button', { class: 'btn primary', style: 'font-size:0.78rem', onclick: () => showBlockForm(null) }, '+ Add block')));
+    if (!blocks.length) {
+      blocksPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem' },
+        'No blocked ranges. Add one to make specific date/time windows unavailable (holidays, personal time).'));
+      return;
+    }
+    const nowMs = Date.now();
+    const upcoming = blocks.filter(b => new Date(b.ends_at).getTime() > nowMs);
+    const past     = blocks.filter(b => new Date(b.ends_at).getTime() <= nowMs);
+    const renderBlockRow = (b) => {
+      const isPast = new Date(b.ends_at).getTime() <= nowMs;
+      return el('div', {
+        style: 'display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;font-size:0.82rem;flex-wrap:wrap' + (isPast ? ';opacity:0.55' : '')
+      },
+        el('div', { style: 'flex:1;min-width:220px' },
+          el('div', { style: 'font-weight:600' },
+            kbFmtWhen(b.starts_at, 'America/Chicago'), ' → ', kbFmtWhen(b.ends_at, 'America/Chicago')),
+          b.reason ? el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' }, b.reason) : null),
+        el('div', { style: 'display:flex;gap:6px' },
+          el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px',
+            onclick: () => showBlockForm(b) }, 'edit'),
+          el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px;color:#fca5a5',
+            onclick: () => deleteBlock(b) }, 'delete')));
+    };
+    if (upcoming.length) {
+      blocksPanel.appendChild(el('div', { class: 'muted', style: 'font-size:0.72rem;margin-bottom:6px' },
+        `Upcoming (${upcoming.length})`));
+      for (const b of upcoming) blocksPanel.appendChild(renderBlockRow(b));
+    }
+    if (past.length) {
+      blocksPanel.appendChild(el('div', { class: 'muted', style: 'font-size:0.72rem;margin:12px 0 6px' },
+        `Past (${past.length})`));
+      for (const b of past) blocksPanel.appendChild(renderBlockRow(b));
+    }
+  }
+
+  function showBlockForm(existing) {
+    const isEdit = !!existing;
+    const startIn = el('input', { type: 'datetime-local',
+      value: kbIsoToDtLocal(existing?.starts_at) || kbIsoToDtLocal(new Date(Date.now() + 86400_000).toISOString()),
+      style: 'padding:5px 8px;font-size:0.82rem' });
+    const endIn = el('input', { type: 'datetime-local',
+      value: kbIsoToDtLocal(existing?.ends_at) || kbIsoToDtLocal(new Date(Date.now() + 86400_000 + 4 * 3600_000).toISOString()),
+      style: 'padding:5px 8px;font-size:0.82rem' });
+    const reasonIn = el('input', { type: 'text', placeholder: 'e.g. Family vacation, private event',
+      value: existing?.reason || '', style: 'padding:5px 8px;font-size:0.82rem;width:100%' });
+
+    const dialog = el('div', {
+      style: 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999'
+    });
+    const modal = el('div', {
+      style: 'background:#151515;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 24px;max-width:440px;width:calc(100% - 32px);max-height:90vh;overflow-y:auto'
+    });
+    modal.appendChild(el('h3', { style: 'margin:0 0 14px' }, isEdit ? 'Edit blocked range' : 'Add blocked range'));
+    const row = (label, ctrl) => el('div', { style: 'display:grid;grid-template-columns:120px 1fr;align-items:center;gap:8px;margin-bottom:10px' },
+      el('label', { style: 'font-size:0.78rem;color:var(--muted,#9ca3af)' }, label), ctrl);
+    modal.append(
+      row('Starts', startIn),
+      row('Ends',   endIn),
+      row('Reason', reasonIn),
+      el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:6px' },
+        'Times use your browser\'s local timezone. Stored as UTC.'),
+      el('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:16px' },
+        el('button', { class: 'btn', onclick: () => document.body.removeChild(dialog) }, 'Cancel'),
+        el('button', { class: 'btn primary', onclick: async (e) => {
+          e.target.disabled = true; e.target.textContent = 'Saving…';
+          try {
+            const body = {
+              starts_at: kbDtLocalToIso(startIn.value),
+              ends_at:   kbDtLocalToIso(endIn.value),
+              reason:    reasonIn.value.trim() || null
+            };
+            if (isEdit) body.id = existing.id;
+            const qs = 'type=block' + (buildClientParam() ? '&' + buildClientParam() : '');
+            await api('/api/portal/experience-availability?' + qs, { method: 'POST', body });
+            document.body.removeChild(dialog);
+            toast(isEdit ? 'Block updated' : 'Block added');
+            loadAll();
+          } catch (err) {
+            e.target.disabled = false; e.target.textContent = 'Save';
+            toast('Save failed: ' + (err.message || 'unknown'), true);
+          }
+        }}, 'Save')));
+    dialog.appendChild(modal);
+    dialog.onclick = (e) => { if (e.target === dialog) document.body.removeChild(dialog); };
+    document.body.appendChild(dialog);
+  }
+
+  async function deleteBlock(b) {
+    if (!confirm('Delete this blocked range?')) return;
+    try {
+      const qs = `type=block&id=${encodeURIComponent(b.id)}` + (buildClientParam() ? '&' + buildClientParam() : '');
+      await api('/api/portal/experience-availability?' + qs, { method: 'DELETE' });
+      toast('Block deleted'); loadAll();
+    } catch (e) { toast('Delete failed: ' + (e.message || 'unknown'), true); }
+  }
+
+  // Initial render placeholders
+  rulesPanel.appendChild(el('div', { class: 'muted' }, 'Loading rules…'));
+  blocksPanel.appendChild(el('div', { class: 'muted' }, 'Loading blocks…'));
+  loadAll();
   return wrap;
 }
 
