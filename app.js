@@ -4417,9 +4417,10 @@ async function renderMerchProducts(container) {
   // Will sees willpowerfitnessfactory.com, etc). Falls back to a
   // generic message when we don't have a hardcoded mapping yet.
   const STOREFRONT_URLS = {
-    'islay-studios':      'islaystudiosllc.com/merch',
-    'willpower-fitness':  'willpowerfitnessfactory.com/merch',
-    'flex-facility':      'theflexfacility.com/merch'
+    'islay-studios':        'islaystudiosllc.com/merch',
+    'willpower-fitness':    'willpowerfitnessfactory.com/merch',
+    'flex-facility':        'theflexfacility.com/merch',
+    'konquered-kocktails':  'konqueredkocktails.com/merch'
   };
   const storefrontUrl = STOREFRONT_URLS[state.client?.slug];
   const subtitleText = storefrontUrl
@@ -8038,7 +8039,180 @@ async function viewSettings() {
   }}, 'Update password'));
   wrap.appendChild(pw);
 
+  // ----- Konquered Balance: funnel-site write-key management -----
+  // Admin-only — the mint action is on /api/admin?action=... which
+  // rejects non-admin sessions. Aaron mints the key here (from his
+  // admin session, or while impersonating the KB tenant) and pastes
+  // the raw value into the KK site's Vercel env vars. The raw key is
+  // returned by the server ONCE; stored keys are shown by prefix only.
+  if (state.isAdmin) {
+    wrap.appendChild(renderKbWriteKeyPanel());
+  }
+
   return wrap;
+}
+
+// Panel: mint + list tenant_write_keys for konquered-balance. Called
+// from viewSettings when slug === 'konquered-balance' (or admin). The
+// raw key is shown INLINE at mint time and disappears on the next
+// re-render — we never store it in state.
+function renderKbWriteKeyPanel() {
+  const panel = el('div', { class: 'panel' });
+  panel.appendChild(el('h2', {}, '🔑 Funnel site — Konquered Kocktails'));
+  panel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
+    'The write key authenticates konqueredkocktails.com when it calls the portal to save leads, check availability, and create deposit checkouts. ',
+    'Paste the raw key into the KK site\'s Vercel env vars as ',
+    el('code', {}, 'PORTAL_WRITE_KEY'),
+    '. Keys are hashed at rest — the raw value is shown ',
+    el('strong', {}, 'exactly once'),
+    ' when you generate it. If you lose it, mint a new one and revoke the old.'));
+
+  const listHost = el('div', { style: 'margin-top:10px' }, el('div', { class: 'muted' }, 'Loading keys…'));
+  const mintHost = el('div', { style: 'margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.06)' });
+  panel.appendChild(listHost);
+  panel.appendChild(mintHost);
+
+  // KB client_id resolved lazily — for tenant-owner login it's on
+  // state.client; for admin we look it up.
+  const resolveClientId = async () => {
+    if (state.client?.slug === 'konquered-balance') return state.client.id;
+    const r = await api('/api/admin?action=list-clients');
+    const rows = r.rows || r.clients || r;
+    const kb = (rows || []).find(c => c.slug === 'konquered-balance');
+    return kb?.id || null;
+  };
+
+  const loadList = async () => {
+    listHost.replaceChildren(el('div', { class: 'muted' }, 'Loading keys…'));
+    try {
+      const clientId = await resolveClientId();
+      if (!clientId) {
+        listHost.replaceChildren(el('p', { class: 'muted' }, 'No konquered-balance tenant found.'));
+        return;
+      }
+      const r = await api('/api/admin?action=list-tenant-write-keys&client_id=' + encodeURIComponent(clientId));
+      const keys = (r.keys || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      listHost.innerHTML = '';
+      listHost.appendChild(el('h4', { style: 'font-size:0.85rem;margin-bottom:8px' },
+        keys.length ? `Existing keys (${keys.length})` : 'No keys yet — mint your first below.'));
+      if (!keys.length) return;
+      listHost.appendChild(el('table', { style: 'font-size:0.8rem;width:100%' },
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'Prefix'),
+          el('th', {}, 'Label'),
+          el('th', {}, 'Origins'),
+          el('th', {}, 'Created'),
+          el('th', {}, 'Status'),
+          el('th', {}, ''))),
+        el('tbody', {}, ...keys.map(k => el('tr', {},
+          el('td', { class: 'mono' }, k.key_prefix + '…'),
+          el('td', {}, k.label || '—'),
+          el('td', { style: 'font-size:0.72rem' }, (k.allowed_origins || []).join(', ') || '(any)'),
+          el('td', { class: 'muted', style: 'font-size:0.72rem;white-space:nowrap' },
+            k.created_at ? new Date(k.created_at).toLocaleDateString() : '—'),
+          el('td', {},
+            k.revoked_at ? el('span', { style: 'color:#fca5a5;font-size:0.72rem' }, 'revoked')
+                        : el('span', { style: 'color:#86efac;font-size:0.72rem' }, 'active')),
+          el('td', {},
+            !k.revoked_at ? el('button', {
+              class: 'btn', style: 'font-size:0.72rem;padding:3px 8px',
+              onclick: async (e) => {
+                if (!confirm('Revoke key ' + k.key_prefix + '… ? The KK site will stop working until you replace it.')) return;
+                e.target.disabled = true; e.target.textContent = '…';
+                try {
+                  const clientId = await resolveClientId();
+                  await api('/api/admin?action=mint-tenant-write-key', {
+                    method: 'POST',
+                    body: { client_id: clientId, revoke: k.id, label: k.label || 'rotation', allowed_origins: k.allowed_origins || [] }
+                  });
+                  toast('Rotated — new key generated (see below)');
+                  loadList();
+                } catch (err) { toast('Revoke failed: ' + err.message, true); e.target.disabled = false; e.target.textContent = 'rotate'; }
+              }
+            }, 'rotate') : null)
+        )))));
+    } catch (e) {
+      listHost.replaceChildren(el('p', { class: 'err' }, 'Failed to load keys: ' + (e.message || 'unknown')));
+    }
+  };
+
+  // Mint form
+  const labelIn   = el('input', { type: 'text', placeholder: 'kk-prod', style: 'padding:6px 10px;font-size:0.85rem;width:180px' });
+  const originsIn = el('input', {
+    type: 'text',
+    placeholder: 'https://konqueredkocktails.com, https://www.konqueredkocktails.com',
+    style: 'padding:6px 10px;font-size:0.85rem;width:100%;max-width:560px',
+    value: 'https://konqueredkocktails.com, https://www.konqueredkocktails.com, https://konqured-kocktails.vercel.app'
+  });
+  const mintBtn = el('button', { class: 'btn primary', style: 'font-size:0.85rem;margin-top:6px' }, 'Generate write key');
+  const rawOut  = el('div', { style: 'margin-top:10px' });
+
+  mintBtn.onclick = async () => {
+    mintBtn.disabled = true; mintBtn.textContent = 'Minting…';
+    rawOut.innerHTML = '';
+    try {
+      const clientId = await resolveClientId();
+      if (!clientId) throw new Error('konquered-balance tenant not found');
+      const allowedOrigins = originsIn.value.split(',').map(s => s.trim()).filter(Boolean);
+      const r = await api('/api/admin?action=mint-tenant-write-key', {
+        method: 'POST',
+        body: {
+          client_id:       clientId,
+          label:           labelIn.value.trim() || 'kk-site',
+          allowed_origins: allowedOrigins
+        }
+      });
+      if (!r.raw) throw new Error('server did not return raw key');
+      rawOut.appendChild(renderRawKeyBox(r.raw, r.key_id, r.prefix));
+      loadList();
+    } catch (e) {
+      rawOut.appendChild(el('p', { class: 'err' }, 'Mint failed: ' + (e.message || 'unknown')));
+    } finally {
+      mintBtn.disabled = false; mintBtn.textContent = 'Generate write key';
+    }
+  };
+
+  mintHost.append(
+    el('h4', { style: 'font-size:0.85rem;margin-bottom:8px' }, 'Mint new key'),
+    el('div', { style: 'display:grid;gap:8px;max-width:600px' },
+      el('label', { style: 'font-size:0.78rem;color:var(--muted,#9ca3af)' }, 'Label (for your reference)'),
+      labelIn,
+      el('label', { style: 'font-size:0.78rem;color:var(--muted,#9ca3af);margin-top:4px' }, 'Allowed origins (comma-separated) — leave blank for any origin'),
+      originsIn,
+      el('div', {}, mintBtn),
+      rawOut));
+
+  loadList();
+  return panel;
+}
+
+// One-time reveal box for a freshly minted key. Copy button + a red
+// warning that this is the last time this key will be visible.
+function renderRawKeyBox(raw, keyId, prefix) {
+  const box = el('div', {
+    style: 'padding:12px 14px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px'
+  });
+  box.appendChild(el('div', { style: 'font-size:0.78rem;font-weight:600;color:#86efac;margin-bottom:6px' },
+    '✓ Key minted — copy it now'));
+  box.appendChild(el('div', { style: 'font-size:0.72rem;color:#fca5a5;margin-bottom:10px' },
+    '⚠ This is the ONLY time you will see the raw key. Paste it into Vercel now.'));
+  const keyRow = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+    el('code', {
+      style: 'flex:1;min-width:280px;padding:8px 10px;background:rgba(0,0,0,0.4);border-radius:6px;word-break:break-all;font-size:0.78rem'
+    }, raw));
+  const copyBtn = el('button', { class: 'btn', style: 'font-size:0.78rem' }, 'Copy');
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(raw);
+      copyBtn.textContent = '✓ Copied';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+    } catch { copyBtn.textContent = 'Copy failed'; }
+  };
+  keyRow.appendChild(copyBtn);
+  box.appendChild(keyRow);
+  box.appendChild(el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:10px' },
+    'Prefix (safe to log): ', el('code', {}, prefix), ' · Key id: ', el('code', {}, keyId)));
+  return box;
 }
 
 // ============================================================

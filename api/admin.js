@@ -760,7 +760,8 @@ async function ensureDefaultClients(req, res) {
     { slug: 'willpower-fitness',  name: 'Will Power Fitness Factory', business_name: 'Will Power Fitness Factory' },
     { slug: 'danceisasport',      name: 'Dance is a Sport',          business_name: 'Dance is a Sport' },
     { slug: 'freeflow-fitness-stl', name: 'Free Flow Fitness',       business_name: 'Free Flow Fitness LLC' },
-    { slug: 'konquered-balance',  name: 'Konquered Balance',        business_name: 'Konquered Balance LLC' }
+    { slug: 'konquered-balance',   name: 'Konquered Balance',         business_name: 'Konquered Balance LLC' },
+    { slug: 'konquered-kocktails', name: 'Konquered Kocktails',       business_name: 'Konquered Kocktails LLC' }
   ];
   const { data: existing } = await supabaseAdmin
     .from('clients').select('id, slug, name, business_name');
@@ -1175,6 +1176,26 @@ async function mintTenantWriteKey(req, res, ctx) {
     raw,  // shown ONCE — never returned again
     note: 'Copy this key NOW. It will not be shown again. Paste it into the tenant funnel\'s env vars as PORTAL_WRITE_KEY_<TENANT>.'
   });
+}
+
+// List (safe-to-render) metadata for a tenant's write keys. Never
+// returns the raw key or the sha256 hash — only prefix, label,
+// origins, timestamps, revocation status. Used by the Settings-tab
+// key-management UI so operators can see what's active without
+// re-minting.
+//
+// GET /api/admin?action=list-tenant-write-keys&client_id=<uuid>
+async function listTenantWriteKeys(req, res /*, ctx */) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const clientId = String(url.searchParams.get('client_id') || '').trim();
+  if (!clientId) return res.status(400).json({ error: 'client_id_required' });
+  const { data, error } = await supabaseAdmin
+    .from('tenant_write_keys')
+    .select('id, key_prefix, label, allowed_origins, active, created_at, revoked_at')
+    .eq('client_id', clientId)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(200).json({ ok: true, keys: data || [] });
 }
 
 async function seedLocsAndWellness(req, res, ctx) {
@@ -4180,6 +4201,39 @@ async function applyPendingMigrations(req, res) {
        WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
                    OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
 
+    // ----- Konquered Kocktails (merch tenant #4) -----
+    // 1:1 clone of Will Power Fitness's shape — Stephen sells physical
+    // goods (glassware, bottle openers, mixology kits) alongside the
+    // event-booking side (separate tenant: konquered-balance). Two
+    // clients rows, one business — merch and bookings stay cleanly
+    // separated in the DB. Slug MUST stay 'konquered-kocktails' —
+    // storefront's NEXT_PUBLIC_PORTAL_SLUG points here.
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb
+     WHERE slug = 'konquered-kocktails'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","merch","messaging","bookings","analytics","settings"]'::jsonb;`,
+    `UPDATE public.clients SET platform_fee_pct = 10
+     WHERE slug = 'konquered-kocktails' AND platform_fee_pct IS NULL;`,
+    `UPDATE public.clients
+       SET portal_api_key = 'kk_' || replace(gen_random_uuid()::text, '-', '')
+     WHERE slug = 'konquered-kocktails' AND portal_api_key IS NULL;`,
+    // Royal Gold on Warm Black per Stephen's brand guide.
+    `UPDATE public.clients SET brand_color = '#C39A45'
+     WHERE slug = 'konquered-kocktails' AND (brand_color IS NULL OR brand_color = '');`,
+    `UPDATE public.clients SET timezone = 'America/Chicago'
+     WHERE slug = 'konquered-kocktails' AND (timezone IS NULL OR timezone = '');`,
+    // Real physical location in St. Charles, MO — in-person pickup is a
+    // genuine option, not a placeholder. Set on both KK (merch) and KB
+    // (booking-side settings uses the same field for the tenant's
+    // shipping address on outbound labels).
+    `UPDATE public.clients SET pickup_enabled = true
+     WHERE slug = 'konquered-kocktails' AND pickup_enabled IS DISTINCT FROM true;`,
+    `UPDATE public.clients
+       SET pickup_location = '920 Hemsath, Suite 100, St. Charles, MO 63303'
+     WHERE slug = 'konquered-kocktails'
+       AND (pickup_location IS NULL OR pickup_location = '');`,
+
     // ----- Konquered Balance portal_tabs + tenant config -----
     // 7-tab layout: overview / leads / experience_bookings /
     // experience_availability / messaging / analytics / settings.
@@ -4987,6 +5041,7 @@ export default async function handler(req, res) {
       case 'provision-tenant':           return await provisionTenantAction(req, res, ctx);
       case 'seed-locs-and-wellness':     return await seedLocsAndWellness(req, res, ctx);
       case 'mint-tenant-write-key':      return await mintTenantWriteKey(req, res, ctx);
+      case 'list-tenant-write-keys':     return await listTenantWriteKeys(req, res, ctx);
       case 'backfill-leads-to-contacts': return await backfillLeadsToContacts(req, res);
       case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);

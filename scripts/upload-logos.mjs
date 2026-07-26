@@ -59,6 +59,21 @@ const LOGOS = [
     bucketKey: 'freeflow-fitness-stl/logo.png',
     mime:      'image/png',
   },
+  // Konquered Balance + Konquered Kocktails share one logo file
+  // (same brand). Upload it once per bucket key so each tenant's
+  // clients.logo_url + client_assets pointer are independent.
+  {
+    slug:      'konquered-balance',
+    localPath: path.join(HOME, 'OneDrive', 'Desktop', 'Konquered Balance', 'kb-logo.jpg'),
+    bucketKey: 'konquered-balance/logo.jpg',
+    mime:      'image/jpeg',
+  },
+  {
+    slug:      'konquered-kocktails',
+    localPath: path.join(HOME, 'OneDrive', 'Desktop', 'Konquered Balance', 'kb-logo.jpg'),
+    bucketKey: 'konquered-kocktails/logo.jpg',
+    mime:      'image/jpeg',
+  },
 ];
 
 const BUCKET = 'client-assets';
