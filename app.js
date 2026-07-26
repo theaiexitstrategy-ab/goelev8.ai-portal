@@ -914,7 +914,9 @@ const TAB_LABELS = {
   taes:      'TAES',
   booking_admin: 'book.goelev8.ai',
   wellness_clients: 'Wellness Clients',
-  website:   'Website'
+  website:   'Website',
+  experience_bookings:     'Bookings',
+  experience_availability: 'Availability'
 };
 
 const TAB_ICONS = {
@@ -940,7 +942,9 @@ const TAB_ICONS = {
   taes:      '🎓',
   booking_admin: '🗓️',
   wellness_clients: '🌿',
-  website:   '🌐'
+  website:   '🌐',
+  experience_bookings:     '🥂',
+  experience_availability: '🗓️'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
@@ -12155,6 +12159,256 @@ async function viewFreeFlowLeads() {
   return wrap;
 }
 
+// ─── Konquered Balance — Overview / Bookings / Leads / Availability ─
+// Data source: /api/portal/experience-bookings (GET) — same generic
+// experience-booking platform any future mixology / private-chef /
+// guided-tour tenant would share. Router branches into these views
+// when state.client.slug === 'konquered-balance'.
+async function kbFetch(qs = '') {
+  const url = '/api/portal/experience-bookings' + (qs ? ('?' + qs) : '');
+  return await api(url);
+}
+function kbMoney(cents) {
+  if (cents == null) return '—';
+  return '$' + ((cents || 0) / 100).toFixed(2).replace(/\.00$/, '');
+}
+function kbFmtWhen(iso, tz) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      timeZone: tz || 'America/Chicago',
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit'
+    });
+  } catch { return String(iso); }
+}
+function kbStatusPill(status) {
+  const map = {
+    lead:            'background:rgba(148,163,184,0.14);color:#cbd5e1',
+    deposit_pending: 'background:rgba(251,191,36,0.14);color:#fde68a',
+    confirmed:       'background:rgba(34,197,94,0.14);color:#86efac',
+    refunded:        'background:rgba(239,68,68,0.14);color:#fca5a5',
+    cancelled:       'background:rgba(255,255,255,0.06);color:var(--muted,#9ca3af)'
+  };
+  return el('span', { style: 'padding:2px 8px;border-radius:10px;font-size:0.7rem;font-weight:600;' + (map[status] || map.lead) },
+    status || 'lead');
+}
+function kbStatCard(icon, label, value, sub) {
+  return el('div', { class: 'card' },
+    el('div', { class: 'label' }, icon + ' ' + label),
+    el('div', { class: 'value' }, value == null ? '—' : String(value)),
+    sub ? el('div', { class: 'sub muted' }, sub) : null);
+}
+
+async function viewKbOverview() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Overview'),
+    el('div', { class: 'muted' }, 'Konquered Balance — bookings, deposits, monthly revenue')));
+  const host = el('div', {});
+  wrap.appendChild(host);
+  host.appendChild(el('div', { class: 'muted' }, 'Loading…'));
+
+  const clientQS = state.isAdmin ? 'client=konquered-balance&counts_only=1' : 'counts_only=1';
+  let payload;
+  try { payload = await kbFetch(clientQS); }
+  catch (e) {
+    host.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + (e.message || 'unknown')));
+    return wrap;
+  }
+  host.innerHTML = '';
+  const c  = payload?.counts || {};
+  const cp = payload?.currentPeriod || {};
+
+  host.appendChild(el('div', { class: 'cards' },
+    kbStatCard('📋', 'Total bookings',      c.total || 0,           'all-time'),
+    kbStatCard('✅', 'Confirmed',           c.confirmed || 0,       'deposit received'),
+    kbStatCard('⏳', 'Awaiting deposit',    c.deposit_pending || 0, 'in-flight checkouts'),
+    kbStatCard('📅', 'Upcoming events',     c.upcoming || 0,        'confirmed + pending, future dated')
+  ));
+
+  wrap.appendChild(el('div', { class: 'panel', style: 'margin-top:14px' },
+    el('h3', {}, 'Current month · ' + (cp.period || '—')),
+    el('div', { class: 'cards' },
+      kbStatCard('🎉', 'Confirmed this month', cp.confirmed_count || 0, 'events booked in ' + (cp.period || '—')),
+      kbStatCard('💵', 'Deposits collected',   kbMoney(cp.deposits_cents || 0), 'sum of confirmed deposits'),
+      kbStatCard('🏦', 'GoElev8 fees (lifetime)', kbMoney(c.fees_cents || 0), 'platform fees on confirmed bookings')
+    )));
+
+  wrap.appendChild(el('div', { class: 'panel', style: 'margin-top:14px' },
+    el('h3', {}, 'Funnel activity'),
+    el('table', {},
+      el('thead', {}, el('tr', {}, el('th', {}, 'Stage'), el('th', { style: 'text-align:right' }, 'Count'))),
+      el('tbody', {},
+        el('tr', {}, el('td', {}, '👋 Leads (no deposit yet)'), el('td', { style: 'text-align:right' }, String(c.lead || 0))),
+        el('tr', {}, el('td', {}, '⏳ Awaiting deposit'),        el('td', { style: 'text-align:right' }, String(c.deposit_pending || 0))),
+        el('tr', {}, el('td', {}, '✅ Confirmed'),               el('td', { style: 'text-align:right' }, String(c.confirmed || 0))),
+        el('tr', {}, el('td', {}, '↩ Refunded'),                el('td', { style: 'text-align:right' }, String(c.refunded || 0))),
+        el('tr', {}, el('td', {}, '✕ Cancelled'),               el('td', { style: 'text-align:right' }, String(c.cancelled || 0)))
+      ))));
+
+  return wrap;
+}
+
+async function viewKbBookings() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Bookings'),
+    el('div', { class: 'muted' }, 'Every submission — filter by status')));
+  const filters = { status: '' };
+  const filterHost = el('div', { class: 'panel', style: 'padding:10px 14px;margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center' });
+  const tableHost = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(filterHost);
+  wrap.appendChild(tableHost);
+
+  const buildQS = () => {
+    const parts = [];
+    if (state.isAdmin) parts.push('client=konquered-balance');
+    if (filters.status) parts.push('status=' + encodeURIComponent(filters.status));
+    return parts.join('&');
+  };
+  const load = async () => {
+    tableHost.replaceChildren(el('div', { class: 'muted' }, 'Loading…'));
+    let payload;
+    try { payload = await kbFetch(buildQS()); }
+    catch (e) {
+      tableHost.replaceChildren(el('p', { class: 'err' }, 'Failed: ' + (e.message || 'unknown')));
+      return;
+    }
+    const rows = payload?.rows || [];
+    tableHost.innerHTML = '';
+    tableHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:10px' },
+      rows.length + ' row' + (rows.length === 1 ? '' : 's')
+      + (payload?.count && payload.count > rows.length ? ' of ' + payload.count : '')));
+    if (!rows.length) {
+      tableHost.appendChild(el('p', { class: 'muted' },
+        'No bookings yet. Guests who submit the funnel land here as leads; once they pay the deposit, they promote to confirmed.'));
+      return;
+    }
+    tableHost.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Submitted'),
+        el('th', {}, 'Guest'),
+        el('th', {}, 'Contact'),
+        el('th', {}, 'Experience'),
+        el('th', {}, 'When'),
+        el('th', { style: 'text-align:right' }, 'Guests'),
+        el('th', { style: 'text-align:right' }, 'Deposit'),
+        el('th', {}, 'Status'))),
+      el('tbody', {}, ...rows.map(r => el('tr', {},
+        el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' }, kbFmtWhen(r.created_at)),
+        el('td', {}, r.guest_name || '—'),
+        el('td', { class: 'muted', style: 'font-size:0.75rem' },
+          r.guest_email ? el('div', {}, r.guest_email) : null,
+          r.guest_phone ? el('div', {}, r.guest_phone) : null),
+        el('td', { class: 'mono', style: 'font-size:0.75rem' }, r.experience_display || r.experience_key || '—'),
+        el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' }, kbFmtWhen(r.event_starts_at, r.event_tz)),
+        el('td', { class: 'mono', style: 'text-align:right' }, r.guest_count != null ? r.guest_count : '—'),
+        el('td', { style: 'text-align:right;font-weight:600' }, kbMoney(r.deposit_cents)),
+        el('td', {}, kbStatusPill(r.status))
+      )))
+    ));
+  };
+
+  const mkSelect = (key, options) => {
+    const sel = el('select', { style: 'padding:5px 8px;font-size:0.8rem' },
+      el('option', { value: '' }, options[0]),
+      ...options.slice(1).map(o => el('option', { value: o.value }, o.label)));
+    sel.onchange = () => { filters[key] = sel.value; load(); };
+    return sel;
+  };
+  filterHost.append(
+    el('span', { class: 'muted', style: 'font-size:0.78rem' }, 'Filter:'),
+    mkSelect('status', ['Any status',
+      { value: 'lead',            label: '👋 Lead' },
+      { value: 'deposit_pending', label: '⏳ Awaiting deposit' },
+      { value: 'confirmed',       label: '✅ Confirmed' },
+      { value: 'refunded',        label: '↩ Refunded' },
+      { value: 'cancelled',       label: '✕ Cancelled' }])
+  );
+  load();
+  return wrap;
+}
+
+async function viewKbLeads() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Leads'),
+    el('div', { class: 'muted' }, 'Every guest who touched the funnel — including abandoned deposits')));
+  const host = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(host);
+
+  const qs = state.isAdmin ? 'client=konquered-balance' : '';
+  let payload;
+  try { payload = await kbFetch(qs); }
+  catch (e) {
+    host.replaceChildren(el('p', { class: 'err' }, 'Failed: ' + (e.message || 'unknown')));
+    return wrap;
+  }
+  const rows = payload?.rows || [];
+  host.innerHTML = '';
+  if (!rows.length) {
+    host.appendChild(el('p', { class: 'muted' }, 'No leads yet. Guests who complete the funnel\'s lead form land here even if they abandon at the deposit step.'));
+    return wrap;
+  }
+  host.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:10px' },
+    rows.length + ' lead' + (rows.length === 1 ? '' : 's') + ' · newest first'));
+
+  for (const r of rows) {
+    const card = el('div', {
+      style: 'padding:12px 14px;margin-bottom:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px'
+    });
+    card.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap' },
+      el('div', {},
+        el('div', { style: 'font-size:1rem;font-weight:600' }, r.guest_name || '—'),
+        el('div', { class: 'muted', style: 'font-size:0.78rem' },
+          [r.guest_email, r.guest_phone].filter(Boolean).join(' · '))),
+      el('div', { style: 'text-align:right' },
+        kbStatusPill(r.status),
+        el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:4px' }, kbFmtWhen(r.created_at))
+      )));
+    const details = [];
+    if (r.experience_display || r.experience_key) details.push(['Experience', r.experience_display || r.experience_key]);
+    if (r.event_starts_at) details.push(['When', kbFmtWhen(r.event_starts_at, r.event_tz)]);
+    if (r.guest_count)     details.push(['Guests', r.guest_count]);
+    if (r.deposit_cents)   details.push(['Deposit', kbMoney(r.deposit_cents)]);
+    if (details.length) {
+      card.appendChild(el('div', { style: 'margin-top:8px;font-size:0.82rem;display:grid;grid-template-columns:120px 1fr;gap:4px 12px' },
+        ...details.flatMap(([k, v]) => [
+          el('div', { class: 'muted' }, k),
+          el('div', {}, String(v))
+        ])));
+    }
+    if (r.goal) {
+      card.appendChild(el('div', { style: 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04);font-size:0.82rem' },
+        el('span', { class: 'muted' }, 'Goal / notes: '),
+        r.goal));
+    }
+    card.appendChild(el('div', { style: 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04);display:flex;gap:8px;flex-wrap:wrap;font-size:0.75rem' },
+      r.source ? el('span', { class: 'muted' }, 'via ' + r.source) : null,
+      r.confirmation_sent_at ? el('span', { style: 'color:#86efac' }, '✉ confirmation sent') : null,
+      r.tenant_alert_sent_at ? el('span', { style: 'color:#86efac' }, '🔔 tenant alerted') : null
+    ));
+    host.appendChild(card);
+  }
+  return wrap;
+}
+
+async function viewKbAvailability() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Availability'),
+    el('div', { class: 'muted' }, 'Weekly recurring open windows — controls what the funnel calendar shows')));
+  wrap.appendChild(el('div', { class: 'panel' },
+    el('p', { class: 'muted' },
+      'The availability editor is coming next. In the meantime, edit ',
+      el('code', {}, 'experience_availability_rules'),
+      ' + ',
+      el('code', {}, 'experience_availability_blocks'),
+      ' directly in Supabase (client_id = the konquered-balance tenant), and the funnel calendar API will reflect the changes on the next request.')));
+  return wrap;
+}
+
 async function viewAnalytics() {
   const wrap = el('div', {});
   const topbar = el('div', { class: 'topbar' },
@@ -12865,22 +13119,32 @@ async function render() {
     switch (state.view) {
       case 'admin':     view = await viewAdmin(); break;
       case 'overview':
-        view = state.client?.slug === 'freeflow-fitness-stl'
-          ? await viewFreeFlowOverview()
-          : await viewOverview();
+        if (state.client?.slug === 'freeflow-fitness-stl') { view = await viewFreeFlowOverview(); break; }
+        if (state.client?.slug === 'konquered-balance')    { view = await viewKbOverview();       break; }
+        view = await viewOverview();
         break;
       case 'activity':  view = (state.isAdmin && state.user?.email === 'ab@goelev8.ai') ? await viewActivity() : await viewOverview(); break;
       case 'contacts':  view = await viewContacts(); break;
       case 'leads':
-        view = state.client?.slug === 'freeflow-fitness-stl'
-          ? await viewFreeFlowLeads()
-          : await viewLeads();
+        if (state.client?.slug === 'freeflow-fitness-stl') { view = await viewFreeFlowLeads(); break; }
+        if (state.client?.slug === 'konquered-balance')    { view = await viewKbLeads();       break; }
+        view = await viewLeads();
         break;
       case 'calls':     view = await viewCalls(); break;
       case 'bookings':
-        view = state.client?.slug === 'freeflow-fitness-stl'
-          ? await viewFreeFlowBookings()
-          : await viewBookings();
+        if (state.client?.slug === 'freeflow-fitness-stl') { view = await viewFreeFlowBookings(); break; }
+        if (state.client?.slug === 'konquered-balance')    { view = await viewKbBookings();       break; }
+        view = await viewBookings();
+        break;
+      case 'experience_bookings':
+        view = (state.isAdmin || state.client?.slug === 'konquered-balance')
+          ? await viewKbBookings()
+          : await viewOverview();
+        break;
+      case 'experience_availability':
+        view = (state.isAdmin || state.client?.slug === 'konquered-balance')
+          ? await viewKbAvailability()
+          : await viewOverview();
         break;
       case 'messages':  view = await viewMessages(); break;
       case 'messaging': view = await viewMessaging(); break;

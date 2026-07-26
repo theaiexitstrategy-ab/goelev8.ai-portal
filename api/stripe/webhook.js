@@ -3,6 +3,7 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 import { getPack } from '../../lib/credits.js';
 import { sendPushToClient, sendPushToAdmins } from '../../lib/push.js';
 import { ingestExternalMerchOrder } from '../../lib/merch-ingest.js';
+import { notifyExperienceConfirmed } from '../../lib/experience-notify.js';
 
 // Disable Vercel body parsing — Stripe needs the raw body for signature verification
 export const config = { api: { bodyParser: false } };
@@ -40,6 +41,51 @@ export default async function handler(req, res) {
             await ingestExternalMerchOrder({ session, connectAccount: event.account });
           } catch (e) {
             console.error('[webhook] merch ingest failed:', e?.message);
+          }
+          break;
+        }
+
+        // Portal-managed experience booking deposit (api/external/
+        // experience-deposit.js sessions from tenant funnel sites like
+        // konqueredkocktails.com). Recognized by the source marker on
+        // metadata. Flips the experience_bookings row from
+        // deposit_pending → confirmed, records the application fee, and
+        // fires guest + tenant notifications. Idempotent on
+        // stripe_session_id — replays are safe.
+        if (session.metadata?.source === 'experience_deposit') {
+          try {
+            const bookingId = session.metadata?.booking_id || null;
+            const query = supabaseAdmin.from('experience_bookings')
+              .select('id, status, confirmation_sent_at, tenant_alert_sent_at, client_id, guest_name, guest_email, guest_phone, experience_display, event_starts_at, event_tz, when_display, guest_count, deposit_cents');
+            const { data: booking } = bookingId
+              ? await query.eq('id', bookingId).maybeSingle()
+              : await query.eq('stripe_session_id', session.id).maybeSingle();
+            if (booking) {
+              const appFee = session.payment_intent
+                ? (session.metadata?.application_fee_cents ? parseInt(session.metadata.application_fee_cents, 10) : null)
+                : null;
+              // Only promote out of deposit_pending; do NOT overwrite a
+              // later state (refunded, cancelled) if webhook replays.
+              const patch = {
+                status: booking.status === 'refunded' || booking.status === 'cancelled' ? booking.status : 'confirmed',
+                stripe_session_id: session.id,
+                stripe_payment_intent: typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id || null,
+                application_fee_cents: appFee,
+                updated_at: new Date().toISOString()
+              };
+              await supabaseAdmin.from('experience_bookings').update(patch).eq('id', booking.id);
+
+              if (patch.status === 'confirmed') {
+                // Fire notifications only once — idempotency via the
+                // sent_at columns handled inside the helper.
+                notifyExperienceConfirmed({ bookingId: booking.id })
+                  .catch(e => console.error('[webhook] experience notify failed:', e?.message));
+              }
+            } else {
+              console.warn('[webhook] experience_deposit session with no matching booking:', session.id);
+            }
+          } catch (e) {
+            console.error('[webhook] experience_deposit ingest failed:', e?.message);
           }
           break;
         }
@@ -312,6 +358,42 @@ export default async function handler(req, res) {
                 error: pi.last_payment_error?.message
               }
             });
+          }
+        }
+        break;
+      }
+      case 'checkout.session.async_payment_failed':
+      case 'checkout.session.expired': {
+        // Experience deposit didn't go through — release the held slot
+        // so a future guest can book that time. Only touches rows still
+        // in deposit_pending (a later successful retry could have
+        // already flipped this booking to confirmed).
+        const session = event.data.object;
+        if (session?.metadata?.source === 'experience_deposit') {
+          try {
+            await supabaseAdmin.from('experience_bookings')
+              .update({ status: 'lead', updated_at: new Date().toISOString() })
+              .eq('stripe_session_id', session.id)
+              .eq('status', 'deposit_pending');
+          } catch (e) {
+            console.error('[webhook] experience_deposit release failed:', e?.message);
+          }
+        }
+        break;
+      }
+      case 'charge.refunded': {
+        // A confirmed experience deposit was refunded (Stephen cancelled
+        // via Stripe dashboard, or the guest disputed). Flip status so
+        // it stops counting toward revenue/attendance.
+        const charge = event.data.object;
+        const pi = typeof charge.payment_intent === 'string' ? charge.payment_intent : null;
+        if (pi) {
+          try {
+            await supabaseAdmin.from('experience_bookings')
+              .update({ status: 'refunded', refunded_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+              .eq('stripe_payment_intent', pi);
+          } catch (e) {
+            console.error('[webhook] experience_deposit refund flip failed:', e?.message);
           }
         }
         break;

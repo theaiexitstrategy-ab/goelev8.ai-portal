@@ -759,7 +759,8 @@ async function ensureDefaultClients(req, res) {
     { slug: 'allthingzblackhair', name: 'AllThingzBlackHair',        business_name: 'AllThingzBlackHair' },
     { slug: 'willpower-fitness',  name: 'Will Power Fitness Factory', business_name: 'Will Power Fitness Factory' },
     { slug: 'danceisasport',      name: 'Dance is a Sport',          business_name: 'Dance is a Sport' },
-    { slug: 'freeflow-fitness-stl', name: 'Free Flow Fitness',       business_name: 'Free Flow Fitness LLC' }
+    { slug: 'freeflow-fitness-stl', name: 'Free Flow Fitness',       business_name: 'Free Flow Fitness LLC' },
+    { slug: 'konquered-balance',  name: 'Konquered Balance',        business_name: 'Konquered Balance LLC' }
   ];
   const { data: existing } = await supabaseAdmin
     .from('clients').select('id, slug, name, business_name');
@@ -1122,6 +1123,60 @@ async function backfillLeadsToContacts(req, res) {
 //   secondary=#D4AF7A, booking_url=lawco.glossgenius.com/book.
 // The 'iSlay Studios' platform-network keyword is added at
 // provisioning time by lib/provisioning.js — no need to seed it here.
+// Mint a tenant write key for the /api/external/experience-* endpoints.
+// Returns the raw key ONCE — only the sha256 hash is persisted so a
+// later leak of the DB row can't be replayed. Idempotent-ish: repeat
+// mints for the same client just add another active key; rotation
+// = mint new + revoke old via ?revoke=<key_id>.
+//
+// Body: { client_id, label?, allowed_origins: string[], revoke?: <id> }
+async function mintTenantWriteKey(req, res, ctx) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' });
+  const body = await readJson(req);
+  const clientId = String(body?.client_id || '').trim();
+  if (!clientId) return res.status(400).json({ error: 'client_id_required' });
+  const allowedOrigins = Array.isArray(body?.allowed_origins) ? body.allowed_origins.filter(x => typeof x === 'string') : [];
+  const label = String(body?.label || '').trim() || null;
+
+  // Optional rotation — revoke a prior key at the same time.
+  if (body?.revoke) {
+    const revokeId = String(body.revoke).trim();
+    await supabaseAdmin.from('tenant_write_keys')
+      .update({ active: false, revoked_at: new Date().toISOString() })
+      .eq('id', revokeId).eq('client_id', clientId);
+  }
+
+  // Generate a URL-safe base64 key. 32 random bytes → 43 chars.
+  const crypto = await import('node:crypto');
+  const raw = 'pk_' + crypto.randomBytes(32).toString('base64url');
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  const prefix = raw.slice(0, 11);
+
+  const { data, error } = await supabaseAdmin.from('tenant_write_keys').insert({
+    client_id: clientId,
+    key_hash:  hash,
+    key_prefix: prefix,
+    label,
+    allowed_origins: allowedOrigins,
+    active: true
+  }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  logFromReq(req, ctx, {
+    action: 'mint_tenant_write_key',
+    target_type: 'tenant', target_id: clientId,
+    metadata: { key_id: data.id, prefix, label, origins: allowedOrigins }
+  });
+
+  return res.status(200).json({
+    ok: true,
+    key_id: data.id,
+    prefix,
+    raw,  // shown ONCE — never returned again
+    note: 'Copy this key NOW. It will not be shown again. Paste it into the tenant funnel\'s env vars as PORTAL_WRITE_KEY_<TENANT>.'
+  });
+}
+
 async function seedLocsAndWellness(req, res, ctx) {
   const SLUG = 'locs-and-wellness';
   const spec = {
@@ -4125,6 +4180,146 @@ async function applyPendingMigrations(req, res) {
        WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
                    OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
 
+    // ----- Konquered Balance portal_tabs + tenant config -----
+    // 7-tab layout: overview / leads / experience_bookings /
+    // experience_availability / messaging / analytics / settings.
+    // Same booking-driven service shape as Free Flow but with an
+    // Availability editor (Stephen sets his own weekly rules;
+    // replaces the KK site's hardcoded SLOTS array). Slug-scoped +
+    // idempotent (IS DISTINCT FROM gate).
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","experience_bookings","experience_availability","messaging","analytics","settings"]'::jsonb
+     WHERE slug = 'konquered-balance'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","experience_bookings","experience_availability","messaging","analytics","settings"]'::jsonb;`,
+    `UPDATE public.clients SET platform_fee_pct = 10
+     WHERE slug = 'konquered-balance' AND platform_fee_pct IS NULL;`,
+
+    // ----- 0035: generic experience-booking platform tables -----
+    // Multi-tenant from day one. tenant_write_keys (public-endpoint
+    // auth), experience_bookings (the core lifecycle row),
+    // experience_availability_rules (weekly recurring windows),
+    // experience_availability_blocks (unavailable ranges). Full DDL
+    // + RLS mirrored in supabase/migrations/0035_experience_platform.sql.
+    `CREATE TABLE IF NOT EXISTS public.tenant_write_keys (
+       id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id       uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       key_hash        text NOT NULL UNIQUE,
+       key_prefix      text NOT NULL,
+       label           text,
+       allowed_origins text[] NOT NULL DEFAULT '{}',
+       active          boolean NOT NULL DEFAULT true,
+       created_at      timestamptz NOT NULL DEFAULT now(),
+       revoked_at      timestamptz
+     );`,
+    `CREATE INDEX IF NOT EXISTS tenant_write_keys_client_idx ON public.tenant_write_keys(client_id) WHERE revoked_at IS NULL;`,
+    `ALTER TABLE public.tenant_write_keys ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS tenant_write_keys_admin_all ON public.tenant_write_keys;`,
+    `CREATE POLICY tenant_write_keys_admin_all ON public.tenant_write_keys
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+
+    `CREATE TABLE IF NOT EXISTS public.experience_bookings (
+       id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id             uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       lead_id               uuid REFERENCES public.leads(id) ON DELETE SET NULL,
+       status                text NOT NULL DEFAULT 'lead'
+                             CHECK (status IN ('lead','deposit_pending','confirmed','refunded','cancelled')),
+       experience_key        text,
+       experience_display    text,
+       event_starts_at       timestamptz,
+       event_tz              text DEFAULT 'America/Chicago',
+       when_display          text,
+       duration_min          int,
+       guest_count           int,
+       guest_name            text,
+       guest_email           text,
+       guest_phone           text,
+       goal                  text,
+       deposit_cents         int,
+       stripe_session_id     text,
+       stripe_payment_intent text,
+       application_fee_cents int,
+       source                text DEFAULT 'external',
+       source_url            text,
+       confirmation_sent_at  timestamptz,
+       tenant_alert_sent_at  timestamptz,
+       refunded_at           timestamptz,
+       cancelled_at          timestamptz,
+       created_at            timestamptz NOT NULL DEFAULT now(),
+       updated_at            timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS experience_bookings_client_starts_idx  ON public.experience_bookings(client_id, event_starts_at);`,
+    `CREATE INDEX IF NOT EXISTS experience_bookings_client_status_idx  ON public.experience_bookings(client_id, status);`,
+    `CREATE INDEX IF NOT EXISTS experience_bookings_stripe_session_idx ON public.experience_bookings(stripe_session_id) WHERE stripe_session_id IS NOT NULL;`,
+    `CREATE INDEX IF NOT EXISTS experience_bookings_client_created_idx ON public.experience_bookings(client_id, created_at DESC);`,
+    `ALTER TABLE public.experience_bookings ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS experience_bookings_admin_all ON public.experience_bookings;`,
+    `CREATE POLICY experience_bookings_admin_all ON public.experience_bookings
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS experience_bookings_tenant_all ON public.experience_bookings;`,
+    `CREATE POLICY experience_bookings_tenant_all ON public.experience_bookings
+       FOR ALL TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
+       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
+    `CREATE TABLE IF NOT EXISTS public.experience_availability_rules (
+       id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id         uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       experience_key    text,
+       day_of_week       int  NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+       start_time        time NOT NULL,
+       end_time          time NOT NULL,
+       slot_duration_min int  NOT NULL DEFAULT 60,
+       active            boolean NOT NULL DEFAULT true,
+       created_at        timestamptz NOT NULL DEFAULT now(),
+       updated_at        timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS experience_avail_rules_client_idx ON public.experience_availability_rules(client_id, active);`,
+    `ALTER TABLE public.experience_availability_rules ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS experience_avail_rules_admin_all ON public.experience_availability_rules;`,
+    `CREATE POLICY experience_avail_rules_admin_all ON public.experience_availability_rules
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS experience_avail_rules_tenant_all ON public.experience_availability_rules;`,
+    `CREATE POLICY experience_avail_rules_tenant_all ON public.experience_availability_rules
+       FOR ALL TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
+       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
+    `CREATE TABLE IF NOT EXISTS public.experience_availability_blocks (
+       id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id   uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       starts_at   timestamptz NOT NULL,
+       ends_at     timestamptz NOT NULL,
+       reason      text,
+       created_at  timestamptz NOT NULL DEFAULT now()
+     );`,
+    `CREATE INDEX IF NOT EXISTS experience_avail_blocks_client_range_idx ON public.experience_availability_blocks(client_id, starts_at, ends_at);`,
+    `ALTER TABLE public.experience_availability_blocks ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS experience_avail_blocks_admin_all ON public.experience_availability_blocks;`,
+    `CREATE POLICY experience_avail_blocks_admin_all ON public.experience_availability_blocks
+       FOR ALL TO authenticated
+       USING ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+              OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()))
+       WITH CHECK ((auth.jwt() ->> 'email') = 'ab@goelev8.ai'
+                   OR EXISTS (SELECT 1 FROM public.platform_admins pa WHERE pa.user_id = auth.uid()));`,
+    `DROP POLICY IF EXISTS experience_avail_blocks_tenant_all ON public.experience_availability_blocks;`,
+    `CREATE POLICY experience_avail_blocks_tenant_all ON public.experience_availability_blocks
+       FOR ALL TO authenticated
+       USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
+       WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
+
     // ----- Danceisasport portal_tabs -----
     // 8 product-namespaced tab ids (danceisasport_<tabId>) matching
     // lib/products.config.js. Namespaced form so that:
@@ -4791,6 +4986,7 @@ export default async function handler(req, res) {
       case 'inspect-booking':            return await inspectBooking(req, res);
       case 'provision-tenant':           return await provisionTenantAction(req, res, ctx);
       case 'seed-locs-and-wellness':     return await seedLocsAndWellness(req, res, ctx);
+      case 'mint-tenant-write-key':      return await mintTenantWriteKey(req, res, ctx);
       case 'backfill-leads-to-contacts': return await backfillLeadsToContacts(req, res);
       case 'set-pickup':                  return await setPickup(req, res);
       case 'stripe-webhook-health':      return await stripeWebhookHealth(req, res);
