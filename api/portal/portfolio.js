@@ -25,6 +25,7 @@
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { requireUser } from '../../lib/auth.js';
 import { normalizePlaybackId, validatePlaybackIdLive } from '../../lib/mux-validate.js';
+import { createDirectUpload, resolveUploadToAsset, deleteAsset } from '../../lib/mux-api.js';
 
 async function readJson(req) {
   if (req.body && typeof req.body === 'object') return req.body;
@@ -228,18 +229,156 @@ async function handleReorder(req, res) {
   return res.status(200).json({ ok: true });
 }
 
-async function handleDelete(req, res) {
+// ── Direct upload: start ─────────────────────────────────────────
+// Creates a placeholder client_portfolio_videos row (status='uploading',
+// playback_id=null) + a Mux Direct Upload URL. Returns the URL to the
+// phone; the phone PUTs the file straight to Mux — never through our
+// serverless (bypassing Vercel body size limits + timeouts).
+async function handleStartUpload(req, res) {
+  const ctx = await requireUser(req, res, { requireClient: false });
+  if (!ctx) return;
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const r = await resolveClientId(ctx, url);
+  if (r.error) return res.status(400).json({ error: r.error });
+  const clientId = r.clientId;
+
+  let body;
+  try { body = await readJson(req); }
+  catch { return res.status(400).json({ error: 'invalid_json' }); }
+
+  const title = String(body?.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'title_required' });
+  if (title.length > 200) return res.status(400).json({ error: 'title_too_long' });
+  const description = body?.description == null ? null : String(body.description).slice(0, 2000);
+
+  // Provision Mux Direct Upload FIRST — if this fails, we haven't
+  // written a broken row to the DB.
+  let mux;
+  try { mux = await createDirectUpload({
+    corsOrigin: req.headers.origin || undefined
+  }); }
+  catch (e) {
+    return res.status(500).json({ error: 'mux_upload_create_failed', message: e.message });
+  }
+
+  // Compute next sort_order (append at end).
+  const { data: last } = await supabaseAdmin
+    .from('client_portfolio_videos').select('sort_order')
+    .eq('client_id', clientId).order('sort_order', { ascending: false }).limit(1).maybeSingle();
+  const nextSort = (last?.sort_order ?? -1) + 1;
+
+  // Stable video_key derived from title — used later by /api/external/portfolio.
+  const baseKey = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'video';
+  // Suffix with timestamp to avoid a UNIQUE collision on same-title repeats.
+  const videoKey = `${baseKey}-${Date.now().toString(36)}`;
+
+  const row = {
+    client_id:      clientId,
+    video_key:      videoKey,
+    title, description,
+    mux_upload_id:  mux.upload_id,
+    status:         'uploading',
+    is_active:      true,     // becomes visible via the public endpoint once playback_id lands
+    sort_order:     nextSort
+  };
+  const { data, error } = await supabaseAdmin.from('client_portfolio_videos')
+    .insert(row).select().single();
+  if (error) {
+    const t = statusForPgError(error);
+    return res.status(t.status).json({ error: t.error, message: t.message });
+  }
+  return res.status(200).json({
+    ok: true,
+    video: data,
+    upload_url: mux.upload_url,
+    upload_id:  mux.upload_id,
+    cors_origin: mux.cors_origin
+  });
+}
+
+// ── Direct upload: check status ──────────────────────────────────
+// Called by the SPA every few seconds after the phone finishes PUT.
+// Walks Mux upload → asset. Updates our row when it flips ready/errored.
+// Idempotent; safe to hammer.
+async function handleCheckUpload(req, res) {
+  const ctx = await requireUser(req, res, { requireClient: false });
+  if (!ctx) return;
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const id = url.searchParams.get('video_id');
+  if (!id) return res.status(400).json({ error: 'video_id_required' });
+
+  const { data: row } = await supabaseAdmin.from('client_portfolio_videos')
+    .select('*').eq('id', id).maybeSingle();
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  if (!ctx.isAdmin && ctx.clientId !== row.client_id) return res.status(403).json({ error: 'forbidden' });
+
+  // Already terminal — just echo back current state.
+  if (row.status === 'ready' || row.status === 'errored') {
+    return res.status(200).json({ ok: true, video: row });
+  }
+  if (!row.mux_upload_id) {
+    return res.status(400).json({ error: 'no_upload_id_on_row' });
+  }
+
+  let verdict;
+  try { verdict = await resolveUploadToAsset(row.mux_upload_id); }
+  catch (e) {
+    return res.status(502).json({ error: 'mux_check_failed', message: e.message });
+  }
+
+  const patch = { };
+  if (verdict.stage === 'upload') {
+    // Waiting for bytes OR just-arrived-not-yet-processed.
+    // 'waiting' = URL issued, no PUT received yet — keep status='uploading'.
+    // Anything else Mux reports as terminal upload failure.
+    if (['errored', 'cancelled', 'timed_out'].includes(verdict.status)) {
+      patch.status = 'errored';
+      patch.error_message = verdict.error_message || verdict.status;
+    }
+  } else if (verdict.stage === 'asset') {
+    patch.mux_asset_id = verdict.asset_id;
+    if (verdict.asset_status === 'ready' && verdict.playback_id) {
+      patch.mux_playback_id  = verdict.playback_id;
+      patch.status           = 'ready';
+      patch.duration_seconds = verdict.duration_seconds || null;
+      patch.error_message    = null;
+    } else if (verdict.asset_status === 'errored') {
+      patch.status = 'errored';
+      patch.error_message = verdict.error_message || 'asset_errored';
+    } else {
+      // 'preparing' — Mux is encoding
+      if (row.status !== 'processing') patch.status = 'processing';
+    }
+  }
+
+  if (Object.keys(patch).length) {
+    patch.updated_at = new Date().toISOString();
+    const { data: updated, error: updErr } = await supabaseAdmin
+      .from('client_portfolio_videos').update(patch).eq('id', id).select().single();
+    if (updErr) return res.status(500).json({ error: 'db_update_failed', message: updErr.message });
+    return res.status(200).json({ ok: true, video: updated });
+  }
+  return res.status(200).json({ ok: true, video: row });
+}
+
+// Enhanced delete — also removes the Mux asset (fire-and-forget).
+async function handleDeleteWithMux(req, res) {
   const ctx = await requireUser(req, res, { requireClient: false });
   if (!ctx) return;
   const url = new URL(req.url, `http://${req.headers.host}`);
   const id = url.searchParams.get('id');
   if (!id) return res.status(400).json({ error: 'id_required' });
   const { data: existing } = await supabaseAdmin
-    .from('client_portfolio_videos').select('client_id').eq('id', id).maybeSingle();
+    .from('client_portfolio_videos').select('client_id, mux_asset_id').eq('id', id).maybeSingle();
   if (!existing) return res.status(404).json({ error: 'not_found' });
   if (!ctx.isAdmin && ctx.clientId !== existing.client_id) return res.status(403).json({ error: 'forbidden' });
   const { error } = await supabaseAdmin.from('client_portfolio_videos').delete().eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
+  // Best-effort: also delete the Mux asset so Stephen's Mux storage
+  // doesn't accumulate orphans. Missing token / 404 both non-fatal.
+  if (existing.mux_asset_id) {
+    deleteAsset(existing.mux_asset_id).catch(e => console.warn('[portfolio] mux asset delete failed:', e?.message));
+  }
   return res.status(200).json({ ok: true });
 }
 
@@ -248,11 +387,13 @@ export default async function handler(req, res) {
   if (req.method === 'POST') {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const action = url.searchParams.get('action') || 'upsert';
-    if (action === 'upsert')  return await handleUpsert(req, res);
-    if (action === 'reorder') return await handleReorder(req, res);
+    if (action === 'upsert')       return await handleUpsert(req, res);
+    if (action === 'reorder')      return await handleReorder(req, res);
+    if (action === 'start-upload') return await handleStartUpload(req, res);
+    if (action === 'check-upload') return await handleCheckUpload(req, res);
     return res.status(400).json({ error: 'unknown_action', action });
   }
-  if (req.method === 'DELETE') return await handleDelete(req, res);
+  if (req.method === 'DELETE') return await handleDeleteWithMux(req, res);
   res.setHeader('Allow', 'GET, POST, DELETE');
   return res.status(405).json({ error: 'method_not_allowed' });
 }

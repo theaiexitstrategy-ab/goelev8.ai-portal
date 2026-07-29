@@ -4446,6 +4446,26 @@ async function applyPendingMigrations(req, res) {
        AND portal_tabs IS DISTINCT FROM
            '["overview","leads","experience_bookings","experience_availability","merch","portfolio","messaging","analytics","settings"]'::jsonb;`,
 
+    // ----- 0037: Direct-upload support for portfolio videos -----
+    // Full DDL mirrored in supabase/migrations/0037_portfolio_direct_uploads.sql.
+    // Makes mux_playback_id nullable + adds bookkeeping columns for
+    // in-flight Mux uploads. Enables phone → Mux uploads without the
+    // operator ever seeing a Playback ID.
+    `ALTER TABLE public.client_portfolio_videos
+       ALTER COLUMN mux_playback_id DROP NOT NULL;`,
+    `ALTER TABLE public.client_portfolio_videos
+       ADD COLUMN IF NOT EXISTS mux_asset_id  text,
+       ADD COLUMN IF NOT EXISTS mux_upload_id text,
+       ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'ready'
+         CHECK (status IN ('uploading','processing','ready','errored')),
+       ADD COLUMN IF NOT EXISTS error_message   text,
+       ADD COLUMN IF NOT EXISTS duration_seconds numeric;`,
+    `CREATE INDEX IF NOT EXISTS client_portfolio_videos_status_idx
+       ON public.client_portfolio_videos(client_id, status);`,
+    `CREATE INDEX IF NOT EXISTS client_portfolio_videos_upload_id_idx
+       ON public.client_portfolio_videos(mux_upload_id)
+       WHERE mux_upload_id IS NOT NULL;`,
+
     // ----- Danceisasport portal_tabs -----
     // 8 product-namespaced tab ids (danceisasport_<tabId>) matching
     // lib/products.config.js. Namespaced form so that:

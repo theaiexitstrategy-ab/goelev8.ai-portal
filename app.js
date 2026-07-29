@@ -12877,8 +12877,8 @@ async function viewPortfolio() {
   const info = el('div', { class: 'panel', style: 'padding:12px 14px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2)' },
     el('div', { style: 'font-size:0.82rem;line-height:1.5' },
       '🎬 ', el('strong', {}, 'How this works: '),
-      'Paste a Mux ', el('em', {}, 'Playback ID'),
-      ' (public, ~44+ chars — find it in the Mux dashboard under your asset). We verify it streams before saving, so a bad ID never reaches your live page. Cap: ', el('strong', {}, '5 active videos'), '.'));
+      'Upload a video from your phone or laptop — record with your camera or pick from the roll. We handle encoding and posting to your public /portfolio page automatically. Cap: ',
+      el('strong', {}, '5 active videos'), '.'));
   wrap.appendChild(info);
 
   const listHost = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading videos…'));
@@ -12900,16 +12900,22 @@ async function viewPortfolio() {
     const activeCount = videos.filter(v => v.is_active).length;
     const canAdd = activeCount < cap;
 
-    listHost.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px' },
+    listHost.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px' },
       el('div', {},
         el('h3', { style: 'margin:0' }, `${activeCount} / ${cap} active`),
         el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' },
           videos.length > activeCount ? `${videos.length - activeCount} inactive` : 'Sorted by drag-and-drop order — top plays first')),
-      el('button', {
-        class: 'btn primary', style: 'font-size:0.82rem' + (canAdd ? '' : ';opacity:0.5;cursor:not-allowed'),
-        title: canAdd ? '' : `Cap reached (${cap}). Delete or deactivate a video first.`,
-        onclick: () => canAdd ? showForm(null) : toast('5-video cap reached — delete or deactivate one first', true)
-      }, '+ Add video')));
+      el('div', { style: 'display:flex;gap:8px' },
+        el('button', {
+          class: 'btn primary', style: 'font-size:0.82rem' + (canAdd ? '' : ';opacity:0.5;cursor:not-allowed'),
+          title: canAdd ? '' : `Cap reached (${cap}). Delete or deactivate a video first.`,
+          onclick: () => canAdd ? showUploadForm() : toast('5-video cap reached — delete or deactivate one first', true)
+        }, '📤 Upload video'),
+        state.isAdmin ? el('button', {
+          class: 'btn', style: 'font-size:0.82rem' + (canAdd ? '' : ';opacity:0.5;cursor:not-allowed'),
+          title: 'Admin: paste an existing Mux Playback ID',
+          onclick: () => canAdd ? showPasteForm(null) : toast('5-video cap reached', true)
+        }, 'paste ID') : null)));
 
     if (!videos.length) {
       listHost.appendChild(el('p', { class: 'muted' },
@@ -12919,39 +12925,80 @@ async function viewPortfolio() {
 
     for (let i = 0; i < videos.length; i++) {
       const v = videos[i];
+      const isReady = (v.status || 'ready') === 'ready' && v.mux_playback_id;
+      const isProcessing = v.status === 'uploading' || v.status === 'processing';
+      const isErrored = v.status === 'errored';
       const thumb = v.mux_playback_id
         ? `https://image.mux.com/${encodeURIComponent(v.mux_playback_id)}/thumbnail.jpg?width=240&height=135&fit_mode=smartcrop`
         : null;
       const card = el('div', {
-        style: 'display:flex;gap:14px;padding:12px;margin-bottom:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px' + (v.is_active ? '' : ';opacity:0.55')
+        style: 'display:flex;gap:14px;padding:12px;margin-bottom:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px' + (v.is_active && isReady ? '' : ';opacity:0.7')
       });
-      card.appendChild(el('div', { style: 'width:120px;height:68px;background:#000;border-radius:6px;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center' },
-        thumb ? el('img', { src: thumb, style: 'width:100%;height:100%;object-fit:cover',
-          onerror: 'this.style.display=\'none\'' }) : el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'no preview')));
+      // Thumbnail cell — spinner during processing, warning icon on error
+      const thumbCell = el('div', { style: 'width:120px;height:68px;background:#000;border-radius:6px;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;position:relative' });
+      if (thumb) {
+        thumbCell.appendChild(el('img', { src: thumb, style: 'width:100%;height:100%;object-fit:cover', onerror: 'this.style.display=\'none\'' }));
+      } else if (isProcessing) {
+        thumbCell.appendChild(el('div', { style: 'display:flex;flex-direction:column;align-items:center;gap:4px' },
+          el('div', { style: 'font-size:1.4rem;animation:spin 1s linear infinite' }, '⏳'),
+          el('div', { class: 'muted', style: 'font-size:0.62rem;text-transform:uppercase;letter-spacing:0.05em' }, v.status)));
+      } else if (isErrored) {
+        thumbCell.appendChild(el('div', { style: 'color:#fca5a5;font-size:0.72rem' }, '⚠ error'));
+      } else {
+        thumbCell.appendChild(el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'no preview'));
+      }
+      card.appendChild(thumbCell);
+
       const body = el('div', { style: 'flex:1;min-width:0' });
       const titleRow = el('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap' },
         el('div', { style: 'font-weight:600;font-size:0.92rem' }, v.title || '(untitled)'),
-        v.is_active ? null : el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(148,163,184,0.14);color:#cbd5e1' }, 'inactive'),
-        (v.title && v.title.trim().split(/\s+/).length <= 3 && !v.description)
+        isProcessing ? el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(59,130,246,0.14);color:#93c5fd' }, v.status === 'uploading' ? '⬆ uploading' : '⚙ encoding') : null,
+        isErrored ? el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(239,68,68,0.14);color:#fca5a5' }, '⚠ upload failed') : null,
+        (!v.is_active && isReady) ? el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(148,163,184,0.14);color:#cbd5e1' }, 'inactive') : null,
+        (isReady && v.title && v.title.trim().split(/\s+/).length <= 3 && !v.description)
           ? el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(251,191,36,0.14);color:#fde68a', title: 'This looks like a placeholder title — rename it so the reel matches the video.' }, '⚠ placeholder?')
           : null);
       body.appendChild(titleRow);
       if (v.description) body.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-top:4px;white-space:pre-wrap' },
         v.description.length > 180 ? v.description.slice(0, 180) + '…' : v.description));
-      body.appendChild(el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:6px;font-family:ui-monospace,monospace' },
-        v.mux_playback_id ? v.mux_playback_id.slice(0, 20) + '…' : '(no playback id)'));
-      const controls = el('div', { style: 'display:flex;flex-direction:column;gap:4px;align-items:flex-end' },
-        el('div', { style: 'display:flex;gap:4px' },
+      if (isErrored && v.error_message) body.appendChild(el('div', { style: 'font-size:0.75rem;margin-top:4px;color:#fca5a5' }, v.error_message));
+
+      const controls = el('div', { style: 'display:flex;flex-direction:column;gap:4px;align-items:flex-end' });
+      if (isReady) {
+        controls.appendChild(el('div', { style: 'display:flex;gap:4px' },
           el('button', { class: 'btn', style: 'font-size:0.7rem;padding:3px 7px' + (i === 0 ? ';opacity:0.4;cursor:not-allowed' : ''),
             disabled: i === 0, onclick: () => reorder(i, i - 1, videos) }, '↑'),
           el('button', { class: 'btn', style: 'font-size:0.7rem;padding:3px 7px' + (i === videos.length - 1 ? ';opacity:0.4;cursor:not-allowed' : ''),
-            disabled: i === videos.length - 1, onclick: () => reorder(i, i + 1, videos) }, '↓')),
-        el('div', { style: 'display:flex;gap:4px;margin-top:2px' },
-          el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px', onclick: () => showForm(v) }, 'edit'),
-          el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px;color:#fca5a5',
-            onclick: () => deleteVideo(v) }, 'delete')));
+            disabled: i === videos.length - 1, onclick: () => reorder(i, i + 1, videos) }, '↓')));
+      }
+      controls.appendChild(el('div', { style: 'display:flex;gap:4px;margin-top:2px' },
+        isReady ? el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px', onclick: () => showEditForm(v) }, 'edit') : null,
+        el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px;color:#fca5a5',
+          onclick: () => deleteVideo(v) }, 'delete')));
       card.append(body, controls);
       listHost.appendChild(card);
+    }
+    // Keep polling if anything's in flight
+    const inFlight = videos.some(v => v.status === 'uploading' || v.status === 'processing');
+    if (inFlight && !window.__portfolioPoll) {
+      window.__portfolioPoll = setInterval(async () => {
+        // Only auto-poll if we're still on the portfolio view
+        if (state.view !== 'portfolio') { clearInterval(window.__portfolioPoll); window.__portfolioPoll = null; return; }
+        // Kick a check on each in-flight row to nudge the server to
+        // update its status from Mux. Cheap — ~one Mux GET per row.
+        try {
+          const list = await api('/api/portal/portfolio' + clientQS);
+          const nowInflight = (list.videos || []).filter(v => v.status === 'uploading' || v.status === 'processing');
+          for (const v of nowInflight) {
+            const q = 'action=check-upload&video_id=' + encodeURIComponent(v.id) + (clientParam ? '&' + clientParam : '');
+            api('/api/portal/portfolio?' + q, { method: 'POST', body: {} }).catch(() => {});
+          }
+          if (!nowInflight.length) {
+            clearInterval(window.__portfolioPoll); window.__portfolioPoll = null;
+          }
+          load();
+        } catch { /* stay quiet on transient errors */ }
+      }, 4000);
     }
   }
 
@@ -12975,7 +13022,235 @@ async function viewPortfolio() {
     } catch (e) { toast('Delete failed: ' + (e.message || 'unknown'), true); }
   }
 
-  function showForm(existing) {
+  // Upload flow — phone/laptop picks a video file, PUT-uploads it
+  // directly to Mux (bytes never touch our serverless), then polls
+  // for processing complete.
+  function showUploadForm() {
+    const titleIn = el('input', { type: 'text',
+      placeholder: 'e.g. Behind the Bar — Old Fashioned Class',
+      style: 'padding:8px 12px;font-size:0.9rem;width:100%' });
+    const descIn = el('textarea', {
+      placeholder: 'Optional. Line breaks are preserved on the public page.',
+      rows: '3', style: 'padding:8px 12px;font-size:0.9rem;width:100%;font-family:inherit;resize:vertical' });
+    // Mobile Safari + Chrome both open camera roll or camera when tapped.
+    // capture attribute nudges some devices toward record-new; we omit
+    // it so the user can pick from library OR record.
+    const fileIn = el('input', { type: 'file', accept: 'video/*',
+      style: 'padding:8px 12px;font-size:0.9rem;width:100%;background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.15);border-radius:8px' });
+    const fileInfo = el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:4px' }, '');
+    const progressWrap = el('div', { style: 'margin-top:12px;display:none' });
+    const progressBar  = el('div', { style: 'height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden' },
+      el('div', { style: 'height:100%;background:linear-gradient(90deg,#60a5fa,#3b82f6);width:0%;transition:width 0.2s' }));
+    const progressText = el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:4px' }, '0%');
+    progressWrap.append(progressBar, progressText);
+    const statusText = el('div', { style: 'font-size:0.85rem;margin-top:10px;display:none' });
+    const errBox = el('div', { style: 'margin-top:10px;padding:10px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:6px;font-size:0.8rem;color:#fca5a5;display:none' });
+
+    fileIn.onchange = () => {
+      const f = fileIn.files?.[0];
+      if (!f) { fileInfo.textContent = ''; return; }
+      const sizeMB = (f.size / 1024 / 1024).toFixed(1);
+      fileInfo.textContent = `${f.name} · ${sizeMB} MB`;
+    };
+
+    const dialog = el('div', {
+      style: 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px'
+    });
+    const modal = el('div', {
+      style: 'background:#151515;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:22px 26px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto'
+    });
+    const uploadBtn = el('button', { class: 'btn primary' }, '📤 Upload');
+    const cancelBtn = el('button', { class: 'btn', onclick: () => document.body.removeChild(dialog) }, 'Cancel');
+
+    modal.appendChild(el('h3', { style: 'margin:0 0 16px' }, 'Upload video'));
+    const row = (label, ctrl, hint) => el('div', { style: 'margin-bottom:14px' },
+      el('label', { style: 'display:block;font-size:0.75rem;color:var(--muted,#9ca3af);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.03em' }, label),
+      ctrl,
+      hint ? el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:4px' }, hint) : null);
+    modal.append(
+      row('Title', titleIn),
+      row('Description', descIn, 'Optional. Shown under the video on your public page.'),
+      row('Video file', el('div', {}, fileIn, fileInfo),
+        'Pick from your camera roll or record a new one. Any mobile-friendly format works (MP4, MOV, etc.).'),
+      progressWrap,
+      statusText,
+      errBox,
+      el('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:16px' },
+        cancelBtn, uploadBtn));
+
+    uploadBtn.onclick = async () => {
+      errBox.style.display = 'none'; errBox.textContent = '';
+      const title = titleIn.value.trim();
+      const file = fileIn.files?.[0];
+      if (!title) { errBox.textContent = 'Give the video a title.'; errBox.style.display = 'block'; return; }
+      if (!file)  { errBox.textContent = 'Pick a video file to upload.'; errBox.style.display = 'block'; return; }
+
+      uploadBtn.disabled = true; cancelBtn.disabled = true;
+      fileIn.disabled = true; titleIn.disabled = true; descIn.disabled = true;
+      progressWrap.style.display = 'block';
+      statusText.style.display = 'block';
+      statusText.textContent = 'Getting upload URL from Mux…';
+
+      // 1. Ask portal for a Mux Direct Upload URL
+      let videoRow, uploadUrl;
+      try {
+        const qs = 'action=start-upload' + (clientParam ? '&' + clientParam : '');
+        const r = await api('/api/portal/portfolio?' + qs, {
+          method: 'POST',
+          body: { title, description: descIn.value.trim() || null }
+        });
+        videoRow = r.video;
+        uploadUrl = r.upload_url;
+      } catch (e) {
+        errBox.textContent = 'Could not start upload: ' + (e.message || 'unknown');
+        errBox.style.display = 'block';
+        uploadBtn.disabled = false; cancelBtn.disabled = false;
+        fileIn.disabled = false; titleIn.disabled = false; descIn.disabled = false;
+        progressWrap.style.display = 'none';
+        return;
+      }
+
+      // 2. PUT the file directly to Mux with progress reporting
+      statusText.textContent = 'Uploading… don\'t close this window.';
+      const putOk = await new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl, true);
+        xhr.upload.onprogress = (ev) => {
+          if (!ev.lengthComputable) return;
+          const pct = Math.round((ev.loaded / ev.total) * 100);
+          progressBar.firstChild.style.width = pct + '%';
+          progressText.textContent = pct + '% · ' +
+            (ev.loaded / 1024 / 1024).toFixed(1) + ' of ' +
+            (ev.total  / 1024 / 1024).toFixed(1) + ' MB';
+        };
+        xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+        xhr.onerror = () => resolve(false);
+        xhr.ontimeout = () => resolve(false);
+        xhr.send(file);
+      });
+      if (!putOk) {
+        errBox.textContent = 'Upload to Mux failed. Try again on a stable connection.';
+        errBox.style.display = 'block';
+        uploadBtn.disabled = false; cancelBtn.disabled = false;
+        fileIn.disabled = false; titleIn.disabled = false; descIn.disabled = false;
+        return;
+      }
+
+      // 3. Poll portal to check-upload until Mux reports the asset is ready
+      statusText.textContent = 'Uploaded — Mux is encoding your video (typically 30-90 seconds).';
+      progressBar.firstChild.style.width = '100%';
+      progressText.textContent = 'Encoding…';
+      let ready = false, tries = 0;
+      while (!ready && tries < 60) {  // ~4 minute cap
+        await new Promise(r => setTimeout(r, 4000));
+        tries++;
+        try {
+          const q = 'action=check-upload&video_id=' + encodeURIComponent(videoRow.id) + (clientParam ? '&' + clientParam : '');
+          const r = await api('/api/portal/portfolio?' + q, { method: 'POST', body: {} });
+          if (r.video.status === 'ready') { ready = true; break; }
+          if (r.video.status === 'errored') {
+            errBox.textContent = 'Mux reported an error: ' + (r.video.error_message || 'unknown');
+            errBox.style.display = 'block';
+            statusText.style.display = 'none';
+            uploadBtn.disabled = false; cancelBtn.disabled = false;
+            return;
+          }
+          statusText.textContent = r.video.status === 'processing'
+            ? 'Encoding… (this happens on Mux; the video will appear automatically when done)'
+            : 'Waiting for Mux…';
+        } catch (e) { /* transient — keep polling */ }
+      }
+      if (!ready) {
+        statusText.textContent = 'Still encoding — you can close this. The video will appear in the list when Mux finishes.';
+        setTimeout(() => document.body.contains(dialog) && document.body.removeChild(dialog), 3000);
+        load();
+        toast('Upload complete — encoding continues in the background');
+        return;
+      }
+      // Done
+      document.body.removeChild(dialog);
+      toast('✓ Video ready and live on your portfolio page');
+      load();
+    };
+
+    dialog.appendChild(modal);
+    // No click-outside-to-close during upload; the user might lose progress
+    dialog.onclick = (e) => {
+      if (e.target === dialog && !uploadBtn.disabled) document.body.removeChild(dialog);
+    };
+    document.body.appendChild(dialog);
+    setTimeout(() => titleIn.focus(), 50);
+  }
+
+  // Edit modal — title / description / active only. No Mux details.
+  function showEditForm(existing) {
+    const titleIn = el('input', { type: 'text', value: existing?.title || '',
+      style: 'padding:6px 10px;font-size:0.85rem;width:100%' });
+    const descIn = el('textarea', { rows: '4',
+      style: 'padding:6px 10px;font-size:0.85rem;width:100%;font-family:inherit;resize:vertical' });
+    descIn.value = existing?.description || '';
+    const activeIn = el('input', { type: 'checkbox', style: 'width:16px;height:16px' });
+    if (existing?.is_active !== false) activeIn.checked = true;
+    const errBox = el('div', { style: 'margin-top:10px;padding:10px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:6px;font-size:0.8rem;color:#fca5a5;display:none' });
+
+    const dialog = el('div', {
+      style: 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999'
+    });
+    const modal = el('div', {
+      style: 'background:#151515;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:22px 26px;max-width:520px;width:calc(100% - 32px);max-height:90vh;overflow-y:auto'
+    });
+    modal.appendChild(el('h3', { style: 'margin:0 0 16px' }, 'Edit video'));
+    const row = (label, ctrl, hint) => el('div', { style: 'margin-bottom:14px' },
+      el('label', { style: 'display:block;font-size:0.75rem;color:var(--muted,#9ca3af);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.03em' }, label),
+      ctrl,
+      hint ? el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:4px' }, hint) : null);
+    modal.append(
+      row('Title', titleIn),
+      row('Description', descIn, 'Optional. Shown under the video on the public page.'),
+      el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:16px' },
+        activeIn,
+        el('label', { style: 'font-size:0.85rem' }, 'Active (shown on public page)')),
+      errBox,
+      el('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:16px' },
+        el('button', { class: 'btn', onclick: () => document.body.removeChild(dialog) }, 'Cancel'),
+        el('button', { class: 'btn primary', onclick: async (e) => {
+          errBox.style.display = 'none';
+          e.target.disabled = true; e.target.textContent = 'Saving…';
+          try {
+            // We skip Mux re-validation on edit-only-metadata paths —
+            // the playback_id hasn't changed. Send skip_live_check so
+            // the server doesn't re-HEAD Mux.
+            const body = {
+              id: existing.id,
+              title: titleIn.value.trim(),
+              description: descIn.value.trim() || null,
+              mux_playback_id: existing.mux_playback_id,
+              is_active: activeIn.checked,
+              skip_live_check: true
+            };
+            const qs = 'action=upsert' + (clientParam ? '&' + clientParam : '');
+            await api('/api/portal/portfolio?' + qs, { method: 'POST', body });
+            document.body.removeChild(dialog);
+            toast('Video updated');
+            load();
+          } catch (err) {
+            e.target.disabled = false; e.target.textContent = 'Save';
+            let msg = err.message || 'unknown error';
+            try { const p = JSON.parse(msg); if (p?.message) msg = p.message; } catch {}
+            errBox.textContent = msg;
+            errBox.style.display = 'block';
+          }
+        }}, 'Save')));
+    dialog.appendChild(modal);
+    dialog.onclick = (e) => { if (e.target === dialog) document.body.removeChild(dialog); };
+    document.body.appendChild(dialog);
+    setTimeout(() => titleIn.focus(), 50);
+  }
+
+  // Admin-only path — paste an existing Mux Playback ID (used for
+  // seeding, backfill, and edge cases where a video already lives on
+  // Mux). Same modal shape as showEditForm plus a playback_id field.
+  function showPasteForm(existing) {
     const isEdit = !!existing;
     const titleIn = el('input', { type: 'text', value: existing?.title || '',
       placeholder: 'e.g. Jack Daniel\'s Gentleman Jack — Culture Shakers',

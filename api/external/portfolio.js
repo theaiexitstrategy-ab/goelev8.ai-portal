@@ -35,13 +35,31 @@ export default async function handler(req, res) {
   const { data: client } = await resolveClientBySlug(slug, 'id');
   if (!client) return res.status(404).json({ error: 'tenant_not_found' });
 
+  // Only rows Mux has finished processing. In-flight uploads
+  // (status='uploading' / 'processing') and 'errored' rows still
+  // exist in the DB (visible in the portal editor) but must never
+  // reach the public storefront — playback_id is null for them.
+  //
+  // Tolerant of the 0037 migration not being applied yet: retry
+  // without the status filter if the column doesn't exist.
   let { data, error } = await supabaseAdmin
     .from('client_portfolio_videos')
     .select('video_key, title, description, mux_playback_id, poster_url, sort_order')
     .eq('client_id', client.id)
     .eq('is_active', true)
+    .eq('status', 'ready')
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });
+  if (error && /column .*status.* does not exist/i.test(error.message || '')) {
+    const retry = await supabaseAdmin
+      .from('client_portfolio_videos')
+      .select('video_key, title, description, mux_playback_id, poster_url, sort_order')
+      .eq('client_id', client.id)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+    data = retry.data; error = retry.error;
+  }
 
   // Tolerant if migration hasn't been applied yet — same shape as
   // products.js so storefronts can distinguish "no videos" from
