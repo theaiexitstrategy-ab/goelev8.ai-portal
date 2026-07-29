@@ -15,6 +15,7 @@
 //     or  { valid: false, reason: 'expired'|'not_found'|'inactive'|'below_minimum'|'exhausted' }
 
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { resolveClientBySlug } from '../../lib/tenant-slug.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -46,8 +47,7 @@ export default async function handler(req, res) {
   const subtotalCents = Number.isFinite(+body?.subtotal_cents) ? +body.subtotal_cents : 0;
   if (!slug || !code) return res.status(400).json({ valid: false, reason: 'missing_fields' });
 
-  const { data: client } = await supabaseAdmin
-    .from('clients').select('id').eq('slug', slug).maybeSingle();
+  const { data: client } = await resolveClientBySlug(slug, 'id');
   if (!client) return res.status(200).json({ valid: false, reason: 'tenant_not_found' });
 
   const { data: coupon, error } = await supabaseAdmin

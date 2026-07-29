@@ -16,6 +16,7 @@
 // instead of any in-house cart.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { resolveClientBySlug } from '../../lib/tenant-slug.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -32,8 +33,7 @@ export default async function handler(req, res) {
   const slug = (url.searchParams.get('slug') || '').trim();
   if (!slug) return res.status(400).json({ error: 'slug query param required' });
 
-  const { data: client } = await supabaseAdmin
-    .from('clients').select('id').eq('slug', slug).maybeSingle();
+  const { data: client } = await resolveClientBySlug(slug, 'id');
   if (!client) return res.status(404).json({ error: 'tenant_not_found' });
 
   let { data, error } = await supabaseAdmin

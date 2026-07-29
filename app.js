@@ -916,7 +916,8 @@ const TAB_LABELS = {
   wellness_clients: 'Wellness Clients',
   website:   'Website',
   experience_bookings:     'Bookings',
-  experience_availability: 'Availability'
+  experience_availability: 'Availability',
+  portfolio:               'Portfolio'
 };
 
 const TAB_ICONS = {
@@ -944,7 +945,8 @@ const TAB_ICONS = {
   wellness_clients: '🌿',
   website:   '🌐',
   experience_bookings:     '🥂',
-  experience_availability: '🗓️'
+  experience_availability: '🗓️',
+  portfolio:               '🎬'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
@@ -12859,6 +12861,202 @@ async function viewKbAvailability() {
   return wrap;
 }
 
+// ─── Portfolio — Mux video reel editor (multi-tenant) ─────────────
+// Any tenant with 'portfolio' in portal_tabs sees this view. Cap of
+// 5 active videos is enforced by the DB trigger; the UI mirrors it
+// (Add button disabled at 5) but the server is authoritative.
+async function viewPortfolio() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Portfolio'),
+    el('div', { class: 'muted' }, 'Video reel shown on your public /portfolio page — up to 5 active videos')));
+
+  const clientQS = state.isAdmin ? '?client=' + encodeURIComponent(state.client?.slug || 'konquered-balance') : '';
+  const clientParam = state.isAdmin ? 'client=' + encodeURIComponent(state.client?.slug || 'konquered-balance') : '';
+
+  const info = el('div', { class: 'panel', style: 'padding:12px 14px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2)' },
+    el('div', { style: 'font-size:0.82rem;line-height:1.5' },
+      '🎬 ', el('strong', {}, 'How this works: '),
+      'Paste a Mux ', el('em', {}, 'Playback ID'),
+      ' (public, ~44+ chars — find it in the Mux dashboard under your asset). We verify it streams before saving, so a bad ID never reaches your live page. Cap: ', el('strong', {}, '5 active videos'), '.'));
+  wrap.appendChild(info);
+
+  const listHost = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading videos…'));
+  wrap.appendChild(listHost);
+
+  async function load() {
+    listHost.replaceChildren(el('div', { class: 'muted' }, 'Loading videos…'));
+    let payload;
+    try { payload = await api('/api/portal/portfolio' + clientQS); }
+    catch (e) {
+      listHost.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + (e.message || 'unknown')));
+      return;
+    }
+    render(payload?.videos || [], payload?.cap ?? 5);
+  }
+
+  function render(videos, cap) {
+    listHost.innerHTML = '';
+    const activeCount = videos.filter(v => v.is_active).length;
+    const canAdd = activeCount < cap;
+
+    listHost.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px' },
+      el('div', {},
+        el('h3', { style: 'margin:0' }, `${activeCount} / ${cap} active`),
+        el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' },
+          videos.length > activeCount ? `${videos.length - activeCount} inactive` : 'Sorted by drag-and-drop order — top plays first')),
+      el('button', {
+        class: 'btn primary', style: 'font-size:0.82rem' + (canAdd ? '' : ';opacity:0.5;cursor:not-allowed'),
+        title: canAdd ? '' : `Cap reached (${cap}). Delete or deactivate a video first.`,
+        onclick: () => canAdd ? showForm(null) : toast('5-video cap reached — delete or deactivate one first', true)
+      }, '+ Add video')));
+
+    if (!videos.length) {
+      listHost.appendChild(el('p', { class: 'muted' },
+        'No videos yet. Paste a Mux Playback ID to add your first — up to 5 will appear on your public /portfolio page.'));
+      return;
+    }
+
+    for (let i = 0; i < videos.length; i++) {
+      const v = videos[i];
+      const thumb = v.mux_playback_id
+        ? `https://image.mux.com/${encodeURIComponent(v.mux_playback_id)}/thumbnail.jpg?width=240&height=135&fit_mode=smartcrop`
+        : null;
+      const card = el('div', {
+        style: 'display:flex;gap:14px;padding:12px;margin-bottom:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px' + (v.is_active ? '' : ';opacity:0.55')
+      });
+      card.appendChild(el('div', { style: 'width:120px;height:68px;background:#000;border-radius:6px;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center' },
+        thumb ? el('img', { src: thumb, style: 'width:100%;height:100%;object-fit:cover',
+          onerror: 'this.style.display=\'none\'' }) : el('span', { class: 'muted', style: 'font-size:0.7rem' }, 'no preview')));
+      const body = el('div', { style: 'flex:1;min-width:0' });
+      const titleRow = el('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap' },
+        el('div', { style: 'font-weight:600;font-size:0.92rem' }, v.title || '(untitled)'),
+        v.is_active ? null : el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(148,163,184,0.14);color:#cbd5e1' }, 'inactive'),
+        (v.title && v.title.trim().split(/\s+/).length <= 3 && !v.description)
+          ? el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(251,191,36,0.14);color:#fde68a', title: 'This looks like a placeholder title — rename it so the reel matches the video.' }, '⚠ placeholder?')
+          : null);
+      body.appendChild(titleRow);
+      if (v.description) body.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-top:4px;white-space:pre-wrap' },
+        v.description.length > 180 ? v.description.slice(0, 180) + '…' : v.description));
+      body.appendChild(el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:6px;font-family:ui-monospace,monospace' },
+        v.mux_playback_id ? v.mux_playback_id.slice(0, 20) + '…' : '(no playback id)'));
+      const controls = el('div', { style: 'display:flex;flex-direction:column;gap:4px;align-items:flex-end' },
+        el('div', { style: 'display:flex;gap:4px' },
+          el('button', { class: 'btn', style: 'font-size:0.7rem;padding:3px 7px' + (i === 0 ? ';opacity:0.4;cursor:not-allowed' : ''),
+            disabled: i === 0, onclick: () => reorder(i, i - 1, videos) }, '↑'),
+          el('button', { class: 'btn', style: 'font-size:0.7rem;padding:3px 7px' + (i === videos.length - 1 ? ';opacity:0.4;cursor:not-allowed' : ''),
+            disabled: i === videos.length - 1, onclick: () => reorder(i, i + 1, videos) }, '↓')),
+        el('div', { style: 'display:flex;gap:4px;margin-top:2px' },
+          el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px', onclick: () => showForm(v) }, 'edit'),
+          el('button', { class: 'btn', style: 'font-size:0.72rem;padding:3px 8px;color:#fca5a5',
+            onclick: () => deleteVideo(v) }, 'delete')));
+      card.append(body, controls);
+      listHost.appendChild(card);
+    }
+  }
+
+  async function reorder(fromIdx, toIdx, videos) {
+    const ids = videos.map(v => v.id);
+    const [moved] = ids.splice(fromIdx, 1);
+    ids.splice(toIdx, 0, moved);
+    try {
+      const qs = 'action=reorder' + (clientParam ? '&' + clientParam : '');
+      await api('/api/portal/portfolio?' + qs, { method: 'POST', body: { order: ids } });
+      toast('Reordered'); load();
+    } catch (e) { toast('Reorder failed: ' + (e.message || 'unknown'), true); }
+  }
+
+  async function deleteVideo(v) {
+    if (!confirm(`Delete "${v.title || 'video'}" ? This can't be undone.`)) return;
+    try {
+      const qs = 'id=' + encodeURIComponent(v.id) + (clientParam ? '&' + clientParam : '');
+      await api('/api/portal/portfolio?' + qs, { method: 'DELETE' });
+      toast('Deleted'); load();
+    } catch (e) { toast('Delete failed: ' + (e.message || 'unknown'), true); }
+  }
+
+  function showForm(existing) {
+    const isEdit = !!existing;
+    const titleIn = el('input', { type: 'text', value: existing?.title || '',
+      placeholder: 'e.g. Jack Daniel\'s Gentleman Jack — Culture Shakers',
+      style: 'padding:6px 10px;font-size:0.85rem;width:100%' });
+    const descIn = el('textarea', {
+      placeholder: 'Optional. Line breaks are preserved on the public page.',
+      rows: '4', style: 'padding:6px 10px;font-size:0.85rem;width:100%;font-family:inherit;resize:vertical' });
+    descIn.value = existing?.description || '';
+    const playbackIn = el('input', { type: 'text', value: existing?.mux_playback_id || '',
+      placeholder: 'Mux Playback ID (44+ chars) — pastes of stream.mux.com URLs work too',
+      style: 'padding:6px 10px;font-size:0.85rem;width:100%;font-family:ui-monospace,monospace' });
+    const posterIn = el('input', { type: 'url', value: existing?.poster_url || '',
+      placeholder: '(optional) Override poster URL — otherwise Mux auto-generates',
+      style: 'padding:6px 10px;font-size:0.85rem;width:100%' });
+    const activeIn = el('input', { type: 'checkbox', style: 'width:16px;height:16px' });
+    if (existing?.is_active !== false) activeIn.checked = true;
+
+    const errBox = el('div', { style: 'margin-top:10px;padding:10px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:6px;font-size:0.8rem;color:#fca5a5;display:none' });
+
+    const dialog = el('div', {
+      style: 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999'
+    });
+    const modal = el('div', {
+      style: 'background:#151515;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:22px 26px;max-width:560px;width:calc(100% - 32px);max-height:90vh;overflow-y:auto'
+    });
+    modal.appendChild(el('h3', { style: 'margin:0 0 16px' }, isEdit ? 'Edit video' : 'Add video'));
+    const row = (label, ctrl, hint) => el('div', { style: 'margin-bottom:14px' },
+      el('label', { style: 'display:block;font-size:0.75rem;color:var(--muted,#9ca3af);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.03em' }, label),
+      ctrl,
+      hint ? el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:4px' }, hint) : null);
+    modal.append(
+      row('Title', titleIn),
+      row('Description', descIn, 'Shown under the video on the public page. Line breaks preserved.'),
+      row('Mux Playback ID', playbackIn,
+        'Public playback ID from Mux dashboard → asset → Playback IDs. We\'ll verify it streams before saving.'),
+      row('Poster URL (optional)', posterIn,
+        'Leave blank and Mux auto-generates a thumbnail. Only set this if you want a specific still frame.'),
+      el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:16px' },
+        activeIn,
+        el('label', { style: 'font-size:0.85rem' }, 'Active (shown on public page)')),
+      errBox,
+      el('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:16px' },
+        el('button', { class: 'btn', onclick: () => document.body.removeChild(dialog) }, 'Cancel'),
+        el('button', { class: 'btn primary', onclick: async (e) => {
+          errBox.style.display = 'none'; errBox.textContent = '';
+          e.target.disabled = true; e.target.textContent = 'Verifying with Mux…';
+          try {
+            const body = {
+              title: titleIn.value.trim(),
+              description: descIn.value.trim() || null,
+              mux_playback_id: playbackIn.value.trim(),
+              poster_url: posterIn.value.trim() || null,
+              is_active: activeIn.checked
+            };
+            if (isEdit) body.id = existing.id;
+            const qs = 'action=upsert' + (clientParam ? '&' + clientParam : '');
+            await api('/api/portal/portfolio?' + qs, { method: 'POST', body });
+            document.body.removeChild(dialog);
+            toast(isEdit ? 'Video updated' : 'Video added');
+            load();
+          } catch (err) {
+            e.target.disabled = false; e.target.textContent = 'Save';
+            let msg = err.message || 'unknown error';
+            try {
+              const parsed = JSON.parse(msg);
+              if (parsed?.message) msg = parsed.message;
+            } catch { /* not JSON */ }
+            errBox.textContent = msg;
+            errBox.style.display = 'block';
+          }
+        }}, 'Save')));
+    dialog.appendChild(modal);
+    dialog.onclick = (e) => { if (e.target === dialog) document.body.removeChild(dialog); };
+    document.body.appendChild(dialog);
+    setTimeout(() => titleIn.focus(), 50);
+  }
+
+  load();
+  return wrap;
+}
+
 async function viewAnalytics() {
   const wrap = el('div', {});
   const topbar = el('div', { class: 'topbar' },
@@ -13600,6 +13798,7 @@ async function render() {
       case 'messaging': view = await viewMessaging(); break;
       case 'applications': view = await viewApplications(); break;
       case 'merch':     view = await viewMerch(); break;
+      case 'portfolio': view = await viewPortfolio(); break;
       case 'trainer_applications': view = await viewTrainerApplications(); break;
       case 'billing':   view = await viewBilling(); break;
       case 'connect':   view = await viewConnect(); break;

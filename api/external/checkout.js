@@ -58,6 +58,7 @@
 
 import { stripe } from '../../lib/stripe.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { resolveClientBySlug } from '../../lib/tenant-slug.js';
 import {
   resolvePlatformFeePct,
   calcPlatformFeeCents
@@ -80,7 +81,7 @@ const PROCESSING_FEE_CENTS = parseInt(process.env.PROCESSING_FEE_DEFAULT_CENTS |
 // of computing two separate session shapes.
 const FREE_SHIPPING_THRESHOLD_CENTS = parseInt(process.env.FREE_SHIPPING_THRESHOLD_CENTS || '7500', 10);
 
-function buildShippingOptions(subtotalCents, { pickupEnabled, pickupLocation } = {}) {
+function buildShippingOptions(subtotalCents, { pickupEnabled, pickupLocation, freeShippingEnabled = true } = {}) {
   const options = [];
 
   // In-person pickup at the tenant's location. $0 — customer skips
@@ -104,7 +105,11 @@ function buildShippingOptions(subtotalCents, { pickupEnabled, pickupLocation } =
     });
   }
 
-  if (subtotalCents >= FREE_SHIPPING_THRESHOLD_CENTS) {
+  // Free-standard-shipping-over-threshold is a per-tenant setting.
+  // Tenants with `free_shipping_enabled=false` on their clients row
+  // (WPFF, currently) always show the paid $7 rate below regardless
+  // of subtotal — the cart-value bump doesn't zero out shipping.
+  if (freeShippingEnabled && subtotalCents >= FREE_SHIPPING_THRESHOLD_CENTS) {
     options.push({
       shipping_rate_data: {
         type: 'fixed_amount',
@@ -246,21 +251,19 @@ export default async function handler(req, res) {
   // falls back to the env default (10%). pickup_enabled defaults to
   // true at the schema level. Tolerant SELECT in case the migration
   // hasn't run yet on this project.
-  let { data: client, error: clientErr } = await supabaseAdmin
-    .from('clients')
-    .select('id, slug, name, stripe_connected_account_id, platform_fee_pct, pickup_enabled, pickup_location')
-    .eq('slug', slug)
-    .maybeSingle();
-  if (clientErr && /column .*(pickup_enabled|pickup_location).* does not exist/i.test(clientErr.message || '')) {
-    const retry = await supabaseAdmin
-      .from('clients')
-      .select('id, slug, name, stripe_connected_account_id, platform_fee_pct')
-      .eq('slug', slug).maybeSingle();
+  let { data: client, error: clientErr } = await resolveClientBySlug(slug,
+    'id, slug, name, stripe_connected_account_id, platform_fee_pct, pickup_enabled, pickup_location, free_shipping_enabled');
+  // Tolerant retry for tenants whose schema hasn't caught up on the
+  // pickup_* / free_shipping_enabled columns. Defaults keep the
+  // previous behavior for missing rows (pickup on, free shipping on).
+  if (clientErr && /column .*(pickup_enabled|pickup_location|free_shipping_enabled).* does not exist/i.test(clientErr.message || '')) {
+    const retry = await resolveClientBySlug(slug,
+      'id, slug, name, stripe_connected_account_id, platform_fee_pct');
     client = retry.data; clientErr = retry.error;
-    // Pre-migration projects default to pickup_enabled=true so the
-    // feature ships immediately for tenants whose schema is up to
-    // date and is silently inert on those that aren't.
-    if (client) client.pickup_enabled = true;
+    if (client) {
+      client.pickup_enabled = true;
+      client.free_shipping_enabled = true;
+    }
   }
   if (clientErr) return res.status(500).json({ error: clientErr.message });
   if (!client)   return res.status(404).json({ error: 'tenant_not_found' });
@@ -422,8 +425,9 @@ export default async function handler(req, res) {
       // total and captured into session.total_details.amount_shipping.
       shipping_address_collection: { allowed_countries: ['US'] },
       shipping_options: buildShippingOptions(subtotalCents, {
-        pickupEnabled:  client.pickup_enabled,
-        pickupLocation: client.pickup_location
+        pickupEnabled:        client.pickup_enabled,
+        pickupLocation:       client.pickup_location,
+        freeShippingEnabled:  client.free_shipping_enabled !== false
       }),
       phone_number_collection: { enabled: true },
       allow_promotion_codes: true,

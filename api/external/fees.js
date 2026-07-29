@@ -26,6 +26,7 @@
 // added so the customer's actual paid amount covers everything.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { resolveClientBySlug } from '../../lib/tenant-slug.js';
 import {
   PLATFORM_FEE_DEFAULT_PCT,
   resolvePlatformFeePct,
@@ -99,8 +100,7 @@ export default async function handler(req, res) {
   let passStripeFees = true;
   let connectedAccountId = null;
   async function loadClient(cols) {
-    const { data, error } = await supabaseAdmin
-      .from('clients').select(cols).eq('slug', slug).maybeSingle();
+    const { data, error } = await resolveClientBySlug(slug, cols);
     if (error) throw error;
     return data;
   }

@@ -4363,6 +4363,89 @@ async function applyPendingMigrations(req, res) {
        USING (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()))
        WITH CHECK (client_id IN (SELECT client_id FROM public.client_users WHERE user_id = auth.uid()));`,
 
+    // ----- 0036: multi-tenant portfolio (Mux video reels) + slug_aliases -----
+    // Any tenant can add 'portfolio' to portal_tabs to get the Portfolio
+    // editor. First consumer: konquered-balance for konqueredkocktails.com/
+    // portfolio. Full DDL mirrored in supabase/migrations/0036_client_portfolio_videos.sql.
+    //
+    // slug_aliases[] on clients supports storefronts deployed with a
+    // legacy slug. konquered-balance keeps 'konquered-kocktails' as an
+    // alias for the merch + portfolio storefront still pointing at the
+    // old slug — no coordinated redeploy required.
+    `ALTER TABLE public.clients
+       ADD COLUMN IF NOT EXISTS slug_aliases text[] NOT NULL DEFAULT '{}';`,
+    `CREATE INDEX IF NOT EXISTS clients_slug_aliases_gin
+       ON public.clients USING gin (slug_aliases);`,
+    `UPDATE public.clients
+       SET slug_aliases = ARRAY['konquered-kocktails']
+     WHERE slug = 'konquered-balance'
+       AND NOT (slug_aliases @> ARRAY['konquered-kocktails']::text[]);`,
+
+    `CREATE TABLE IF NOT EXISTS public.client_portfolio_videos (
+       id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       client_id          uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+       video_key          text NOT NULL,
+       title              text NOT NULL,
+       description        text,
+       mux_playback_id    text NOT NULL,
+       poster_url         text,
+       is_active          boolean NOT NULL DEFAULT true,
+       sort_order         integer NOT NULL DEFAULT 0,
+       created_at         timestamptz NOT NULL DEFAULT now(),
+       updated_at         timestamptz NOT NULL DEFAULT now(),
+       CONSTRAINT client_portfolio_videos_client_key_uniq UNIQUE (client_id, video_key)
+     );`,
+    `CREATE INDEX IF NOT EXISTS client_portfolio_videos_client_sort_idx
+       ON public.client_portfolio_videos(client_id, sort_order);`,
+    `CREATE INDEX IF NOT EXISTS client_portfolio_videos_client_active_idx
+       ON public.client_portfolio_videos(client_id, is_active);`,
+
+    `CREATE OR REPLACE FUNCTION public.enforce_portfolio_5_video_cap()
+     RETURNS trigger LANGUAGE plpgsql AS $$
+     DECLARE
+       active_count int;
+     BEGIN
+       IF NEW.is_active IS NOT TRUE THEN
+         RETURN NEW;
+       END IF;
+       SELECT count(*) INTO active_count
+         FROM public.client_portfolio_videos
+        WHERE client_id = NEW.client_id
+          AND is_active
+          AND id IS DISTINCT FROM NEW.id;
+       IF active_count >= 5 THEN
+         RAISE EXCEPTION 'portfolio_5_video_cap_exceeded'
+           USING ERRCODE = 'check_violation';
+       END IF;
+       RETURN NEW;
+     END $$;`,
+    `DROP TRIGGER IF EXISTS client_portfolio_videos_cap ON public.client_portfolio_videos;`,
+    `CREATE TRIGGER client_portfolio_videos_cap
+       BEFORE INSERT OR UPDATE OF is_active, client_id
+       ON public.client_portfolio_videos
+       FOR EACH ROW EXECUTE FUNCTION public.enforce_portfolio_5_video_cap();`,
+
+    `ALTER TABLE public.client_portfolio_videos ENABLE ROW LEVEL SECURITY;`,
+    `DROP POLICY IF EXISTS client_portfolio_videos_tenant_all ON public.client_portfolio_videos;`,
+    `CREATE POLICY client_portfolio_videos_tenant_all ON public.client_portfolio_videos
+       FOR ALL
+       USING      (client_id = public.current_client_id())
+       WITH CHECK (client_id = public.current_client_id());`,
+    `DROP TRIGGER IF EXISTS client_portfolio_videos_touch ON public.client_portfolio_videos;`,
+    `CREATE TRIGGER client_portfolio_videos_touch
+       BEFORE UPDATE ON public.client_portfolio_videos
+       FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();`,
+
+    // Add 'portfolio' to konquered-balance portal_tabs (9 tabs now:
+    // overview / leads / experience_bookings / experience_availability /
+    // merch / portfolio / messaging / analytics / settings). Slug-scoped
+    // + idempotent via IS DISTINCT FROM.
+    `UPDATE public.clients
+       SET portal_tabs = '["overview","leads","experience_bookings","experience_availability","merch","portfolio","messaging","analytics","settings"]'::jsonb
+     WHERE slug = 'konquered-balance'
+       AND portal_tabs IS DISTINCT FROM
+           '["overview","leads","experience_bookings","experience_availability","merch","portfolio","messaging","analytics","settings"]'::jsonb;`,
+
     // ----- Danceisasport portal_tabs -----
     // 8 product-namespaced tab ids (danceisasport_<tabId>) matching
     // lib/products.config.js. Namespaced form so that:
