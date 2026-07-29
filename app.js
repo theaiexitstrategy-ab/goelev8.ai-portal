@@ -11223,7 +11223,10 @@ async function viewWellnessClients() {
     el('h1', {}, '🌿 Wellness Clients'),
     el('div', { class: 'muted' }, 'Intake · loc profile · journal · clinical assessments')
   ));
+
+  const filterBar = el('div', { class: 'panel', style: 'padding:10px 14px;margin-bottom:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center' });
   const host = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading roster…'));
+  wrap.appendChild(filterBar);
   wrap.appendChild(host);
 
   let items = [];
@@ -11236,16 +11239,6 @@ async function viewWellnessClients() {
       el('div', { style: 'font-size:0.75rem;margin-top:6px' },
         'The Wellness Clients tab is only visible to the Locs & Wellness tenant or master admin. If you see this error while impersonating another tenant, that\'s expected.')
     ));
-    return wrap;
-  }
-
-  host.innerHTML = '';
-  host.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px' },
-    el('h2', { style: 'margin:0' }, items.length + ' client' + (items.length === 1 ? '' : 's')),
-    el('div', { class: 'muted', style: 'font-size:0.78rem' }, 'Click a row for full profile · clinical layer is admin-only')));
-
-  if (!items.length) {
-    host.appendChild(el('p', { class: 'muted' }, 'No clients have completed intake yet.'));
     return wrap;
   }
 
@@ -11262,30 +11255,147 @@ async function viewWellnessClients() {
     const color = n >= 8 ? '#fca5a5' : n >= 5 ? '#fbd38d' : '#86efac';
     return el('span', { style: 'font-weight:600;color:' + color }, n + '/10');
   };
+  const concernBucket = (n) => {
+    if (n == null) return 'unknown';
+    if (n >= 8) return 'high';
+    if (n >= 5) return 'medium';
+    return 'low';
+  };
 
-  const tbl = el('table', {},
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Name'),
-      el('th', {}, 'Email'),
-      el('th', {}, 'Loc stage'),
-      el('th', { style: 'text-align:right' }, 'Concern'),
-      el('th', {}, 'Intake'),
-      el('th', {}, 'Last visit'))),
-    el('tbody', {}, ...items.map((it) => el('tr', {
-      style: 'cursor:pointer',
-      onclick: () => openLocsClientDetail(it.id)
-    },
-      el('td', {}, it.fullName || el('span', { class: 'muted' }, '(no name yet)')),
-      el('td', { class: 'muted', style: 'font-size:0.8rem' }, it.email || ''),
-      el('td', {}, stagePill(it.locStage)),
-      el('td', { style: 'text-align:right' }, concernPill(it.concernRating)),
-      el('td', { class: 'muted', style: 'font-size:0.75rem' },
-        it.intakeSubmittedAt
-          ? locsFmtDate(it.intakeUpdatedAt || it.intakeSubmittedAt)
-          : el('span', { style: 'color:#fbd38d' }, 'Pending')),
-      el('td', { class: 'muted', style: 'font-size:0.75rem' }, locsFmtDate(it.lastVisit)))))
-  );
-  host.appendChild(tbl);
+  // Client-side filter state — the roster is small (dozens, not
+  // thousands) so filtering in memory is faster than round-tripping.
+  const filters = { q: '', stage: '', intake: '', concern: '' };
+
+  // Discover the stages actually present in the data (uniques) so
+  // the dropdown only offers relevant values — no dead options.
+  const stageSet = new Set(items.map(it => it.locStage).filter(Boolean));
+  const stageOptions = ['starter','budding','teenage','mature','freeform']
+    .filter(s => stageSet.has(s));
+
+  const searchIn = el('input', { type: 'search', placeholder: 'Search name or email…',
+    style: 'padding:6px 10px;font-size:0.85rem;min-width:220px' });
+  searchIn.oninput = () => { filters.q = searchIn.value.trim().toLowerCase(); rerender(); };
+
+  const stageSel = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+    el('option', { value: '' }, 'Any loc stage'),
+    ...stageOptions.map(s => el('option', { value: s }, s)));
+  stageSel.onchange = () => { filters.stage = stageSel.value; rerender(); };
+
+  const intakeSel = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+    el('option', { value: '' }, 'Any intake status'),
+    el('option', { value: 'complete' }, '✓ Complete'),
+    el('option', { value: 'pending' }, '◐ Pending'));
+  intakeSel.onchange = () => { filters.intake = intakeSel.value; rerender(); };
+
+  const concernSel = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+    el('option', { value: '' }, 'Any concern level'),
+    el('option', { value: 'high' }, '🔴 High (≥8)'),
+    el('option', { value: 'medium' }, '🟡 Medium (5–7)'),
+    el('option', { value: 'low' }, '🟢 Low (<5)'));
+  concernSel.onchange = () => { filters.concern = concernSel.value; rerender(); };
+
+  const clearBtn = el('button', { class: 'btn ghost', style: 'font-size:0.78rem' }, 'Clear filters');
+  clearBtn.onclick = () => {
+    filters.q = ''; filters.stage = ''; filters.intake = ''; filters.concern = '';
+    searchIn.value = ''; stageSel.value = ''; intakeSel.value = ''; concernSel.value = '';
+    rerender();
+  };
+
+  filterBar.append(searchIn, stageSel, intakeSel, concernSel, clearBtn);
+
+  const rerender = () => {
+    // Apply filters
+    let filtered = items;
+    if (filters.q) {
+      const q = filters.q;
+      filtered = filtered.filter(it =>
+        (it.fullName && it.fullName.toLowerCase().includes(q)) ||
+        (it.email    && it.email.toLowerCase().includes(q)));
+    }
+    if (filters.stage)   filtered = filtered.filter(it => it.locStage === filters.stage);
+    if (filters.intake === 'complete') filtered = filtered.filter(it => !!it.intakeSubmittedAt);
+    if (filters.intake === 'pending')  filtered = filtered.filter(it => !it.intakeSubmittedAt);
+    if (filters.concern) filtered = filtered.filter(it => concernBucket(it.concernRating) === filters.concern);
+
+    host.innerHTML = '';
+    host.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;gap:12px;flex-wrap:wrap' },
+      el('h2', { style: 'margin:0' },
+        filtered.length + ' / ' + items.length + ' client' + (items.length === 1 ? '' : 's'),
+        filtered.length !== items.length ? el('span', { class: 'muted', style: 'font-weight:400;font-size:0.85rem;margin-left:8px' }, '(filtered)') : null),
+      el('div', { class: 'muted', style: 'font-size:0.78rem' }, 'Click a row for full profile · clinical layer is admin-only')));
+
+    if (!items.length) {
+      host.appendChild(el('p', { class: 'muted' }, 'No clients have completed intake yet.'));
+      return;
+    }
+    if (!filtered.length) {
+      host.appendChild(el('p', { class: 'muted' }, 'No clients match the current filters.'));
+      return;
+    }
+
+    const tbl = el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Name'),
+        el('th', {}, 'Email'),
+        el('th', {}, 'Loc stage'),
+        el('th', { style: 'text-align:right' }, 'Concern'),
+        el('th', {}, 'Intake'),
+        el('th', {}, 'Last visit'),
+        el('th', { style: 'width:1px' }, ''))),
+      el('tbody', {}, ...filtered.map((it) => {
+        const delBtn = el('button', {
+          class: 'btn ghost sm',
+          title: 'Delete this client',
+          style: 'font-size:0.75rem;padding:3px 8px;color:#fca5a5',
+          onclick: async (ev) => {
+            ev.stopPropagation();
+            const label = it.fullName || it.email || '(unnamed client)';
+            const step1 = confirm(
+              `Delete ${label}?\n\n` +
+              'This permanently removes ALL of their data:\n' +
+              '  · intake (health + scalp history + loc profile)\n' +
+              '  · journal entries and photos\n' +
+              '  · clinical assessments + admin notes\n\n' +
+              'Their login account is NOT deleted — if they log in again ' +
+              'they\'ll be prompted to complete a fresh intake.'
+            );
+            if (!step1) return;
+            const step2 = confirm(`Are you absolutely sure? This cannot be undone.\n\nType Cancel to abort, or OK to delete ${label}.`);
+            if (!step2) return;
+            delBtn.disabled = true; delBtn.textContent = 'Deleting…';
+            try {
+              await api('/api/portal/wellness-clients?action=delete&id=' + encodeURIComponent(it.id), { method: 'DELETE' });
+              // Drop the row from the in-memory roster + re-render;
+              // no need to round-trip the whole list back down.
+              items = items.filter(x => x.id !== it.id);
+              toast('Client deleted');
+              rerender();
+            } catch (e) {
+              delBtn.disabled = false; delBtn.textContent = '🗑';
+              toast('Delete failed: ' + (e.message || 'unknown'), true);
+            }
+          }
+        }, '🗑');
+        return el('tr', {
+          style: 'cursor:pointer',
+          onclick: () => openLocsClientDetail(it.id)
+        },
+          el('td', {}, it.fullName || el('span', { class: 'muted' }, '(no name yet)')),
+          el('td', { class: 'muted', style: 'font-size:0.8rem' }, it.email || ''),
+          el('td', {}, stagePill(it.locStage)),
+          el('td', { style: 'text-align:right' }, concernPill(it.concernRating)),
+          el('td', { class: 'muted', style: 'font-size:0.75rem' },
+            it.intakeSubmittedAt
+              ? locsFmtDate(it.intakeUpdatedAt || it.intakeSubmittedAt)
+              : el('span', { style: 'color:#fbd38d' }, 'Pending')),
+          el('td', { class: 'muted', style: 'font-size:0.75rem' }, locsFmtDate(it.lastVisit)),
+          el('td', { style: 'text-align:right;white-space:nowrap' }, delBtn));
+      }))
+    );
+    host.appendChild(tbl);
+  };
+
+  rerender();
   return wrap;
 }
 

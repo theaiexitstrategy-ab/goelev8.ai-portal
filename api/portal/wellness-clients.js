@@ -24,8 +24,15 @@
 //   fetchable by an unauthenticated client that copies a URL.
 //
 // Endpoints:
-//   GET /api/portal/wellness-clients                       → roster
-//   GET /api/portal/wellness-clients?action=detail&id=X    → full profile
+//   GET    /api/portal/wellness-clients                       → roster
+//   GET    /api/portal/wellness-clients?action=detail&id=X    → full profile
+//   DELETE /api/portal/wellness-clients?action=delete&id=X    → hard delete
+//     Cascades all locs_* child rows via FK ON DELETE CASCADE (schema
+//     confirmed 2026-07-29). Also unlinks any journal photos from the
+//     private locs-journal bucket. Does NOT delete the auth.users
+//     account — Leslie's design intent is "wipe intake, keep login",
+//     so if the person logs in again they'll be prompted to redo the
+//     intake as a fresh client.
 
 import { requireUser, methodGuard } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
@@ -160,8 +167,65 @@ async function clientDetail(res, clientId) {
   });
 }
 
+// Hard-delete a wellness client. locs_clients has ON DELETE CASCADE
+// FKs from every child table (locs_intake_health, locs_intake_scalp_
+// history, locs_loc_profile, locs_journal_entries, locs_pro_assessment,
+// locs_elemental_pattern, locs_scalp_zone_map, locs_scalp_summary,
+// locs_admin_notes), so one DELETE removes everything on the DB side.
+// Journal photos in the private locs-journal bucket must be cleaned
+// up separately — this is best-effort but logs failures so orphans
+// don't accumulate silently.
+async function deleteClient(res, id) {
+  if (!id) return res.status(400).json({ error: 'id_required' });
+
+  // Fetch the client + their journal-photo paths BEFORE deleting so
+  // we know what to unlink from storage.
+  const { data: client, error: fetchErr } = await supabaseAdmin
+    .from('locs_clients')
+    .select(`
+      id, full_name, email,
+      locs_journal_entries ( photo_paths )
+    `)
+    .eq('id', id)
+    .maybeSingle();
+  if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+  if (!client)  return res.status(404).json({ error: 'not_found' });
+
+  const journalPhotos = [];
+  for (const entry of client.locs_journal_entries || []) {
+    if (Array.isArray(entry.photo_paths)) {
+      for (const p of entry.photo_paths) if (typeof p === 'string' && p.trim()) journalPhotos.push(p.trim());
+    }
+  }
+
+  // 1. Delete the client row → cascades every child table.
+  const { error: delErr } = await supabaseAdmin
+    .from('locs_clients').delete().eq('id', id);
+  if (delErr) return res.status(500).json({ error: 'delete_failed', message: delErr.message });
+
+  // 2. Purge journal photos from the private bucket. Best-effort;
+  //    failures are logged but don't fail the request — the DB row
+  //    is already gone, which is the user-visible source of truth.
+  let photoResult = { removed: 0, failed: 0 };
+  if (journalPhotos.length) {
+    const { error: rmErr } = await supabaseAdmin.storage.from(JOURNAL_BUCKET).remove(journalPhotos);
+    if (rmErr) {
+      photoResult.failed = journalPhotos.length;
+      console.warn('[wellness-clients] journal photo purge failed:', rmErr.message);
+    } else {
+      photoResult.removed = journalPhotos.length;
+    }
+  }
+
+  return res.status(200).json({
+    ok: true,
+    deleted: { id, name: client.full_name || null, email: client.email || null },
+    photos:  photoResult
+  });
+}
+
 export default async function handler(req, res) {
-  if (!methodGuard(req, res, ['GET'])) return;
+  if (!methodGuard(req, res, ['GET', 'DELETE'])) return;
   const ctx = await requireUser(req, res); if (!ctx) return;
 
   const gate = await assertLocsAccess(ctx);
@@ -169,6 +233,11 @@ export default async function handler(req, res) {
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   const action = url.searchParams.get('action');
+
+  if (req.method === 'DELETE') {
+    if (action !== 'delete') return res.status(400).json({ error: 'unknown_delete_action' });
+    return await deleteClient(res, url.searchParams.get('id'));
+  }
 
   if (action === 'detail') {
     const id = url.searchParams.get('id');
