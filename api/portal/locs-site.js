@@ -91,12 +91,29 @@ const LOCS_SITE_DEFAULTS = {
       { n: '04', title: 'Home care guidance',           body: 'Simple, sustainable routines so your progress continues between visits.' },
     ]
   },
+  // On locsandwellness.com this section renders as "Loc Types &
+  // Services" — 4 cards (large / medium / sisterlocks / repair).
+  // Reshaped 2026-07-29 to match the new marketing homepage layout;
+  // was the old (sisterlocks/traditional/large/styling) shape. The
+  // repair card in the design has two stacked images; only the first
+  // (`image`) is Leslie-editable via the portal, the second stays
+  // hardcoded in page.tsx.
   services: [
-    { title: 'Sisterlocks / Microlocs', body: 'Precise, versatile micro-sized locs installed and maintained with care.', bookingUrl: BOOKING_URL, image: '' },
-    { title: 'Traditional Locs',        body: 'Palm rolling, interlocking, and crochet methods for classic, healthy locs.', bookingUrl: BOOKING_URL, image: '' },
-    { title: 'Large Locs / Wicks',      body: 'Bold, statement locs and wicks shaped and groomed to suit you.',            bookingUrl: BOOKING_URL, image: '' },
-    { title: 'Loc Styling',             body: 'From simple everyday looks to premium styles for your special moments.',   bookingUrl: BOOKING_URL, image: '' },
+    { title: 'Large Locs / Wics',            body: 'Large locs/Wics are maintained by retwisting, interlocking, crochet work or a customized combination of techniques. Crochet grooming is incorporated with retwisting or interlocking to collect loose hair and integrate it into the loc shaft. This provides additional reinforcement, improves structure and creates a clean, well-groomed finish while preserving the fullness and character of each loc.', bookingUrl: BOOKING_URL, image: '' },
+    { title: 'Medium Locs',                  body: 'Medium sized locs are maintained by retwisting or interlocking, based on your hair, lifestyle and preferred finish. For more refined grooming, crochet detailing may be added to guide loose hair back into the loc shaft. This technique helps reinforce the loc, improve its shape to create a neat and uniform finish from root to tip.', bookingUrl: BOOKING_URL, image: '' },
+    { title: 'Sisterlocks™ / Micro Locs',    body: 'Sisterlocks™ and Microlocks require precise, detailed care to preserve their small size and clean grid. New growth is maintained by interlocking, using a no/low-product approach that helps prevent buildup and keeps the locs lightweight. Styling product may be applied around the hairline upon request for additional hold and a polished finish.', bookingUrl: BOOKING_URL, image: '' },
+    { title: 'Loc Repair & Reconstruction',  body: 'Whether a loc has detached, unraveled, weakened, thinned, developed uneven areas or you\'re looking to combine multiple locs into one, each service is customized to restore the integrity and appearance of your locs. Depending on your needs, specialized crochet and repair techniques are used to reconnect, reinforce, reshape or combine locs while creating seamless results that blend beautifully with the surrounding locs.', bookingUrl: BOOKING_URL, image: '' },
   ],
+  // Free Guide section — the "Get the free guide" card on the
+  // homepage. Leslie edits the cover image + copy; the download PDF
+  // path is repo-managed (/guides/*.pdf lives in the site repo).
+  guide: {
+    title:       'The Complete Guide to Creating a Healthy Loc Wellness System',
+    tagline:     'Wellness is a system. Your locs are the reflection.',
+    description: 'A 14-page guide covering the 12 principles behind a thriving scalp, hair & loc wellness system — the same foundation Leslie builds every client\'s care plan on. A Locs & Wellness Co.™ Guide.',
+    cover:       '',
+    ctaLabel:    'Get the free guide'
+  },
   scalpWellness: {
     title: 'Scalp Wellness',
     intro: 'The clinical, wellness-focused side of loc care — because healthy locs start at the scalp.',
@@ -162,7 +179,8 @@ function mergeSection(key, saved) {
 // mistake sends a typo'd key.
 const ALLOWED_SECTION_KEYS = new Set([
   'hero', 'quiz', 'method', 'services', 'scalpWellness',
-  'products', 'ebooks', 'about', 'testimonials', 'finalCta'
+  'products', 'ebooks', 'about', 'testimonials', 'finalCta',
+  'guide'
 ]);
 
 async function assertLocsAccess(ctx) {

@@ -11590,11 +11590,25 @@ const LOCS_SITE_SCHEMA = [
       { k: 'body',  l: 'Body',  t: 'textarea' },
     ]},
   ]},
-  { key: 'services', label: 'Services', shape: 'array', item: [
+  // 'services' on the DB is what renders as "Loc Types & Services" on
+  // the homepage — 4 cards for large / medium / sisterlocks / repair.
+  // Renamed the editor label to match what Leslie sees on the site;
+  // the DB key stays 'services' for backward compat.
+  { key: 'services', label: 'Loc Types & Services', shape: 'array', item: [
     { k: 'title',      l: 'Title', t: 'text' },
     { k: 'body',       l: 'Body',  t: 'textarea' },
     { k: 'bookingUrl', l: 'Booking URL', t: 'url' },
     { k: 'image',      l: 'Image or video', t: 'media', accept: 'image/*,video/*' },
+  ]},
+  // Free Guide section — cover image + copy for the "Get the free
+  // guide" card. PDF path is repo-managed on the site side; Leslie
+  // only edits the shopfront copy + cover.
+  { key: 'guide', label: 'Free Guide', fields: [
+    { k: 'title',       l: 'Title', t: 'text' },
+    { k: 'tagline',     l: 'Tagline', t: 'text' },
+    { k: 'description', l: 'Description', t: 'textarea' },
+    { k: 'cover',       l: 'Cover image', t: 'media', accept: 'image/*' },
+    { k: 'ctaLabel',    l: 'CTA button text', t: 'text' },
   ]},
   { key: 'scalpWellness', label: 'Scalp Wellness', fields: [
     { k: 'title', l: 'Title', t: 'text' },
