@@ -7,12 +7,21 @@
 // page — verify with curl, not by loading the site.
 //
 // GET /api/external/portfolio?slug=konquered-balance
-//   → 200 { videos: [{ key, title, description, playback_id,
-//                      poster_url, sort_order }, ...] }
+//   → 200 {
+//       videos: [ ... ],   // legacy alias — same array
+//       events: [{
+//         key, title, description, playback_id, poster_url,
+//         sort_order,
+//         event_type, event_date, venue, city, guest_count
+//       }, ...]
+//     }
 //
-// Response shape frozen — the KonquredKocktails app/portfolio/
-// PortfolioClient.tsx page reads these exact field names. Do not
-// change without a coordinated storefront redeploy.
+// The original response was `{ videos: [ ... ] }` with reel-only
+// fields. Event-log metadata (event_type / event_date / venue /
+// city / guest_count) added 2026-08-01 so the site's /events
+// filters get real data. Both `events` and `videos` return the
+// same array so old + new consumers keep working through the
+// storefront's coordinated redeploy.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { resolveClientBySlug } from '../../lib/tenant-slug.js';
@@ -42,22 +51,30 @@ export default async function handler(req, res) {
   //
   // Tolerant of the 0037 migration not being applied yet: retry
   // without the status filter if the column doesn't exist.
+  const FULL_COLS   = 'video_key, title, description, mux_playback_id, poster_url, sort_order, event_type, event_date, venue, city, guest_count';
+  const LEGACY_COLS = 'video_key, title, description, mux_playback_id, poster_url, sort_order';
   let { data, error } = await supabaseAdmin
     .from('client_portfolio_videos')
-    .select('video_key, title, description, mux_playback_id, poster_url, sort_order')
+    .select(FULL_COLS)
     .eq('client_id', client.id)
     .eq('is_active', true)
     .eq('status', 'ready')
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });
+  // Tolerant retries — event-metadata columns are 0040, status is 0037,
+  // either may not be applied yet on stale envs.
+  if (error && /column .*(event_type|event_date|venue|city|guest_count).* does not exist/i.test(error.message || '')) {
+    const retry = await supabaseAdmin
+      .from('client_portfolio_videos').select(LEGACY_COLS)
+      .eq('client_id', client.id).eq('is_active', true).eq('status', 'ready')
+      .order('sort_order', { ascending: true }).order('created_at', { ascending: true });
+    data = retry.data; error = retry.error;
+  }
   if (error && /column .*status.* does not exist/i.test(error.message || '')) {
     const retry = await supabaseAdmin
-      .from('client_portfolio_videos')
-      .select('video_key, title, description, mux_playback_id, poster_url, sort_order')
-      .eq('client_id', client.id)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: true });
+      .from('client_portfolio_videos').select(LEGACY_COLS)
+      .eq('client_id', client.id).eq('is_active', true)
+      .order('sort_order', { ascending: true }).order('created_at', { ascending: true });
     data = retry.data; error = retry.error;
   }
 
@@ -71,7 +88,7 @@ export default async function handler(req, res) {
 
   // Strip any row missing a playback_id defensively (also the
   // storefront's own filter — belt AND suspenders).
-  const videos = (data || [])
+  const events = (data || [])
     .filter(v => v.mux_playback_id && v.mux_playback_id.trim())
     .map(v => ({
       key:          v.video_key,
@@ -79,8 +96,16 @@ export default async function handler(req, res) {
       description:  v.description || null,
       playback_id:  v.mux_playback_id,
       poster_url:   v.poster_url || null,
-      sort_order:   v.sort_order
+      sort_order:   v.sort_order,
+      // Event-log metadata (may be null on reel-only rows).
+      event_type:   v.event_type || null,
+      event_date:   v.event_date || null,
+      venue:        v.venue      || null,
+      city:         v.city       || null,
+      guest_count:  v.guest_count != null ? v.guest_count : null
     }));
 
-  return res.status(200).json({ videos });
+  // `videos` is a legacy alias — same array — so existing storefronts
+  // that read videos[] keep working until they migrate to events[].
+  return res.status(200).json({ events, videos: events });
 }

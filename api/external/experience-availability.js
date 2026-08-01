@@ -46,39 +46,99 @@ function dayOfWeekInTz(date, tz) {
   return map[parts.find(p => p.type === 'weekday').value] ?? 0;
 }
 
-// Build an ISO 8601 string like '2026-07-26T19:00:00-05:00' for a
-// specific date + local time in a given timezone. Uses the "wall
-// clock rebuilding" trick — construct the datetime naive, then
-// query Intl for the actual offset that IANA tz would apply for
-// that wall time, and stamp the offset in.
-function isoInTz(dateStr, timeStr, tz) {
-  // dateStr: 'YYYY-MM-DD'; timeStr: 'HH:MM' or 'HH:MM:SS'
-  const [Y, M, D] = dateStr.split('-').map(Number);
-  const [h, m] = timeStr.split(':').map(Number);
-  // Naive UTC guess (this is the wall-clock time interpreted as UTC).
-  const guess = new Date(Date.UTC(Y, M - 1, D, h, m, 0));
-  // Ask Intl what the tz offset (in minutes) is at that instant, by
-  // formatting the guess IN the target tz and comparing back.
+// Helper: the tz's offset (in minutes, local-minus-UTC) at a UTC
+// instant. E.g. CDT → -300, CST → -360.
+function tzOffsetAt(tz, date) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: tz, hour12: false,
     year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit'
-  }).formatToParts(guess);
-  const localY  = parseInt(parts.find(p => p.type === 'year').value, 10);
-  const localMo = parseInt(parts.find(p => p.type === 'month').value, 10);
-  const localD  = parseInt(parts.find(p => p.type === 'day').value, 10);
-  const localH  = parseInt(parts.find(p => p.type === 'hour').value, 10) % 24;
-  const localMi = parseInt(parts.find(p => p.type === 'minute').value, 10);
-  const localAsUtc = Date.UTC(localY, localMo - 1, localD, localH, localMi, 0);
-  const offsetMin = (guess.getTime() - localAsUtc) / 60000;
-  // The wall-clock time we wanted, in UTC millis, is: guess - offset
-  const actualUtcMs = guess.getTime() - offsetMin * 60000;
-  const iso = new Date(actualUtcMs).toISOString().slice(0, 19);
+    hour: '2-digit', minute: '2-digit'
+  }).formatToParts(date);
+  const y  = parseInt(parts.find(p => p.type === 'year').value, 10);
+  const mo = parseInt(parts.find(p => p.type === 'month').value, 10);
+  const d  = parseInt(parts.find(p => p.type === 'day').value, 10);
+  const h  = parseInt(parts.find(p => p.type === 'hour').value, 10) % 24;
+  const mi = parseInt(parts.find(p => p.type === 'minute').value, 10);
+  return (Date.UTC(y, mo - 1, d, h, mi, 0) - date.getTime()) / 60000;
+}
+// Helper: wall clock (year/month/day/hour/minute) for a UTC instant
+// in a given tz.
+function tzWallAt(tz, date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  }).formatToParts(date);
+  return {
+    year:   parseInt(parts.find(p => p.type === 'year').value, 10),
+    month:  parseInt(parts.find(p => p.type === 'month').value, 10),
+    day:    parseInt(parts.find(p => p.type === 'day').value, 10),
+    hour:   parseInt(parts.find(p => p.type === 'hour').value, 10) % 24,
+    minute: parseInt(parts.find(p => p.type === 'minute').value, 10)
+  };
+}
+// Build 'YYYY-MM-DDTHH:MM:00±HH:MM' preserving the requested wall
+// clock and stamping the tz's actual offset at that instant.
+//
+// Bug history (fixed 2026-08-01): the previous algorithm inverted
+// the ISO offset-sign convention AND single-passed the offset
+// calculation. Even a sign-corrected single pass wouldn't converge
+// on DST-transition days where the initial UTC guess lands on the
+// opposite side of the transition. Fixed by iterating the offset-
+// of-corrected-instant until stable, then round-trip verifying to
+// catch spring-forward gap hours.
+//
+// The site's availability route was already defending against the
+// bad output by dropping any slot whose stamped offset contradicted
+// the declared tz, so /book showed "no open dates" rather than
+// wrong times. That guard is validation, not correction — it starts
+// passing on its own once this returns correct strings.
+//
+// DST behavior for America/Chicago:
+//   * Spring-forward Sunday (2026-03-08) — 02:00-02:59 does not
+//     exist. Wall times in the gap return null; caller skips the
+//     slot. Since Konquered Balance's real hours never touch
+//     02:00 CT this is only a safety belt.
+//   * Fall-back Sunday (2026-11-01) — 01:00-01:59 exists twice.
+//     Iteration lands on the FIRST occurrence (CDT, -05:00) —
+//     matches Google Calendar's default for the same input.
+//   * Normal-day rules that never cross 02:00-03:00 CT: unaffected.
+function isoInTz(dateStr, timeStr, tz) {
+  const [Y, M, D] = dateStr.split('-').map(Number);
+  const [h, m] = timeStr.split(':').map(Number);
+  const wallAsUtc = Date.UTC(Y, M - 1, D, h, m, 0);
+
+  // Iterate: at each step compute the tz offset AT our current UTC
+  // guess, then correct the UTC guess by that offset. Converges in
+  // ≤3 rounds for defined wall times. Gap-hour wall times oscillate
+  // between two offsets — the round-trip check below catches them.
+  let offsetMin = 0;
+  let stable = false;
+  for (let i = 0; i < 5 && !stable; i++) {
+    const tryUtc = wallAsUtc - offsetMin * 60000;
+    const newOffset = tzOffsetAt(tz, new Date(tryUtc));
+    stable = newOffset === offsetMin;
+    offsetMin = newOffset;
+  }
+
   const sign = offsetMin >= 0 ? '+' : '-';
-  const abs = Math.abs(offsetMin);
-  const oh = String(Math.floor(abs / 60)).padStart(2, '0');
-  const om = String(abs % 60).padStart(2, '0');
-  return `${iso}${sign}${oh}:${om}`;
+  const abs  = Math.abs(offsetMin);
+  const oh   = String(Math.floor(abs / 60)).padStart(2, '0');
+  const om   = String(abs % 60).padStart(2, '0');
+  const hh   = String(h).padStart(2, '0');
+  const mm   = String(m).padStart(2, '0');
+  const iso  = `${dateStr}T${hh}:${mm}:00${sign}${oh}:${om}`;
+
+  // Round-trip verify: parse ISO back to UTC, format in tz, wall
+  // clock must equal the requested one. Catches spring-forward gaps
+  // that iteration couldn't resolve to a real instant.
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const back = tzWallAt(tz, parsed);
+  if (back.year !== Y || back.month !== M || back.day !== D || back.hour !== h || back.minute !== m) {
+    return null;
+  }
+  return iso;
 }
 
 function addDaysYmd(ymd, n) {
@@ -185,6 +245,7 @@ export default async function handler(req, res) {
       const times = expandSlotTimes(r.start_time, r.end_time, r.slot_duration_min || 60);
       for (const t of times) {
         const iso = isoInTz(ymd, t, tz);
+        if (iso == null) continue;  // DST spring-forward gap — skip
         const startMs = new Date(iso).getTime();
         const endMs = startMs + (r.slot_duration_min || 60) * 60000;
         if (overlapsBusy(startMs, endMs)) continue;

@@ -4436,15 +4436,16 @@ async function applyPendingMigrations(req, res) {
        BEFORE UPDATE ON public.client_portfolio_videos
        FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();`,
 
-    // KB portal_tabs — 10 tabs now (added 'reviews' 2026-08-01):
+    // KB portal_tabs — 11 tabs (added 'connect' 2026-08-01 so Stephen
+    // can complete Stripe Connect OAuth without master admin help):
     // overview / leads / experience_bookings / experience_availability /
-    // merch / portfolio / reviews / messaging / analytics / settings.
-    // Slug-scoped + idempotent via IS DISTINCT FROM.
+    // merch / portfolio / reviews / connect / messaging / analytics /
+    // settings. Slug-scoped + idempotent.
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","experience_bookings","experience_availability","merch","portfolio","reviews","messaging","analytics","settings"]'::jsonb
+       SET portal_tabs = '["overview","leads","experience_bookings","experience_availability","merch","portfolio","reviews","connect","messaging","analytics","settings"]'::jsonb
      WHERE slug = 'konquered-balance'
        AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","experience_bookings","experience_availability","merch","portfolio","reviews","messaging","analytics","settings"]'::jsonb;`,
+           '["overview","leads","experience_bookings","experience_availability","merch","portfolio","reviews","connect","messaging","analytics","settings"]'::jsonb;`,
 
     // ----- 0037: Direct-upload support for portfolio videos -----
     // Full DDL mirrored in supabase/migrations/0037_portfolio_direct_uploads.sql.
