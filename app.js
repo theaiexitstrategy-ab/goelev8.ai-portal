@@ -917,7 +917,8 @@ const TAB_LABELS = {
   website:   'Website',
   experience_bookings:     'Bookings',
   experience_availability: 'Availability',
-  portfolio:               'Portfolio'
+  portfolio:               'Portfolio',
+  reviews:                 'Reviews'
 };
 
 const TAB_ICONS = {
@@ -946,7 +947,8 @@ const TAB_ICONS = {
   website:   '🌐',
   experience_bookings:     '🥂',
   experience_availability: '🗓️',
-  portfolio:               '🎬'
+  portfolio:               '🎬',
+  reviews:                 '⭐'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
@@ -13456,6 +13458,244 @@ async function viewPortfolio() {
   return wrap;
 }
 
+// ─── Reviews — approve / unpublish / delete guest testimonials ───
+// Multi-tenant. Any tenant with 'reviews' in portal_tabs sees this.
+// Reviews are inserted anon-side from the storefront capture page
+// (published=false, RLS-locked); this tab is the operator surface.
+function reviewsStars(n) {
+  const r = Number(n);
+  if (!Number.isFinite(r) || r < 1 || r > 5) return el('span', { class: 'muted' }, '—');
+  const full = Math.floor(r);
+  return el('span', { style: 'color:#fbbf24;letter-spacing:1px;font-size:0.95rem' }, '★'.repeat(full) + '☆'.repeat(5 - full));
+}
+function reviewsFmtDate(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d) ? String(v) : d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+function reviewsBucketPublicUrl(path) {
+  if (!path) return null;
+  const s = String(path).trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  // event-photos is a public bucket; construct URL directly. If the
+  // Supabase URL isn't reachable this returns a broken image, not a
+  // crash — same tradeoff as the merch and locs-site editors.
+  const base = (window.__supabaseUrl || '').replace(/\/$/, '');
+  if (!base) return null;
+  return base + '/storage/v1/object/public/event-photos/' + s.replace(/^\/+/, '');
+}
+
+async function viewReviews() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, '⭐ Reviews'),
+    el('div', { class: 'muted' }, 'Guest testimonials — approve to publish on your public /reviews page')));
+
+  const filterBar = el('div', { class: 'panel', style: 'padding:10px 14px;margin-bottom:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center' });
+  const host = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading reviews…'));
+  wrap.appendChild(filterBar);
+  wrap.appendChild(host);
+
+  const clientQS = state.isAdmin ? '&client=' + encodeURIComponent(state.client?.slug || '') : '';
+  const clientParam = state.isAdmin ? 'client=' + encodeURIComponent(state.client?.slug || '') : '';
+
+  // Filters (client-side over the fetched roster; roster is small).
+  const filters = { q: '', status: 'all', rating: '', event_type: '', photos: '' };
+
+  const searchIn = el('input', { type: 'search', placeholder: 'Search text, guest name or email…',
+    style: 'padding:6px 10px;font-size:0.85rem;min-width:220px' });
+  searchIn.oninput = () => { filters.q = searchIn.value.trim().toLowerCase(); rerender(); };
+
+  const statusSel = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+    el('option', { value: 'all' }, 'All statuses'),
+    el('option', { value: 'pending' }, '⏳ Pending review'),
+    el('option', { value: 'published' }, '✓ Published'));
+  statusSel.onchange = () => { filters.status = statusSel.value; rerender(); };
+
+  const ratingSel = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+    el('option', { value: '' }, 'Any rating'),
+    el('option', { value: 'positive' }, '⭐ 4-5 stars'),
+    el('option', { value: 'negative' }, '⭐ 1-3 stars'));
+  ratingSel.onchange = () => { filters.rating = ratingSel.value; rerender(); };
+
+  const eventSel = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+    el('option', { value: '' }, 'Any event type'));
+  eventSel.onchange = () => { filters.event_type = eventSel.value; rerender(); };
+
+  const photosSel = el('select', { style: 'padding:5px 8px;font-size:0.82rem' },
+    el('option', { value: '' }, 'Any (photos or not)'),
+    el('option', { value: 'yes' }, '📸 With photos'),
+    el('option', { value: 'no' }, 'No photos'));
+  photosSel.onchange = () => { filters.photos = photosSel.value; rerender(); };
+
+  const clearBtn = el('button', { class: 'btn ghost', style: 'font-size:0.78rem' }, 'Clear');
+  clearBtn.onclick = () => {
+    filters.q = ''; filters.status = 'all'; filters.rating = ''; filters.event_type = ''; filters.photos = '';
+    searchIn.value = ''; statusSel.value = 'all'; ratingSel.value = ''; eventSel.value = ''; photosSel.value = '';
+    rerender();
+  };
+  filterBar.append(searchIn, statusSel, ratingSel, eventSel, photosSel, clearBtn);
+
+  let items = [];
+  let counts = { total: 0, published: 0, pending: 0 };
+
+  async function load() {
+    host.replaceChildren(el('div', { class: 'muted' }, 'Loading reviews…'));
+    try {
+      const url = '/api/portal/reviews' + (clientParam ? '?' + clientParam : '');
+      const r = await api(url);
+      items = r?.reviews || [];
+      counts = r?.counts || { total: 0, published: 0, pending: 0 };
+      // Rebuild the event_type dropdown from actual data.
+      const seen = new Set();
+      eventSel.replaceChildren(el('option', { value: '' }, 'Any event type'));
+      for (const it of items) {
+        const t = (it.event_type || '').trim();
+        if (t && !seen.has(t)) { seen.add(t); eventSel.appendChild(el('option', { value: t }, t)); }
+      }
+      rerender();
+    } catch (e) {
+      host.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + (e.message || 'unknown')));
+    }
+  }
+
+  function rerender() {
+    let filtered = items;
+    if (filters.q) {
+      const q = filters.q;
+      filtered = filtered.filter(it =>
+        (it.review_text && it.review_text.toLowerCase().includes(q)) ||
+        (it.guest_name  && it.guest_name.toLowerCase().includes(q)) ||
+        (it.email       && it.email.toLowerCase().includes(q)));
+    }
+    if (filters.status === 'published') filtered = filtered.filter(it => it.published);
+    if (filters.status === 'pending')   filtered = filtered.filter(it => !it.published);
+    if (filters.rating === 'positive')  filtered = filtered.filter(it => Number(it.rating) >= 4);
+    if (filters.rating === 'negative')  filtered = filtered.filter(it => Number(it.rating) <= 3);
+    if (filters.event_type) filtered = filtered.filter(it => (it.event_type || '') === filters.event_type);
+    if (filters.photos === 'yes') filtered = filtered.filter(it => Array.isArray(it.photos) && it.photos.length);
+    if (filters.photos === 'no')  filtered = filtered.filter(it => !Array.isArray(it.photos) || !it.photos.length);
+
+    host.innerHTML = '';
+    host.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px;gap:12px;flex-wrap:wrap' },
+      el('div', {},
+        el('div', { style: 'font-weight:600;font-size:0.95rem' },
+          counts.pending + ' pending · ' + counts.published + ' published · ' + counts.total + ' total'),
+        filtered.length !== items.length ? el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' }, filtered.length + ' shown after filters') : null),
+      el('div', { class: 'muted', style: 'font-size:0.78rem' }, 'Approve to show on your public /reviews page')));
+
+    if (!items.length) {
+      host.appendChild(el('p', { class: 'muted' }, 'No reviews submitted yet. Once a guest fills out your public /reviews form, entries land here for approval.'));
+      return;
+    }
+    if (!filtered.length) {
+      host.appendChild(el('p', { class: 'muted' }, 'No reviews match the current filters.'));
+      return;
+    }
+
+    for (const r of filtered) {
+      const card = el('div', {
+        style: 'padding:14px 16px;margin-bottom:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px'
+      });
+      // Header — stars + status pill + submitted date
+      card.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:8px' },
+        el('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
+          reviewsStars(r.rating),
+          r.published
+            ? el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(34,197,94,0.14);color:#86efac' }, '✓ Published')
+            : el('span', { style: 'font-size:0.68rem;padding:2px 8px;border-radius:10px;background:rgba(251,191,36,0.14);color:#fde68a' }, '⏳ Pending')),
+        el('div', { class: 'muted', style: 'font-size:0.72rem' }, reviewsFmtDate(r.created_at))));
+
+      // Review body
+      if (r.review_text) card.appendChild(el('div', { style: 'white-space:pre-wrap;font-size:0.9rem;line-height:1.5;margin-bottom:10px' }, r.review_text));
+
+      // Meta row — guest / event / email / contact_ok
+      const metaBits = [];
+      if (r.guest_name) metaBits.push(el('span', {}, el('strong', {}, r.guest_name)));
+      if (r.event_type) metaBits.push(el('span', { class: 'muted' }, r.event_type));
+      if (r.email) metaBits.push(
+        el('span', { style: 'font-size:0.75rem' },
+          el('span', { class: 'muted' }, '✉ '), r.email,
+          r.contact_ok
+            ? el('span', { style: 'font-size:0.65rem;padding:1px 6px;border-radius:8px;background:rgba(34,197,94,0.15);color:#86efac;margin-left:6px' }, '✓ ok to contact')
+            : el('span', { style: 'font-size:0.65rem;padding:1px 6px;border-radius:8px;background:rgba(148,163,184,0.14);color:#cbd5e1;margin-left:6px' }, 'no contact consent')));
+      if (metaBits.length) {
+        const metaRow = el('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;font-size:0.82rem;margin-bottom:10px' });
+        metaBits.forEach(b => metaRow.appendChild(b));
+        card.appendChild(metaRow);
+      }
+
+      // Photos strip
+      if (Array.isArray(r.photos) && r.photos.length) {
+        const strip = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px' });
+        for (const p of r.photos.slice(0, 3)) {
+          const url = reviewsBucketPublicUrl(p);
+          if (!url) continue;
+          strip.appendChild(el('a', { href: url, target: '_blank', rel: 'noopener' },
+            el('img', { src: url, style: 'width:120px;height:120px;object-fit:cover;border-radius:6px;background:#000',
+              onerror: 'this.style.display=\'none\'' })));
+        }
+        card.appendChild(strip);
+      }
+
+      // Actions
+      const actions = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;border-top:1px solid rgba(255,255,255,0.05);padding-top:10px' });
+      if (r.published) {
+        const unpubBtn = el('button', { class: 'btn', style: 'font-size:0.8rem' }, '⬇ Unpublish');
+        unpubBtn.onclick = async () => {
+          if (!confirm('Unpublish this review? It will no longer appear on the public site.')) return;
+          unpubBtn.disabled = true; unpubBtn.textContent = 'Unpublishing…';
+          try {
+            const q = 'action=unpublish&id=' + encodeURIComponent(r.id) + (clientParam ? '&' + clientParam : '');
+            await api('/api/portal/reviews?' + q, { method: 'POST', body: {} });
+            toast('Unpublished'); load();
+          } catch (e) { toast('Failed: ' + (e.message || 'unknown'), true); unpubBtn.disabled = false; unpubBtn.textContent = '⬇ Unpublish'; }
+        };
+        actions.appendChild(unpubBtn);
+      } else {
+        const appBtn = el('button', { class: 'btn primary', style: 'font-size:0.8rem' }, '⬆ Approve');
+        appBtn.onclick = async () => {
+          appBtn.disabled = true; appBtn.textContent = 'Publishing…';
+          try {
+            const q = 'action=approve&id=' + encodeURIComponent(r.id) + (clientParam ? '&' + clientParam : '');
+            await api('/api/portal/reviews?' + q, { method: 'POST', body: {} });
+            toast('✓ Published to your reviews page'); load();
+          } catch (e) { toast('Failed: ' + (e.message || 'unknown'), true); appBtn.disabled = false; appBtn.textContent = '⬆ Approve'; }
+        };
+        actions.appendChild(appBtn);
+      }
+      const delBtn = el('button', { class: 'btn ghost', style: 'font-size:0.8rem;color:#fca5a5' }, '🗑 Delete');
+      delBtn.onclick = async () => {
+        if (!confirm(`Delete this review from ${r.guest_name || 'this guest'}? This is for spam — it removes the review and its photos permanently.`)) return;
+        delBtn.disabled = true; delBtn.textContent = 'Deleting…';
+        try {
+          const q = 'id=' + encodeURIComponent(r.id) + (clientParam ? '&' + clientParam : '');
+          await api('/api/portal/reviews?' + q, { method: 'DELETE' });
+          toast('Deleted'); load();
+        } catch (e) { toast('Failed: ' + (e.message || 'unknown'), true); delBtn.disabled = false; delBtn.textContent = '🗑 Delete'; }
+      };
+      actions.appendChild(delBtn);
+      card.appendChild(actions);
+
+      host.appendChild(card);
+    }
+  }
+
+  // Expose the Supabase URL to reviewsBucketPublicUrl. Read from
+  // window if already set by an earlier page (locs editor does this),
+  // otherwise read from a well-known meta tag we may or may not have.
+  if (!window.__supabaseUrl) {
+    try {
+      // Best-effort: some tenants have the URL in a meta tag; if not,
+      // we fall back to a hardcoded prefix.
+      window.__supabaseUrl = 'https://bnkoqybkmwtrlorhowyv.supabase.co';
+    } catch { /* leave undefined; photos won't render URLs */ }
+  }
+
+  load();
+  return wrap;
+}
+
 async function viewAnalytics() {
   const wrap = el('div', {});
   const topbar = el('div', { class: 'topbar' },
@@ -14198,6 +14438,7 @@ async function render() {
       case 'applications': view = await viewApplications(); break;
       case 'merch':     view = await viewMerch(); break;
       case 'portfolio': view = await viewPortfolio(); break;
+      case 'reviews':   view = await viewReviews(); break;
       case 'trainer_applications': view = await viewTrainerApplications(); break;
       case 'billing':   view = await viewBilling(); break;
       case 'connect':   view = await viewConnect(); break;
