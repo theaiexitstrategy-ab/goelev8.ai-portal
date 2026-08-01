@@ -4,6 +4,7 @@ import { getPack } from '../../lib/credits.js';
 import { sendPushToClient, sendPushToAdmins } from '../../lib/push.js';
 import { ingestExternalMerchOrder } from '../../lib/merch-ingest.js';
 import { notifyExperienceConfirmed } from '../../lib/experience-notify.js';
+import { writeBookingToGoogleCalendar, deleteBookingFromGoogleCalendar } from '../../lib/gcal-bookings.js';
 
 // Disable Vercel body parsing — Stripe needs the raw body for signature verification
 export const config = { api: { bodyParser: false } };
@@ -80,6 +81,12 @@ export default async function handler(req, res) {
                 // sent_at columns handled inside the helper.
                 notifyExperienceConfirmed({ bookingId: booking.id })
                   .catch(e => console.error('[webhook] experience notify failed:', e?.message));
+                // Mirror the confirmed booking onto the tenant's
+                // Google Calendar. Best-effort — a Google outage
+                // doesn't fail the checkout webhook. Idempotent via
+                // experience_bookings.google_event_id.
+                writeBookingToGoogleCalendar({ bookingId: booking.id })
+                  .catch(e => console.error('[webhook] gcal writeback failed:', e?.message));
               }
             } else {
               console.warn('[webhook] experience_deposit session with no matching booking:', session.id);
@@ -389,9 +396,17 @@ export default async function handler(req, res) {
         const pi = typeof charge.payment_intent === 'string' ? charge.payment_intent : null;
         if (pi) {
           try {
+            // Fetch first so we know which google_event_id to delete.
+            const { data: b } = await supabaseAdmin.from('experience_bookings')
+              .select('id, google_event_id, google_calendar_id, client_id')
+              .eq('stripe_payment_intent', pi).maybeSingle();
             await supabaseAdmin.from('experience_bookings')
               .update({ status: 'refunded', refunded_at: new Date().toISOString(), updated_at: new Date().toISOString() })
               .eq('stripe_payment_intent', pi);
+            if (b?.google_event_id) {
+              deleteBookingFromGoogleCalendar({ bookingId: b.id })
+                .catch(e => console.error('[webhook] gcal delete on refund failed:', e?.message));
+            }
           } catch (e) {
             console.error('[webhook] experience_deposit refund flip failed:', e?.message);
           }

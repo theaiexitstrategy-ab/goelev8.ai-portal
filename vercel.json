@@ -4,6 +4,7 @@
     { "path": "/api/cron/process-nudges",     "schedule": "*/5 * * * *" },
     { "path": "/api/cron/sync-stripe-orders", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/reviews-notify",     "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/gcal-sync",          "schedule": "*/15 * * * *" },
     { "path": "/api/cron/freeflow-billing",   "schedule": "0 5 1 * *" }
   ],
   "rewrites": [

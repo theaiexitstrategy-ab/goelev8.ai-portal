@@ -8053,7 +8053,165 @@ async function viewSettings() {
     wrap.appendChild(renderKbWriteKeyPanel());
   }
 
+  // ----- Google Calendar sync (any tenant) -----
+  // Shown to every tenant. The endpoint returns { connected:false }
+  // when the tenant hasn't linked their calendar; the panel handles
+  // that empty state. Auth on the endpoint side gates access.
+  wrap.appendChild(renderGoogleCalendarPanel());
+
   return wrap;
+}
+
+// ─── Google Calendar sync panel (Settings) ────────────────────────
+// Connect / disconnect / pick calendar / sync now. Never displays
+// tokens — status endpoint returns booleans + labels only.
+function renderGoogleCalendarPanel() {
+  const panel = el('div', { class: 'panel' });
+  panel.appendChild(el('h2', {}, '📅 Google Calendar'));
+  panel.appendChild(el('p', { class: 'muted', style: 'font-size:0.85rem;margin-bottom:14px' },
+    'Two-way sync with your Google Calendar. Busy events on your calendar automatically hide their times from the public booking calendar; every confirmed booking is mirrored as an event on your calendar.'));
+
+  const status = el('div', { style: 'margin-top:10px' }, el('div', { class: 'muted' }, 'Loading…'));
+  panel.appendChild(status);
+
+  const clientQS = state.isAdmin ? ('?client=' + encodeURIComponent(state.client?.slug || '')) : '';
+  const clientParam = state.isAdmin ? ('client=' + encodeURIComponent(state.client?.slug || '')) : '';
+
+  async function load() {
+    status.replaceChildren(el('div', { class: 'muted' }, 'Loading…'));
+    let s;
+    try { s = await api('/api/portal/gcal?action=status' + (clientQS ? '&' + clientQS.slice(1) : '')); }
+    catch (e) {
+      status.replaceChildren(el('p', { class: 'err' }, 'Failed to load status: ' + (e.message || 'unknown')));
+      return;
+    }
+    if (!s.connected) return renderDisconnected();
+    return renderConnected(s);
+  }
+
+  function renderDisconnected() {
+    status.innerHTML = '';
+    status.appendChild(el('div', {
+      style: 'padding:14px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.15);border-radius:8px'
+    },
+      el('div', { style: 'font-weight:600;margin-bottom:8px' }, 'Not connected'),
+      el('p', { class: 'muted', style: 'font-size:0.82rem;margin-bottom:12px' },
+        'Connect your Google account to keep the public booking calendar in sync with events already on your personal calendar.'),
+      el('button', {
+        class: 'btn primary',
+        onclick: async (e) => {
+          e.target.disabled = true; e.target.textContent = 'Opening Google…';
+          try {
+            const r = await api('/api/portal/gcal?action=start' + (clientQS ? '&' + clientQS.slice(1) : ''), { method: 'POST', body: {} });
+            if (!r?.url) throw new Error('no url returned');
+            window.location.href = r.url;   // full-page redirect
+          } catch (err) {
+            e.target.disabled = false; e.target.textContent = 'Connect Google Calendar';
+            let msg = err.message || 'unknown';
+            try { const p = JSON.parse(msg); if (p?.message) msg = p.message; } catch {}
+            toast('Connect failed: ' + msg, true);
+          }
+        }
+      }, 'Connect Google Calendar')));
+  }
+
+  function renderConnected(s) {
+    status.innerHTML = '';
+    const errBanner = s.last_sync_error
+      ? el('div', { style: 'padding:8px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:6px;font-size:0.78rem;color:#fca5a5;margin-bottom:10px' },
+          '⚠ Last sync error: ', s.last_sync_error)
+      : null;
+    status.appendChild(el('div', {
+      style: 'padding:14px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px'
+    },
+      errBanner,
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap' },
+        el('div', {},
+          el('div', { style: 'font-weight:600;color:#86efac;margin-bottom:4px' }, '✓ Connected'),
+          el('div', { class: 'muted', style: 'font-size:0.78rem' },
+            s.google_email || '(no email)',
+            ' · calendar: ',
+            el('code', {}, s.calendar_summary || s.calendar_id || 'primary')),
+          s.last_synced_at
+            ? el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:4px' }, 'Last synced: ' + new Date(s.last_synced_at).toLocaleString())
+            : el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:4px' }, 'Not synced yet.')),
+        el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
+          el('button', { class: 'btn sm', style: 'font-size:0.75rem',
+            onclick: async (e) => {
+              e.target.disabled = true; e.target.textContent = 'Syncing…';
+              try {
+                await api('/api/portal/gcal?action=sync-now' + (clientQS ? '&' + clientQS.slice(1) : ''), { method: 'POST', body: {} });
+                toast('Synced'); load();
+              } catch (err) { toast('Sync failed: ' + (err.message || 'unknown'), true); e.target.disabled = false; e.target.textContent = 'Sync now'; }
+            }
+          }, 'Sync now'),
+          el('button', { class: 'btn sm',   style: 'font-size:0.75rem',
+            onclick: () => renderCalendarPicker(s) }, 'Change calendar'),
+          el('button', { class: 'btn sm ghost', style: 'font-size:0.75rem;color:#fca5a5',
+            onclick: async () => {
+              if (!confirm('Disconnect Google Calendar? This stops the two-way sync. You can reconnect any time.')) return;
+              try {
+                await api('/api/portal/gcal?action=disconnect' + (clientQS ? '&' + clientQS.slice(1) : ''), { method: 'POST', body: {} });
+                toast('Disconnected'); load();
+              } catch (e) { toast('Failed: ' + (e.message || 'unknown'), true); }
+            }
+          }, 'Disconnect'))
+      )));
+  }
+
+  async function renderCalendarPicker(s) {
+    let calendars;
+    try {
+      const r = await api('/api/portal/gcal?action=calendars' + (clientQS ? '&' + clientQS.slice(1) : ''));
+      calendars = r.calendars || [];
+    } catch (e) { toast('Failed to load calendars: ' + (e.message || 'unknown'), true); return; }
+    const dialog = el('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999' });
+    const modal = el('div', { style: 'background:#151515;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 24px;max-width:520px;width:calc(100% - 32px);max-height:80vh;overflow-y:auto' });
+    modal.appendChild(el('h3', { style: 'margin:0 0 14px' }, 'Which calendar should we sync?'));
+    for (const c of calendars) {
+      const btn = el('button', {
+        class: 'btn', style: 'display:block;width:100%;text-align:left;margin-bottom:6px;padding:10px 12px' + (c.id === s.calendar_id ? ';border-color:#86efac' : ''),
+        onclick: async () => {
+          btn.disabled = true; btn.textContent = 'Setting…';
+          try {
+            await api('/api/portal/gcal?action=set-calendar' + (clientQS ? '&' + clientQS.slice(1) : ''), {
+              method: 'POST', body: { calendar_id: c.id, calendar_summary: c.summary }
+            });
+            document.body.removeChild(dialog);
+            toast('Calendar changed'); load();
+          } catch (e) { btn.disabled = false; btn.textContent = c.summary; toast('Failed: ' + (e.message || 'unknown'), true); }
+        }
+      },
+        el('div', { style: 'font-weight:600' }, c.summary || c.id, c.primary ? ' (primary)' : ''),
+        el('div', { class: 'muted', style: 'font-size:0.72rem;margin-top:2px' }, c.accessRole || '')
+      );
+      modal.appendChild(btn);
+    }
+    modal.appendChild(el('div', { style: 'display:flex;justify-content:flex-end;margin-top:12px' },
+      el('button', { class: 'btn ghost', onclick: () => document.body.removeChild(dialog) }, 'Cancel')));
+    dialog.appendChild(modal);
+    dialog.onclick = (e) => { if (e.target === dialog) document.body.removeChild(dialog); };
+    document.body.appendChild(dialog);
+  }
+
+  // Show a toast if the URL indicates we just returned from Google.
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('gcal') === 'connected') {
+    setTimeout(() => toast('✓ Google Calendar connected'), 300);
+    params.delete('gcal');
+    const q = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (q ? '?' + q : ''));
+  } else if (params.get('gcal') === 'error') {
+    const reason = params.get('reason') || 'unknown';
+    const detail = params.get('detail') || '';
+    setTimeout(() => toast('Google Calendar error: ' + reason + (detail ? ' — ' + detail : ''), true), 300);
+    params.delete('gcal'); params.delete('reason'); params.delete('detail');
+    const q = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (q ? '?' + q : ''));
+  }
+
+  load();
+  return panel;
 }
 
 // Panel: mint + list tenant_write_keys for konquered-balance. Called

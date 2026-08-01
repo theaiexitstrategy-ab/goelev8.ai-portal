@@ -221,16 +221,33 @@ export default async function handler(req, res) {
     .gte('starts_at', windowStartIso)
     .lt('starts_at', windowEndIso);
 
+  // Google Calendar busy blocks (only present when the tenant has
+  // connected their calendar via /api/portal/gcal). Cache lives in
+  // public.google_calendar_busy and is populated by the push
+  // webhook + cron. Tolerant of the migration not being applied.
+  let gcalBusy = [];
+  try {
+    const { data: gb, error: gbErr } = await supabaseAdmin
+      .from('google_calendar_busy')
+      .select('starts_at, ends_at')
+      .eq('client_id', auth.clientId)
+      .gte('ends_at', windowStartIso)
+      .lt('starts_at', windowEndIso);
+    if (!gbErr) gcalBusy = gb || [];
+  } catch { /* table missing — ignore */ }
+
   const bookedRanges = (existingBookings || []).map(b => {
     const start = new Date(b.event_starts_at).getTime();
     const dur = (b.duration_min || 60) * 60000;
     return [start, start + dur];
   });
   const blockRanges = (blocks || []).map(b => [new Date(b.starts_at).getTime(), new Date(b.ends_at).getTime()]);
+  const gcalRanges  = gcalBusy.map(b => [new Date(b.starts_at).getTime(), new Date(b.ends_at).getTime()]);
 
   const overlapsBusy = (startMs, endMs) => {
     for (const [bs, be] of bookedRanges) if (startMs < be && endMs > bs) return true;
     for (const [bs, be] of blockRanges)  if (startMs < be && endMs > bs) return true;
+    for (const [bs, be] of gcalRanges)   if (startMs < be && endMs > bs) return true;
     return false;
   };
 
