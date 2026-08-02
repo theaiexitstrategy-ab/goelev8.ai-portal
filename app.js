@@ -13221,7 +13221,7 @@ async function viewPortfolio() {
       // Thumbnail cell — spinner during processing, warning icon on error
       const thumbCell = el('div', { style: 'width:120px;height:68px;background:#000;border-radius:6px;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;position:relative' });
       if (thumb) {
-        thumbCell.appendChild(el('img', { src: thumb, style: 'width:100%;height:100%;object-fit:cover', onerror: 'this.style.display=\'none\'' }));
+        thumbCell.appendChild(el('img', { src: thumb, style: 'width:100%;height:100%;object-fit:cover', onerror: (ev) => { ev.currentTarget.style.display = 'none'; } }));
       } else if (isProcessing) {
         thumbCell.appendChild(el('div', { style: 'display:flex;flex-direction:column;align-items:center;gap:4px' },
           el('div', { style: 'font-size:1.4rem;animation:spin 1s linear infinite' }, '⏳'),
@@ -13804,7 +13804,7 @@ async function viewReviews() {
           if (!url) continue;
           strip.appendChild(el('a', { href: url, target: '_blank', rel: 'noopener' },
             el('img', { src: url, style: 'width:120px;height:120px;object-fit:cover;border-radius:6px;background:#000',
-              onerror: 'this.style.display=\'none\'' })));
+              onerror: (ev) => { ev.currentTarget.style.display = 'none'; } })));
         }
         card.appendChild(strip);
       }
