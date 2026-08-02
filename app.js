@@ -13713,7 +13713,18 @@ async function viewReviews() {
       }
       rerender();
     } catch (e) {
-      host.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + (e.message || 'unknown')));
+      // Surface the server's actual error body instead of a generic
+      // "Failed to load". api() attaches the parsed response body to
+      // err.data on non-2xx responses.
+      const body = e?.data || {};
+      let detail = e?.message || 'unknown';
+      if (body.error) detail = body.error + (body.slug ? ` (slug=${body.slug})` : '') + (body.message ? ` — ${body.message}` : '');
+      else if (body.message) detail = body.message;
+      host.replaceChildren(el('div', {},
+        el('p', { class: 'err' }, 'Failed to load reviews: ' + detail),
+        el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:6px' },
+          'If this persists: hard-refresh the page (Cmd/Ctrl+Shift+R), or make sure you\'re logged in as the tenant owner (or impersonating the correct tenant as admin).'),
+        el('button', { class: 'btn', style: 'font-size:0.8rem;margin-top:10px', onclick: () => load() }, '🔄 Try again')));
     }
   }
 
@@ -13735,12 +13746,14 @@ async function viewReviews() {
     if (filters.photos === 'no')  filtered = filtered.filter(it => !Array.isArray(it.photos) || !it.photos.length);
 
     host.innerHTML = '';
-    host.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px;gap:12px;flex-wrap:wrap' },
+    host.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap' },
       el('div', {},
         el('div', { style: 'font-weight:600;font-size:0.95rem' },
           counts.pending + ' pending · ' + counts.published + ' published · ' + counts.total + ' total'),
         filtered.length !== items.length ? el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' }, filtered.length + ' shown after filters') : null),
-      el('div', { class: 'muted', style: 'font-size:0.78rem' }, 'Approve to show on your public /reviews page')));
+      el('div', { style: 'display:flex;gap:8px;align-items:center' },
+        el('div', { class: 'muted', style: 'font-size:0.78rem' }, 'Approve to show on your public /reviews page'),
+        el('button', { class: 'btn ghost', style: 'font-size:0.78rem', onclick: () => load() }, '🔄 Refresh'))));
 
     if (!items.length) {
       host.appendChild(el('p', { class: 'muted' }, 'No reviews submitted yet. Once a guest fills out your public /reviews form, entries land here for approval.'));

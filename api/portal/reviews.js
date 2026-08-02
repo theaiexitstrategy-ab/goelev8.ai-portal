@@ -39,12 +39,25 @@ async function readJson(req) {
 
 async function resolveClientId(ctx, url) {
   if (ctx.isAdmin) {
+    // Admin resolution precedence:
+    //   1. ?client=<slug|uuid> URL param (explicit, wins)
+    //   2. x-admin-as-client impersonation header (set by SPA when
+    //      admin is impersonating a tenant — populated on ctx.clientId
+    //      by requireUser)
+    //   3. No context → return error so caller shows a helpful message
+    //      instead of silently returning wrong-tenant data.
     const slugOrId = url.searchParams.get('client');
-    if (!slugOrId) return { error: 'client_slug_required_for_admin' };
-    if (/^[0-9a-f-]{36}$/i.test(slugOrId)) return { clientId: slugOrId };
-    const { data } = await supabaseAdmin.from('clients').select('id').eq('slug', slugOrId).maybeSingle();
-    if (!data) return { error: 'client_not_found' };
-    return { clientId: data.id };
+    if (slugOrId && slugOrId !== 'undefined' && slugOrId !== 'null') {
+      if (/^[0-9a-f-]{36}$/i.test(slugOrId)) return { clientId: slugOrId };
+      const { data } = await supabaseAdmin.from('clients').select('id').eq('slug', slugOrId).maybeSingle();
+      if (!data) return { error: 'client_not_found', slug: slugOrId };
+      return { clientId: data.id };
+    }
+    // Fall through to impersonation header (arrived on ctx.clientId).
+    if (ctx.clientId && /^[0-9a-f-]{36}$/i.test(String(ctx.clientId))) {
+      return { clientId: ctx.clientId };
+    }
+    return { error: 'client_slug_required_for_admin' };
   }
   if (!ctx.clientId) return { error: 'no_tenant_context' };
   return { clientId: ctx.clientId };

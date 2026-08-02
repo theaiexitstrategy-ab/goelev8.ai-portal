@@ -38,15 +38,21 @@ async function readJson(req) {
 }
 
 async function resolveClientId(ctx, url, body) {
-  // Admin can specify ?client=<slug|id>. Tenant users use their
-  // own client_id from the auth context.
+  // Precedence: ?client=<slug|uuid> URL param → body.client →
+  // x-admin-as-client header (arrives as ctx.clientId) → error.
+  // See api/portal/reviews.js resolveClientId for the shared reasoning.
   if (ctx.isAdmin) {
     const slugOrId = url.searchParams.get('client') || body?.client;
-    if (!slugOrId) return { error: 'client_slug_required_for_admin' };
-    if (/^[0-9a-f-]{36}$/i.test(slugOrId)) return { clientId: slugOrId };
-    const { data } = await supabaseAdmin.from('clients').select('id').eq('slug', slugOrId).maybeSingle();
-    if (!data) return { error: 'client_not_found' };
-    return { clientId: data.id };
+    if (slugOrId && slugOrId !== 'undefined' && slugOrId !== 'null') {
+      if (/^[0-9a-f-]{36}$/i.test(slugOrId)) return { clientId: slugOrId };
+      const { data } = await supabaseAdmin.from('clients').select('id').eq('slug', slugOrId).maybeSingle();
+      if (!data) return { error: 'client_not_found', slug: slugOrId };
+      return { clientId: data.id };
+    }
+    if (ctx.clientId && /^[0-9a-f-]{36}$/i.test(String(ctx.clientId))) {
+      return { clientId: ctx.clientId };
+    }
+    return { error: 'client_slug_required_for_admin' };
   }
   if (!ctx.clientId) return { error: 'no_tenant_context' };
   return { clientId: ctx.clientId };
