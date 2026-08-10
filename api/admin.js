@@ -4436,16 +4436,19 @@ async function applyPendingMigrations(req, res) {
        BEFORE UPDATE ON public.client_portfolio_videos
        FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();`,
 
-    // KB portal_tabs — 11 tabs (added 'connect' 2026-08-01 so Stephen
-    // can complete Stripe Connect OAuth without master admin help):
-    // overview / leads / experience_bookings / experience_availability /
-    // merch / portfolio / reviews / connect / messaging / analytics /
-    // settings. Slug-scoped + idempotent.
+    // KB portal_tabs — condensed to 7 tabs (2026-08-07) via three
+    // sub-tab hubs in the SPA:
+    //   overview            = Overview + Leads
+    //   experience_bookings = Bookings + Availability
+    //   settings            = Settings + Analytics + Payments (Connect)
+    // The remaining keys (merch, portfolio, reviews, messaging) stay
+    // as their own top-level tabs. See kbSubTabs() in app.js for the
+    // hub implementation. Slug-scoped + idempotent.
     `UPDATE public.clients
-       SET portal_tabs = '["overview","leads","experience_bookings","experience_availability","merch","portfolio","reviews","connect","messaging","analytics","settings"]'::jsonb
+       SET portal_tabs = '["overview","experience_bookings","merch","portfolio","reviews","messaging","settings"]'::jsonb
      WHERE slug = 'konquered-balance'
        AND portal_tabs IS DISTINCT FROM
-           '["overview","leads","experience_bookings","experience_availability","merch","portfolio","reviews","connect","messaging","analytics","settings"]'::jsonb;`,
+           '["overview","experience_bookings","merch","portfolio","reviews","messaging","settings"]'::jsonb;`,
 
     // ----- 0037: Direct-upload support for portfolio videos -----
     // Full DDL mirrored in supabase/migrations/0037_portfolio_direct_uploads.sql.

@@ -13145,6 +13145,103 @@ async function viewKbAvailability() {
   return wrap;
 }
 
+// ─── Konquered Balance sub-tab hubs ──────────────────────────────
+// Consolidates 11 top-level tabs into 7 by grouping related pages
+// behind a single sidebar entry with a sub-tab bar at the top of the
+// tab content. Existing per-section views (viewKbOverview / viewKbLeads
+// / viewKbBookings / viewKbAvailability / viewSettings / viewAnalytics
+// / viewConnect) stay untouched — the hubs just dispatch.
+//
+// KB sidebar goes from:
+//   overview / leads / experience_bookings / experience_availability /
+//   merch / portfolio / reviews / connect / messaging / analytics /
+//   settings   (11)
+// to:
+//   overview (= Overview + Leads) /
+//   experience_bookings (= Bookings + Availability) /
+//   merch / portfolio / reviews / messaging /
+//   settings (= Settings + Analytics + Payments)   (7)
+//
+// Shared helper — renders an underline-style sub-tab bar and swaps
+// the child view without touching the outer layout. Each sub-view
+// keeps its own topbar; the hub deliberately does NOT add another.
+function kbSubTabs(bodyHost, subs, initialKey) {
+  const bar = el('div', {
+    style: 'display:flex;gap:2px;margin-bottom:16px;border-bottom:1px solid rgba(255,255,255,0.08);overflow-x:auto'
+  });
+  let current = initialKey || subs[0]?.key;
+
+  const drawBar = () => {
+    bar.innerHTML = '';
+    for (const s of subs) {
+      const active = s.key === current;
+      const btn = el('button', {
+        style: 'padding:8px 14px;font-size:0.85rem;background:transparent;border:none;color:' + (active ? '#e5e5e5' : 'var(--muted,#94a3b8)')
+             + ';cursor:pointer;font-weight:' + (active ? '600' : '500')
+             + ';border-bottom:2px solid ' + (active ? '#3b82f6' : 'transparent')
+             + ';white-space:nowrap;transition:color 0.15s',
+        onclick: () => { if (current !== s.key) { current = s.key; drawBar(); loadCurrent(); } }
+      }, s.label);
+      bar.appendChild(btn);
+    }
+  };
+
+  const loadCurrent = async () => {
+    bodyHost.innerHTML = '';
+    bodyHost.appendChild(el('div', { class: 'muted', style: 'padding:16px' }, 'Loading…'));
+    try {
+      const s = subs.find(x => x.key === current);
+      const child = await s.view();
+      bodyHost.innerHTML = '';
+      bodyHost.appendChild(child);
+    } catch (e) {
+      bodyHost.innerHTML = '';
+      bodyHost.appendChild(el('p', { class: 'err', style: 'padding:16px' }, 'Failed to load ' + current + ': ' + (e.message || 'unknown')));
+    }
+  };
+
+  drawBar();
+  loadCurrent();
+  return bar;
+}
+
+// Overview + Leads
+async function viewKbDashboardHub() {
+  const wrap = el('div', {});
+  const body = el('div', {});
+  const bar = kbSubTabs(body, [
+    { key: 'overview', label: '📊 Overview', view: viewKbOverview },
+    { key: 'leads',    label: '👥 Leads',    view: viewKbLeads }
+  ]);
+  wrap.append(bar, body);
+  return wrap;
+}
+
+// Bookings + Availability
+async function viewKbBookingsHub() {
+  const wrap = el('div', {});
+  const body = el('div', {});
+  const bar = kbSubTabs(body, [
+    { key: 'bookings',     label: '🥂 Bookings',     view: viewKbBookings },
+    { key: 'availability', label: '🗓 Availability', view: viewKbAvailability }
+  ]);
+  wrap.append(bar, body);
+  return wrap;
+}
+
+// Settings + Analytics + Payments (Connect)
+async function viewKbAdminHub() {
+  const wrap = el('div', {});
+  const body = el('div', {});
+  const bar = kbSubTabs(body, [
+    { key: 'settings',  label: '⚙ Settings',  view: viewSettings },
+    { key: 'analytics', label: '📈 Analytics', view: viewAnalytics },
+    { key: 'payments',  label: '💰 Payments',  view: viewConnect }
+  ]);
+  wrap.append(bar, body);
+  return wrap;
+}
+
 // ─── Portfolio — Mux video reel editor (multi-tenant) ─────────────
 // Any tenant with 'portfolio' in portal_tabs sees this view. Cap of
 // 5 active videos is enforced by the DB trigger; the UI mirrors it
@@ -14578,7 +14675,8 @@ async function render() {
       case 'admin':     view = await viewAdmin(); break;
       case 'overview':
         if (state.client?.slug === 'freeflow-fitness-stl') { view = await viewFreeFlowOverview(); break; }
-        if (state.client?.slug === 'konquered-balance')    { view = await viewKbOverview();       break; }
+        // KB: overview tab is a hub containing Overview + Leads sub-tabs.
+        if (state.client?.slug === 'konquered-balance')    { view = await viewKbDashboardHub();   break; }
         view = await viewOverview();
         break;
       case 'activity':  view = (state.isAdmin && state.user?.email === 'ab@goelev8.ai') ? await viewActivity() : await viewOverview(); break;
@@ -14595,8 +14693,9 @@ async function render() {
         view = await viewBookings();
         break;
       case 'experience_bookings':
+        // KB: hub containing Bookings + Availability sub-tabs.
         view = (state.isAdmin || state.client?.slug === 'konquered-balance')
-          ? await viewKbBookings()
+          ? await viewKbBookingsHub()
           : await viewOverview();
         break;
       case 'experience_availability':
@@ -14615,7 +14714,11 @@ async function render() {
       case 'connect':   view = await viewConnect(); break;
       case 'blasts':    view = await viewBlasts(); break;
       case 'nudges':    view = await viewNudges(); break;
-      case 'settings':  view = await viewSettings(); break;
+      case 'settings':
+        // KB: hub containing Settings + Analytics + Payments sub-tabs.
+        if (state.client?.slug === 'konquered-balance') { view = await viewKbAdminHub(); break; }
+        view = await viewSettings();
+        break;
       case 'booking_admin': view = state.isAdmin ? await viewBookingAdmin() : await viewOverview(); break;
       case 'admin_sales':   view = state.isAdmin ? await viewAdminSales()   : await viewOverview(); break;
       case 'taes':      view = (state.isAdmin || state.client?.slug === 'ai-exit-strategy') ? await viewTaes() : await viewOverview(); break;
