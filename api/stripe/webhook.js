@@ -134,7 +134,21 @@ export default async function handler(req, res) {
         // Runs only when nothing above claimed the session, and bails
         // harmlessly on anything that isn't destined for a connected
         // tenant with a matching event.
-        if (!event.account && session.payment_status === 'paid') {
+        //
+        // The metadata exclusions matter for two reasons. Cheap one: this
+        // branch costs a Stripe round-trip to read the PaymentIntent's
+        // transfer_data, and credit-pack / onboarding sessions would pay
+        // that cost on every purchase only to bail. Real one: those flows
+        // are handled BELOW this point, and a `break` here would skip
+        // them. Today they're safe because they carry no transfer_data,
+        // but that's an accident of their shape, not a guarantee —
+        // naming them explicitly means a future session that happens to
+        // have both can't silently stop granting credits.
+        const claimedByOtherFlow = !!(session.metadata?.pack
+          || session.metadata?.flow
+          || session.metadata?.client
+          || session.metadata?.client_id);
+        if (!event.account && session.payment_status === 'paid' && !claimedByOtherFlow) {
           try {
             const r = await ingestLegacyEventSession({ session });
             if (r.ok && !r.idempotent) {
