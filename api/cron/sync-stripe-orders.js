@@ -21,7 +21,7 @@
 
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { backfillExternalMerchOrders } from '../../lib/merch-ingest.js';
-import { backfillLegacyEventSessions } from '../../lib/event-ingest.js';
+import { backfillLegacyEventSessions, describeLegacyEventSessions } from '../../lib/event-ingest.js';
 
 // How far back each cron tick scans on each tenant's connected
 // account. 24 hours is roomy — even if a tick fails or a deploy is
@@ -38,6 +38,25 @@ function authorized(req) {
 
 export default async function handler(req, res) {
   if (!authorized(req)) return res.status(401).json({ error: 'unauthorized' });
+
+  // ?describe=1 — read-only inventory of Checkout Sessions on the platform
+  // account. Answers "are the tenant marketing site's charges even landing
+  // here?" directly instead of inferring it from a zero ingest count.
+  // Writes nothing and returns no personal data (see
+  // describeLegacyEventSessions). Same CRON_SECRET gate as the sync itself.
+  {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.searchParams.get('describe') === '1') {
+      const requested = parseInt(url.searchParams.get('hours') || '', 10);
+      const hoursBack = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 2160) : 720;
+      try {
+        const rows = await describeLegacyEventSessions({ hoursBack, maxSessions: 100 });
+        return res.status(200).json({ hours_back: hoursBack, count: rows.length, sessions: rows });
+      } catch (e) {
+        return res.status(500).json({ error: e?.message || 'describe_failed' });
+      }
+    }
+  }
 
   // Pull every tenant that has finished Stripe Connect OAuth. Tenants
   // without a connected account id can't be charged through us, so
