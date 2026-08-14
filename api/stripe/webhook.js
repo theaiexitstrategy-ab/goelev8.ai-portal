@@ -144,7 +144,16 @@ export default async function handler(req, res) {
         // but that's an accident of their shape, not a guarantee —
         // naming them explicitly means a future session that happens to
         // have both can't silently stop granting credits.
-        const claimedByOtherFlow = !!(session.metadata?.pack
+        //
+        // event_key is checked FIRST and wins. The marketing site stamps
+        // { client_id, event_key, signup_id } on its bootcamp sessions —
+        // verified against the live account — and client_id is in that
+        // set. So the exclusion list below, written to protect the credit
+        // and onboarding flows, was silently excluding every bootcamp
+        // session too: the mirror would never have fired even after a
+        // real payment. Anything carrying event_key is an event seat.
+        const looksLikeEventSeat = !!session.metadata?.event_key;
+        const claimedByOtherFlow = !looksLikeEventSeat && !!(session.metadata?.pack
           || session.metadata?.flow
           || session.metadata?.client
           || session.metadata?.client_id);
