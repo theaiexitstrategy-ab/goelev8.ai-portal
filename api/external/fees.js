@@ -30,7 +30,8 @@ import { resolveClientBySlug } from '../../lib/tenant-slug.js';
 import {
   PLATFORM_FEE_DEFAULT_PCT,
   resolvePlatformFeePct,
-  calcPlatformFeeCents
+  calcPlatformFeeCents,
+  applyStripePassThrough
 } from '../../lib/platform-fee.js';
 
 const CORS_HEADERS = {
@@ -39,10 +40,11 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'content-type'
 };
 
-// Standard US Stripe pricing for online card charges. Override
-// platform-wide via env if your account negotiated different rates.
-const STRIPE_FEE_PCT  = parseFloat(process.env.STRIPE_FEE_PCT  || '2.9');
-const STRIPE_FEE_FIXED_CENTS = parseInt(process.env.STRIPE_FEE_FIXED_CENTS || '30', 10);
+// STRIPE_FEE_PCT / STRIPE_FEE_FIXED_CENTS and the applyStripePassThrough
+// surcharge formula now live in lib/platform-fee.js (imported above) so
+// the events flow and this quote endpoint can't disagree about what a
+// customer gets charged. Same values, same math — just no longer a
+// private copy.
 
 // Flat platform processing fee charged on every order. Goes to the
 // platform (GoElev8) alongside the percent-based platform fee — covers
@@ -59,23 +61,6 @@ async function readJson(req) {
     req.on('end', () => { try { resolve(JSON.parse(buf || '{}')); } catch (e) { reject(e); } });
     req.on('error', reject);
   });
-}
-
-// Compute the customer-facing total such that, after Stripe takes its
-// processing fee, the platform + tenant receive exactly what they
-// expect. This is the "surcharge" formula: pre_fee / (1 - pct) + fixed.
-//
-//   target_received = subtotal + platform_fee + shipping
-//   customer_total  = target_received + stripe_pass_through
-//   stripe_fee      = customer_total × pct + fixed
-//   ∴  customer_total = (target_received + fixed) / (1 - pct)
-function applyStripePassThrough(targetReceivedCents) {
-  const pctFraction = STRIPE_FEE_PCT / 100;
-  const customer = Math.ceil(
-    (targetReceivedCents + STRIPE_FEE_FIXED_CENTS) / (1 - pctFraction)
-  );
-  const stripeFee = customer - targetReceivedCents;
-  return { customer, stripeFee };
 }
 
 export default async function handler(req, res) {

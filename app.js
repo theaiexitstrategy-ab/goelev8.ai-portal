@@ -918,7 +918,8 @@ const TAB_LABELS = {
   experience_bookings:     'Bookings',
   experience_availability: 'Availability',
   portfolio:               'Portfolio',
-  reviews:                 'Reviews'
+  reviews:                 'Reviews',
+  events:                  'Events'
 };
 
 const TAB_ICONS = {
@@ -948,7 +949,8 @@ const TAB_ICONS = {
   experience_bookings:     '🥂',
   experience_availability: '🗓️',
   portfolio:               '🎬',
-  reviews:                 '⭐'
+  reviews:                 '⭐',
+  events:                  '🎟️'
 };
 
 const DEFAULT_TABS = ['overview','leads','messaging','settings'];
@@ -7995,8 +7997,14 @@ async function viewSettings() {
       first_name: 'Jane',
       name: 'Jane Doe',
       client_name: state.client?.name || 'Your Business',
-      source: 'theflexfacility.com',
-      source_path: '/fit',
+      // Neutral placeholders. These were hardcoded to 'theflexfacility.com'
+      // and '/fit', so every OTHER tenant previewing a template with a
+      // {{source}} tag saw the Flex Facility's domain in their own
+      // Settings tab — same cross-tenant bleed as the write-key panel
+      // below. client_name above already derives from the tenant; these
+      // now follow suit by staying generic.
+      source: 'your-website.com',
+      source_path: '/contact',
       booking_url: livebookingUrl || 'https://book.goelev8.ai/your-slug'
     };
     const out = (tpl.value || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => sample[k] ?? '');
@@ -8049,7 +8057,23 @@ async function viewSettings() {
   // admin session, or while impersonating the KB tenant) and pastes
   // the raw value into the KK site's Vercel env vars. The raw key is
   // returned by the server ONCE; stored keys are shown by prefix only.
-  if (state.isAdmin) {
+  //
+  // Gated on the TENANT IN CONTEXT, not just isAdmin (fixed 2026-08-14).
+  // Previously any admin session rendered this panel on every tenant's
+  // Settings tab, so impersonating e.g. flex-facility showed a
+  // "Funnel site — Konquered Kocktails" card with konqueredkocktails.com
+  // origins prefilled — another tenant's funnel details surfacing under
+  // the wrong client. Admin-only visibility made it a confusion bug
+  // rather than a disclosure to tenants, but it's still the wrong tenant's
+  // data on the wrong page.
+  //
+  // Bare admin sessions (no tenant impersonated) keep the panel, since
+  // that's the other path Aaron mints from and it isn't scoped to anyone.
+  //
+  // TODO: write-key management is per-tenant by nature — this should
+  // become a generic panel driven by the current client rather than a
+  // KB-specific one. Left alone here to keep this change to the fix.
+  if (state.isAdmin && (!state.client || state.client.slug === 'konquered-balance')) {
     wrap.appendChild(renderKbWriteKeyPanel());
   }
 
@@ -13145,6 +13169,173 @@ async function viewKbAvailability() {
   return wrap;
 }
 
+// ─── Events — paid seat reservations (multi-tenant) ──────────────
+// Any tenant with 'events' in portal_tabs gets this. Data source:
+// /api/portal/events (GET). Deliberately built on the same primitives as
+// the experience-bookings views above (kbStatCard / kbMoney / kbFmtWhen,
+// el() text nodes) so it reads as the same product, not a second one.
+//
+// Every value below goes through el() text children, which produce DOM
+// text nodes rather than parsed HTML. Attendee name / email / phone come
+// from a public form, so that escaping is what keeps a submitted
+// "<img onerror=…>" inert on render.
+function evStatusPill(status) {
+  const map = {
+    pending:   'background:rgba(251,191,36,0.14);color:#fde68a',
+    confirmed: 'background:rgba(34,197,94,0.14);color:#86efac',
+    refunded:  'background:rgba(239,68,68,0.14);color:#fca5a5',
+    cancelled: 'background:rgba(255,255,255,0.06);color:var(--muted,#9ca3af)',
+    expired:   'background:rgba(255,255,255,0.06);color:var(--muted,#9ca3af)'
+  };
+  const label = { pending: 'awaiting payment', confirmed: 'paid' }[status] || status || 'pending';
+  return el('span', { style: 'padding:2px 8px;border-radius:10px;font-size:0.7rem;font-weight:600;' + (map[status] || map.pending) }, label);
+}
+
+async function viewEvents() {
+  const wrap = el('div', {});
+  wrap.appendChild(el('div', { class: 'topbar' },
+    el('h1', {}, 'Events'),
+    el('div', { class: 'muted' }, 'Paid seat reservations — roster, waivers, and payment status')));
+
+  const statsHost  = el('div', {});
+  const eventsHost = el('div', { class: 'panel', style: 'margin-top:14px' });
+  const filterHost = el('div', { class: 'panel', style: 'padding:10px 14px;margin-top:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:center' });
+  const tableHost  = el('div', { class: 'panel', style: 'margin-top:12px' }, el('div', { class: 'muted' }, 'Loading…'));
+  wrap.append(statsHost, eventsHost, filterHost, tableHost);
+
+  const filters = { event_id: '', status: '', q: '' };
+  const clientQS = () => (state.isAdmin && state.client?.slug ? 'client=' + encodeURIComponent(state.client.slug) : '');
+
+  const load = async () => {
+    const parts = [clientQS()].filter(Boolean);
+    if (filters.event_id) parts.push('event_id=' + encodeURIComponent(filters.event_id));
+    if (filters.status)   parts.push('status=' + encodeURIComponent(filters.status));
+    if (filters.q)        parts.push('q=' + encodeURIComponent(filters.q));
+    const qs = parts.join('&');
+
+    let payload;
+    try { payload = await api('/api/portal/events' + (qs ? '?' + qs : '')); }
+    catch (e) {
+      tableHost.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + (e.message || 'unknown')));
+      return;
+    }
+
+    const c = payload?.counts || {};
+    statsHost.replaceChildren(el('div', { class: 'cards' },
+      kbStatCard('🎟️', 'Seats sold',    c.seats_confirmed || 0, 'paid reservations'),
+      kbStatCard('⏳', 'Awaiting payment', c.pending || 0,       'checkout in flight'),
+      kbStatCard('💵', 'Gross collected', kbMoney(c.gross_cents || 0), 'what customers paid'),
+      kbStatCard('✍️', 'Waivers on file', c.waiver_accepted || 0, 'accepted, paid signups')
+    ));
+
+    // Event cards — price breakdown comes from the server so it can't
+    // drift from what checkout actually charges.
+    eventsHost.replaceChildren(el('h3', {}, 'Events'));
+    const events = payload?.events || [];
+    if (!events.length) {
+      eventsHost.appendChild(el('p', { class: 'muted' }, 'No events yet.'));
+    }
+    for (const ev of events) {
+      const p = ev.pricing || {};
+      eventsHost.appendChild(el('div', {
+        style: 'padding:12px 14px;margin-top:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px'
+      },
+        el('div', { style: 'display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap' },
+          el('div', {},
+            el('div', { style: 'font-size:1rem;font-weight:600' }, ev.title || ev.event_key),
+            el('div', { class: 'muted', style: 'font-size:0.78rem' },
+              kbFmtWhen(ev.starts_at, ev.event_tz)
+              + [ev.location_name, ev.address_line1, ev.city].filter(Boolean).map(x => ' · ' + x).join(''))),
+          el('div', { style: 'text-align:right' },
+            el('div', { style: 'font-weight:600' }, kbMoney(p.customer_total_cents) + ' / seat'),
+            el('div', { class: 'muted', style: 'font-size:0.72rem' },
+              kbMoney(p.subtotal_cents) + ' list · you net ' + kbMoney(p.tenant_net_cents)))),
+        el('div', { style: 'margin-top:8px;display:flex;gap:10px;flex-wrap:wrap;font-size:0.75rem' },
+          el('span', { class: 'muted' }, 'status: ' + (ev.status || '—')),
+          el('span', { class: 'muted' }, 'seats reserved: ' + (ev.seats_reserved || 0)
+            + (ev.capacity != null ? ' / ' + ev.capacity : ' (no cap)')),
+          ev.waiver_required
+            ? el('span', { style: ev.waiver_text ? 'color:#86efac' : 'color:#fca5a5' },
+                ev.waiver_text
+                  ? ('waiver ' + (ev.waiver_version || 'v?'))
+                  : 'waiver text not set — reservations will be refused')
+            : el('span', { class: 'muted' }, 'no waiver'))
+      ));
+    }
+
+    // Roster
+    const rows = payload?.rows || [];
+    tableHost.replaceChildren();
+    tableHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:10px' },
+      rows.length + ' signup' + (rows.length === 1 ? '' : 's')
+      + (payload?.count && payload.count > rows.length ? ' of ' + payload.count : '')));
+    if (!rows.length) {
+      tableHost.appendChild(el('p', { class: 'muted' }, 'No signups yet.'));
+      return;
+    }
+    tableHost.appendChild(el('table', {},
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Signed up'),
+        el('th', {}, 'Name'),
+        el('th', {}, 'Phone'),
+        el('th', {}, 'Email'),
+        el('th', { style: 'text-align:right' }, 'Seats'),
+        el('th', { style: 'text-align:right' }, 'Paid'),
+        el('th', {}, 'Waiver'),
+        el('th', {}, 'Payment'))),
+      el('tbody', {}, ...rows.map(r => el('tr', {},
+        el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' }, kbFmtWhen(r.created_at)),
+        el('td', {}, r.attendee_name || '—'),
+        el('td', { class: 'mono', style: 'font-size:0.78rem' }, r.attendee_phone || '—'),
+        el('td', { class: 'muted', style: 'font-size:0.78rem' }, r.attendee_email || '—'),
+        el('td', { class: 'mono', style: 'text-align:right' }, String(r.quantity || 1)),
+        el('td', { style: 'text-align:right;font-weight:600' }, kbMoney(r.amount_total_cents)),
+        el('td', {}, r.waiver_accepted
+          ? el('span', { style: 'color:#86efac', title: r.waiver_version || '' }, '✓' + (r.waiver_version ? ' ' + r.waiver_version : ''))
+          : el('span', { class: 'muted' }, '—')),
+        el('td', {}, evStatusPill(r.status))
+      )))
+    ));
+  };
+
+  // Filters. Search is server-side (api/portal/events applies `q` across
+  // name/email/phone) so it still works past the page limit.
+  const eventSel = el('select', { style: 'padding:5px 8px;font-size:0.8rem' }, el('option', { value: '' }, 'All events'));
+  eventSel.onchange = () => { filters.event_id = eventSel.value; load(); };
+  const statusSel = el('select', { style: 'padding:5px 8px;font-size:0.8rem' },
+    el('option', { value: '' }, 'Any payment status'),
+    el('option', { value: 'confirmed' }, '✅ Paid'),
+    el('option', { value: 'pending' },   '⏳ Awaiting payment'),
+    el('option', { value: 'refunded' },  '↩ Refunded'),
+    el('option', { value: 'cancelled' }, '✕ Cancelled'),
+    el('option', { value: 'expired' },   '⌛ Expired'));
+  statusSel.onchange = () => { filters.status = statusSel.value; load(); };
+  const search = el('input', {
+    type: 'search', placeholder: 'Search name, phone, or email…',
+    style: 'padding:5px 8px;font-size:0.8rem;min-width:240px;flex:1'
+  });
+  let searchTimer = null;
+  search.oninput = () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { filters.q = search.value.trim(); load(); }, 250);
+  };
+  filterHost.append(
+    el('span', { class: 'muted', style: 'font-size:0.78rem' }, 'Filter:'),
+    eventSel, statusSel, search);
+
+  await load();
+  // Populate the event picker from whatever the first load returned.
+  try {
+    const parts = [clientQS(), 'counts_only=1'].filter(Boolean);
+    const meta = await api('/api/portal/events?' + parts.join('&'));
+    for (const ev of (meta?.events || [])) {
+      eventSel.appendChild(el('option', { value: ev.id }, ev.title || ev.event_key));
+    }
+  } catch { /* picker stays "All events" — not worth failing the tab over */ }
+
+  return wrap;
+}
+
 // ─── Konquered Balance sub-tab hubs ──────────────────────────────
 // Consolidates 11 top-level tabs into 7 by grouping related pages
 // behind a single sidebar entry with a sub-tab bar at the top of the
@@ -14707,6 +14898,7 @@ async function render() {
       case 'messaging': view = await viewMessaging(); break;
       case 'applications': view = await viewApplications(); break;
       case 'merch':     view = await viewMerch(); break;
+      case 'events':    view = await viewEvents(); break;
       case 'portfolio': view = await viewPortfolio(); break;
       case 'reviews':   view = await viewReviews(); break;
       case 'trainer_applications': view = await viewTrainerApplications(); break;

@@ -1,8 +1,16 @@
 // POST /api/track/view
 // Public endpoint — fires from client websites / funnel pages.
 // No auth required. Rate limited: 1 insert per IP per slug per 60 minutes.
+//
+// CORS (added 2026-08-14): this endpoint previously sent no CORS headers
+// and had no OPTIONS branch, so EVERY cross-origin call was dropped by
+// the browser — including the sendBeacon path, because embed/track.js
+// posts a Blob typed 'application/json' and that content type is not
+// CORS-safelisted, so beacons get preflighted too. Page views from every
+// tenant site have been silently failing; see lib/public-cors.js.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
+import { handlePreflight } from '../../lib/public-cors.js';
 
 // In-memory rate limit cache (resets on cold start, which is fine).
 const seen = new Map();
@@ -36,6 +44,11 @@ function normalizePath(raw) {
 }
 
 export default async function handler(req, res) {
+  // Preflight first — must answer before any method check, otherwise the
+  // OPTIONS request falls through to the 200 below without CORS headers
+  // and the browser never sends the real POST.
+  if (handlePreflight(req, res)) return;
+
   // Always return success to the client — never block render.
   if (req.method !== 'POST') {
     return res.status(200).json({ ok: true });
@@ -45,6 +58,11 @@ export default async function handler(req, res) {
     let body;
     if (req.body && typeof req.body === 'object') {
       body = req.body;
+    } else if (typeof req.body === 'string') {
+      // Vercel hands us a pre-read string for non-JSON content types.
+      // The stream is already consumed at this point, so re-reading it
+      // below would hang or yield '' — parse what we were given.
+      try { body = JSON.parse(req.body); } catch { body = {}; }
     } else {
       body = await new Promise((resolve) => {
         let raw = '';

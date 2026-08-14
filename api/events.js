@@ -36,6 +36,7 @@ import { scheduleNudgeSequence } from '../lib/nudge-sms.js';
 import { sendPushToClient, sendPushToAdmins } from '../lib/push.js';
 import { toE164 } from '../lib/phone.js';
 import { findOrUpsertLead } from '../lib/lead-dedupe.js';
+import { handlePreflight } from '../lib/public-cors.js';
 
 // Map known client website hostnames to client slugs.
 const DOMAIN_TO_SLUG = {
@@ -481,11 +482,16 @@ async function handleVapi(req, res) {
 // Called by embed/track.js when a form is submitted on a client website.
 // No signature required — the slug + secret in the body is the auth.
 async function handleLead(req, res) {
-  // CORS — the beacon fires from the client's own domain
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GoElev8-Secret');
-  if (req.method === 'OPTIONS') return res.status(204).end();
+  // CORS — the beacon fires from the client's own domain.
+  //
+  // Reflects the caller's Origin rather than sending '*' (fixed
+  // 2026-08-14). The wildcard is illegal on a credentialed request, and
+  // at least one tenant site posts its forms with credentials:'include',
+  // so www.theflexfacility.com's lead capture was being dropped by the
+  // browser with "Access-Control-Allow-Origin must not be the wildcard
+  // '*'". That caller lives in the tenant repo, so the fix has to be on
+  // this side. See lib/public-cors.js for why reflecting is safe here.
+  if (handlePreflight(req, res, { headers: 'Content-Type, X-GoElev8-Secret' })) return;
 
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST, OPTIONS');
