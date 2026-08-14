@@ -5,6 +5,12 @@ import { sendPushToClient, sendPushToAdmins } from '../../lib/push.js';
 import { ingestExternalMerchOrder } from '../../lib/merch-ingest.js';
 import { notifyExperienceConfirmed } from '../../lib/experience-notify.js';
 import { writeBookingToGoogleCalendar, deleteBookingFromGoogleCalendar } from '../../lib/gcal-bookings.js';
+import {
+  confirmEventReservation,
+  ingestLegacyEventSession,
+  EVENT_SOURCE_MARKER
+} from '../../lib/event-ingest.js';
+import { notifyEventReservationConfirmed } from '../../lib/event-notify.js';
 
 // Disable Vercel body parsing — Stripe needs the raw body for signature verification
 export const config = { api: { bodyParser: false } };
@@ -95,6 +101,66 @@ export default async function handler(req, res) {
             console.error('[webhook] experience_deposit ingest failed:', e?.message);
           }
           break;
+        }
+
+        // Portal-managed event/seat reservation (api/external/
+        // event-reservations.js). A pending row already exists; promote
+        // it and text the attendee their receipt link. The update inside
+        // confirmEventReservation is constrained to rows that aren't
+        // already confirmed and reports whether it actually changed
+        // anything, so a Stripe redelivery neither writes a second row
+        // nor fires a second confirmation.
+        if (session.metadata?.source === EVENT_SOURCE_MARKER) {
+          try {
+            const r = await confirmEventReservation({ session, connectAccount: event.account });
+            if (r.ok && !r.idempotent && r.reservation_id) {
+              notifyEventReservationConfirmed({ reservationId: r.reservation_id })
+                .catch(e => console.error('[webhook] event notify failed:', e?.message));
+            }
+          } catch (e) {
+            console.error('[webhook] event_reservation ingest failed:', e?.message);
+          }
+          break;
+        }
+
+        // Legacy path — theflexfacility.com's own bootcamp checkout. Those
+        // are destination charges created with a restricted key on OUR
+        // platform account, so they arrive here as ordinary platform
+        // events (no event.account). Mirroring them is what makes today's
+        // live signups visible in the portal before the tenant site is
+        // migrated. Deliberately silent: the marketing site already
+        // emailed and texted these buyers.
+        //
+        // Runs only when nothing above claimed the session, and bails
+        // harmlessly on anything that isn't destined for a connected
+        // tenant with a matching event.
+        //
+        // The metadata exclusions matter for two reasons. Cheap one: this
+        // branch costs a Stripe round-trip to read the PaymentIntent's
+        // transfer_data, and credit-pack / onboarding sessions would pay
+        // that cost on every purchase only to bail. Real one: those flows
+        // are handled BELOW this point, and a `break` here would skip
+        // them. Today they're safe because they carry no transfer_data,
+        // but that's an accident of their shape, not a guarantee —
+        // naming them explicitly means a future session that happens to
+        // have both can't silently stop granting credits.
+        const claimedByOtherFlow = !!(session.metadata?.pack
+          || session.metadata?.flow
+          || session.metadata?.client
+          || session.metadata?.client_id);
+        if (!event.account && session.payment_status === 'paid' && !claimedByOtherFlow) {
+          try {
+            const r = await ingestLegacyEventSession({ session });
+            if (r.ok && !r.idempotent) {
+              console.log('[webhook] mirrored legacy event seat:', r.reservation_id,
+                r.amount_mismatch ? '(amount mismatch — verify pricing)' : '');
+              break;
+            }
+            if (r.ok) break;   // already mirrored
+          } catch (e) {
+            console.error('[webhook] legacy event ingest failed:', e?.message);
+          }
+          // Not an event seat — fall through to the handlers below.
         }
 
         const clientId = session.metadata?.client_id;
@@ -386,6 +452,17 @@ export default async function handler(req, res) {
             console.error('[webhook] experience_deposit release failed:', e?.message);
           }
         }
+        // Event seat checkout abandoned or failed — hand the held seat
+        // back so somebody else can buy it. release_event_seats only
+        // touches rows still 'pending', so a late expiry event can't
+        // claw back a seat that got paid for in the meantime.
+        if (session?.metadata?.source === EVENT_SOURCE_MARKER) {
+          try {
+            await supabaseAdmin.rpc('release_event_seats', { p_stripe_session_id: session.id });
+          } catch (e) {
+            console.error('[webhook] event seat release failed:', e?.message);
+          }
+        }
         break;
       }
       case 'charge.refunded': {
@@ -409,6 +486,28 @@ export default async function handler(req, res) {
             }
           } catch (e) {
             console.error('[webhook] experience_deposit refund flip failed:', e?.message);
+          }
+          // A refunded seat frees up capacity again. Constrained to rows
+          // not already refunded so a redelivered charge.refunded can't
+          // decrement seats_reserved twice.
+          try {
+            const { data: seat } = await supabaseAdmin.from('event_reservations')
+              .update({ status: 'refunded', refunded_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+              .eq('stripe_payment_intent', pi)
+              .neq('status', 'refunded')
+              .select('id, event_id, quantity')
+              .maybeSingle();
+            if (seat) {
+              const { data: ev } = await supabaseAdmin.from('tenant_events')
+                .select('seats_reserved').eq('id', seat.event_id).maybeSingle();
+              if (ev) {
+                await supabaseAdmin.from('tenant_events')
+                  .update({ seats_reserved: Math.max(0, (ev.seats_reserved || 0) - (seat.quantity || 1)) })
+                  .eq('id', seat.event_id);
+              }
+            }
+          } catch (e) {
+            console.error('[webhook] event seat refund flip failed:', e?.message);
           }
         }
         break;

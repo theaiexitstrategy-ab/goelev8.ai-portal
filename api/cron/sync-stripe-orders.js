@@ -21,6 +21,7 @@
 
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { backfillExternalMerchOrders } from '../../lib/merch-ingest.js';
+import { backfillLegacyEventSessions } from '../../lib/event-ingest.js';
 
 // How far back each cron tick scans on each tenant's connected
 // account. 24 hours is roomy — even if a tick fails or a deploy is
@@ -82,5 +83,34 @@ export default async function handler(req, res) {
   if (totals.ingested > 0) {
     console.log(`[sync-stripe-orders] tick: ${totals.ingested} new orders across ${totals.tenants} tenants`);
   }
-  return res.status(200).json({ totals, results });
+
+  // ── Phase 2: event seats sold by tenant marketing sites ───────────
+  // theflexfacility.com/bootcamp creates DESTINATION charges using a
+  // restricted key on the GoElev8 platform account, so those Checkout
+  // Sessions sit on OUR account — a single platform-scoped scan finds
+  // them all, no per-tenant loop and nothing to deploy on the tenant
+  // side. Folded into this cron rather than a sixth Vercel cron entry
+  // since it's the same job: reconcile Stripe into the portal on a
+  // webhook-independent path.
+  //
+  // 24h lookback matches phase 1. The one-time historical import uses
+  // the same helper with a wider window — see
+  // scripts/backfill-bootcamp-signups.mjs.
+  let events = null;
+  try {
+    events = await backfillLegacyEventSessions({
+      hoursBack:   LOOKBACK_HOURS,
+      maxSessions: 100
+    });
+    if (events.ingested > 0 || events.errors?.length) {
+      console.log('[sync-stripe-orders] event seats',
+        `ingested=${events.ingested} idempotent=${events.idempotent} scanned=${events.scanned}`
+        + (events.mismatched ? ` mismatched=${events.mismatched}` : ''));
+    }
+  } catch (e) {
+    console.error('[sync-stripe-orders] event seat scan crashed:', e?.message);
+    events = { error: e?.message || String(e) };
+  }
+
+  return res.status(200).json({ totals, results, events });
 }
