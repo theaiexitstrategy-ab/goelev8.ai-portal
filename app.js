@@ -13396,6 +13396,28 @@ function kbSubTabs(bodyHost, subs, initialKey) {
   return bar;
 }
 
+// Overview + Leads, for tenants using the GENERIC CRM views. Same shape
+// as viewKbDashboardHub below, but wired to viewOverview / viewLeads
+// instead of the Konquered Balance-specific variants — KB's funnel has
+// its own data model, everyone else shares the standard one.
+//
+// Used by flex-facility so the sidebar has room for the Events tab
+// without growing: overview + leads collapse into one entry, exactly the
+// trade KB made when its sidebar hit 11.
+//
+// (kbSubTabs is tenant-agnostic despite the name — it just renders a
+// sub-tab bar and swaps the child view.)
+async function viewDashboardHub() {
+  const wrap = el('div', {});
+  const body = el('div', {});
+  const bar = kbSubTabs(body, [
+    { key: 'overview', label: '📊 Overview', view: viewOverview },
+    { key: 'leads',    label: '👥 Leads',    view: viewLeads }
+  ]);
+  wrap.append(bar, body);
+  return wrap;
+}
+
 // Overview + Leads
 async function viewKbDashboardHub() {
   const wrap = el('div', {});
@@ -14868,6 +14890,9 @@ async function render() {
         if (state.client?.slug === 'freeflow-fitness-stl') { view = await viewFreeFlowOverview(); break; }
         // KB: overview tab is a hub containing Overview + Leads sub-tabs.
         if (state.client?.slug === 'konquered-balance')    { view = await viewKbDashboardHub();   break; }
+        // Flex: same collapse, generic CRM views — frees a sidebar slot
+        // for Events. Migration 0043 drops 'leads' from its portal_tabs.
+        if (state.client?.slug === 'flex-facility')        { view = await viewDashboardHub();     break; }
         view = await viewOverview();
         break;
       case 'activity':  view = (state.isAdmin && state.user?.email === 'ab@goelev8.ai') ? await viewActivity() : await viewOverview(); break;
