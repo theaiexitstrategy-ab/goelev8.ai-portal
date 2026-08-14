@@ -21,7 +21,9 @@
 
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { backfillExternalMerchOrders } from '../../lib/merch-ingest.js';
-import { backfillLegacyEventSessions, describeLegacyEventSessions } from '../../lib/event-ingest.js';
+import {
+  backfillLegacyEventSessions, describeLegacyEventSessions, traceConnectedAccount
+} from '../../lib/event-ingest.js';
 
 // How far back each cron tick scans on each tenant's connected
 // account. 24 hours is roomy — even if a tick fails or a deploy is
@@ -46,6 +48,25 @@ export default async function handler(req, res) {
   // describeLegacyEventSessions). Same CRON_SECRET gate as the sync itself.
   {
     const url = new URL(req.url, `http://${req.headers.host}`);
+
+    // ?trace=<acct_...>[&transfer=<tr_...>] — follow a destination-charge
+    // transfer into the connected account. Answers "the charge says it
+    // transferred but neither side sees the money" with facts: whose
+    // account it actually is, whether payouts are enabled, and whether
+    // the funds are available or merely pending. Read-only.
+    const traceAcct = url.searchParams.get('trace');
+    if (traceAcct) {
+      try {
+        const out = await traceConnectedAccount({
+          accountId: traceAcct,
+          transferId: url.searchParams.get('transfer') || null
+        });
+        return res.status(200).json(out);
+      } catch (e) {
+        return res.status(500).json({ error: e?.message || 'trace_failed' });
+      }
+    }
+
     if (url.searchParams.get('describe') === '1') {
       const requested = parseInt(url.searchParams.get('hours') || '', 10);
       const hoursBack = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 2160) : 720;
