@@ -96,12 +96,25 @@ export default async function handler(req, res) {
   // 24h lookback matches phase 1. The one-time historical import uses
   // the same helper with a wider window — see
   // scripts/backfill-bootcamp-signups.mjs.
+  // ?hours=N widens the scan for a ONE-TIME historical import. The
+  // scheduled tick deliberately stays at 24h — scanning 30 days of
+  // sessions every 5 minutes would be pure waste — but that default
+  // means seats sold before this shipped are outside the window and
+  // never get picked up. Pass ?hours=720 once by hand to sweep them in;
+  // ingestion is idempotent on stripe_session_id, so a wide re-run only
+  // adds what's missing.
   let events = null;
   try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const requested = parseInt(url.searchParams.get('hours') || '', 10);
+    const hoursBack = Number.isFinite(requested)
+      ? Math.min(Math.max(requested, 1), 2160)   // clamp to 1h..90d
+      : LOOKBACK_HOURS;
     events = await backfillLegacyEventSessions({
-      hoursBack:   LOOKBACK_HOURS,
+      hoursBack,
       maxSessions: 100
     });
+    events.hours_back = hoursBack;
     if (events.ingested > 0 || events.errors?.length) {
       console.log('[sync-stripe-orders] event seats',
         `ingested=${events.ingested} idempotent=${events.idempotent} scanned=${events.scanned}`
