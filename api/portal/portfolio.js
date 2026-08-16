@@ -5,7 +5,7 @@
 // master admin OR the tenant owner/admin (via client_users).
 //
 // Routes:
-//   GET    /api/portal/portfolio                    → { videos, cap: 5 }
+//   GET    /api/portal/portfolio                    → { videos }
 //     Returns ALL rows (including inactive) so the editor can show
 //     dimmed rows too. Admin can pass ?client=<slug|id>.
 //
@@ -17,10 +17,12 @@
 // writing — HEAD-checks both stream.mux.com and image.mux.com so a
 // signed / bogus / renamed ID can't quietly reach a live page.
 //
-// 5-active-video cap is enforced by the DB trigger
-// enforce_portfolio_5_video_cap(). This endpoint just translates the
-// trigger's 'portfolio_5_video_cap_exceeded' EXCEPTION into a 409
-// with the same error string.
+// There is no cap on how many videos a tenant can keep. The portfolio is
+// a repository — a library they add to over time — so the old 5-active
+// limit (0036's enforce_portfolio_5_video_cap trigger) was dropped in
+// migration 0045 along with its 409 translation here and the counter in
+// app.js. All three had to go together; leaving any one would keep
+// refusing the sixth video.
 
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { requireUser } from '../../lib/auth.js';
@@ -67,14 +69,9 @@ function slugifyKey(s) {
     .slice(0, 60) || 'video';
 }
 
-// Translate a Postgres error into an HTTP status. Cap violations come
-// from the trigger as EXCEPTION with message
-// 'portfolio_5_video_cap_exceeded'; the client sees a 409 with the
-// same error string.
+// Translate a Postgres error into an HTTP status.
 function statusForPgError(err) {
   const msg = String(err?.message || '');
-  if (/portfolio_5_video_cap_exceeded/.test(msg)) return { status: 409, error: 'portfolio_5_video_cap_exceeded',
-    message: 'You already have 5 active videos. Remove or deactivate one before adding another.' };
   if (/duplicate key value.*client_portfolio_videos_client_key_uniq/i.test(msg)) return { status: 409, error: 'duplicate_video_key',
     message: 'A video with that key already exists on this tenant. Pick a different title.' };
   return { status: 500, error: 'db_error', message: msg };
@@ -93,11 +90,11 @@ async function handleList(req, res) {
     .order('created_at', { ascending: true });
   if (error) {
     if (/relation .*client_portfolio_videos.* does not exist/i.test(error.message || '')) {
-      return res.status(200).json({ videos: [], cap: 5, setup_required: true });
+      return res.status(200).json({ videos: [], setup_required: true });
     }
     return res.status(500).json({ error: error.message });
   }
-  return res.status(200).json({ videos: data || [], cap: 5 });
+  return res.status(200).json({ videos: data || [] });
 }
 
 async function handleUpsert(req, res) {

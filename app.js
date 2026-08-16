@@ -82,6 +82,31 @@ async function api(path, opts = {}, _retried = false) {
   return data;
 }
 
+// Human-readable text for an error thrown by api().
+//
+// api() throws Error(data.error), so e.message is only the short machine
+// code — 'validation_failed', 'mux_upload_create_failed'. Endpoints
+// already return the actual reason alongside it as `message` or a
+// `details` array, and call sites were showing just the code, which is
+// how several bugs became undiagnosable from the UI: the operator sees
+// "validation_failed" with no hint that message 3 is 174 characters, or
+// "mux_upload_create_failed" with no hint the API keys are missing.
+//
+// Use this anywhere an api() error is shown to a person.
+function apiErrText(e) {
+  const code = e?.message || 'unknown error';
+  const d = e?.data;
+  if (!d) return code;
+  // details[] — per-item validation failures (nudges, imports)
+  if (Array.isArray(d.details) && d.details.length) {
+    return code + ': ' + d.details.join('; ');
+  }
+  if (typeof d.details === 'string' && d.details) return code + ': ' + d.details;
+  // message — a single human explanation from the endpoint/provider
+  if (d.message && d.message !== code) return code + ' — ' + d.message;
+  return code;
+}
+
 // Refresh the Supabase JWT using the stored refresh token. Returns true
 // on success (state.token is updated), false if the refresh failed.
 async function refreshSession() {
@@ -6649,7 +6674,16 @@ function openContactImportModal(contactsBody) {
     content.innerHTML = '';
     footer.innerHTML = '';
 
-    const fileInput = el('input', { type: 'file', accept: '.csv,.xlsx,.tsv,.txt', style: 'display:none' });
+    // No `accept` filter on purpose. It used to be '.csv,.xlsx,.tsv,.txt',
+    // which caused two problems at once:
+    //   - Android's file picker matches on MIME type, and an exported CSV
+    //     often arrives as application/octet-stream or
+    //     text/comma-separated-values. An extension-only accept list hides
+    //     those files, so the operator literally cannot select his CSV.
+    //   - It advertised .xlsx, which handleFile then refuses.
+    // Accepting anything and validating after selection is the behavior
+    // that actually works across devices.
+    const fileInput = el('input', { type: 'file', style: 'display:none' });
     const pasteArea = el('textarea', { rows: '5', placeholder: 'Or paste rows here (tab or comma separated, first row = headers)...',
       style: 'width:100%;padding:10px;background:var(--bg-1,#0d1117);border:1px solid var(--border,#2a3a5c);border-radius:8px;color:var(--text,#e0e0e0);font-size:0.85rem;resize:vertical;margin-top:12px' });
     if (lastInputText) pasteArea.value = lastInputText;
@@ -6682,15 +6716,29 @@ function openContactImportModal(contactsBody) {
     const dropzone = el('div', { class: 'import-dropzone' },
       el('div', { style: 'font-size:2rem;margin-bottom:8px' }, '\uD83D\uDCC1'),
       el('div', {}, 'Drag & drop a file here'),
-      el('div', { class: 'muted', style: 'font-size:0.8rem;margin:4px 0 12px' }, '.csv, .xlsx, .tsv, .txt'),
+      el('div', { class: 'muted', style: 'font-size:0.8rem;margin:4px 0 12px' },
+        '.csv, .tsv, .txt — for Excel, copy the cells and paste below'),
       el('button', { class: 'btn sm', onclick: () => fileInput.click() }, 'Browse Files'),
       fileInput
     );
 
     function handleFile(file) {
       statusMsg.textContent = `Reading ${file.name}...`;
-      if (file.name.endsWith('.xlsx')) {
-        statusMsg.textContent = 'XLSX files: please save as CSV first, then re-upload.';
+      // .xlsx is a zip archive, not text — FileReader would hand us
+      // binary garbage. Parsing it needs a spreadsheet library we don't
+      // ship, so say so precisely and point at the two routes that work
+      // right now. The fastest is the paste box: copying cells out of
+      // Excel puts TAB-SEPARATED text on the clipboard, which the parser
+      // below already handles.
+      if (/\.(xlsx|xls|numbers|ods)$/i.test(file.name)) {
+        statusMsg.innerHTML = '';
+        statusMsg.append(
+          el('strong', {}, 'Spreadsheet files can’t be read directly.'),
+          el('div', { style: 'margin-top:4px' },
+            'Fastest: open it, select the cells, copy, and paste into the box below — that works as-is.'),
+          el('div', { style: 'margin-top:2px' },
+            'Or: File → Save As → CSV, then drop the .csv here.')
+        );
         statusMsg.style.color = 'var(--warning,#f0ad4e)';
         return;
       }
@@ -7575,7 +7623,14 @@ async function viewNudges() {
     try {
       await api('/api/portal/nudges', { method: 'PUT', body: { nudges: payload } });
       toast('Nudges saved');
-    } catch (e) { toast(e.message, true); }
+    } catch (e) {
+      // The endpoint returns a details[] naming the exact message and
+      // reason (over 160 chars, blocked A2P phrase, off-domain URL).
+      // Showing only e.message rendered every rejection as the word
+      // "validation_failed", which reads to the operator as "saving is
+      // broken" rather than "message 3 is too long".
+      toast(apiErrText(e), true);
+    }
     finally { saveBtn.disabled = false; saveBtn.textContent = 'Save All Nudges'; }
   } }, 'Save All Nudges');
   wrap.appendChild(el('div', { style: 'text-align:right' }, saveBtn));
@@ -13463,7 +13518,7 @@ async function viewPortfolio() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Portfolio'),
-    el('div', { class: 'muted' }, 'Video reel shown on your public /portfolio page — up to 5 active videos')));
+    el('div', { class: 'muted' }, 'Video library shown on your public /portfolio page — every active video appears')));
 
   const clientQS = state.isAdmin ? '?client=' + encodeURIComponent(state.client?.slug || 'konquered-balance') : '';
   const clientParam = state.isAdmin ? 'client=' + encodeURIComponent(state.client?.slug || 'konquered-balance') : '';
@@ -13486,34 +13541,38 @@ async function viewPortfolio() {
       listHost.replaceChildren(el('p', { class: 'err' }, 'Failed to load: ' + (e.message || 'unknown')));
       return;
     }
-    render(payload?.videos || [], payload?.cap ?? 5);
+    render(payload?.videos || []);
   }
 
-  function render(videos, cap) {
+  // No cap — the portfolio is a repository the operator keeps adding to.
+  // The 5-video limit was enforced in three places (DB trigger, the
+  // endpoint's 409, and the disabled button below); all three were
+  // removed together in migration 0045, because leaving this one would
+  // still refuse to open the upload form at five.
+  function render(videos) {
     listHost.innerHTML = '';
     const activeCount = videos.filter(v => v.is_active).length;
-    const canAdd = activeCount < cap;
 
     listHost.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px' },
       el('div', {},
-        el('h3', { style: 'margin:0' }, `${activeCount} / ${cap} active`),
+        el('h3', { style: 'margin:0' },
+          `${activeCount} active` + (videos.length > activeCount ? ` · ${videos.length} total` : '')),
         el('div', { class: 'muted', style: 'font-size:0.75rem;margin-top:2px' },
           videos.length > activeCount ? `${videos.length - activeCount} inactive` : 'Sorted by drag-and-drop order — top plays first')),
       el('div', { style: 'display:flex;gap:8px' },
         el('button', {
-          class: 'btn primary', style: 'font-size:0.82rem' + (canAdd ? '' : ';opacity:0.5;cursor:not-allowed'),
-          title: canAdd ? '' : `Cap reached (${cap}). Delete or deactivate a video first.`,
-          onclick: () => canAdd ? showUploadForm() : toast('5-video cap reached — delete or deactivate one first', true)
+          class: 'btn primary', style: 'font-size:0.82rem',
+          onclick: () => showUploadForm()
         }, '📤 Upload video'),
         state.isAdmin ? el('button', {
-          class: 'btn', style: 'font-size:0.82rem' + (canAdd ? '' : ';opacity:0.5;cursor:not-allowed'),
+          class: 'btn', style: 'font-size:0.82rem',
           title: 'Admin: paste an existing Mux Playback ID',
-          onclick: () => canAdd ? showPasteForm(null) : toast('5-video cap reached', true)
+          onclick: () => showPasteForm(null)
         }, 'paste ID') : null)));
 
     if (!videos.length) {
       listHost.appendChild(el('p', { class: 'muted' },
-        'No videos yet. Paste a Mux Playback ID to add your first — up to 5 will appear on your public /portfolio page.'));
+        'No videos yet. Upload one, or paste a Mux Playback ID to add your first — every active video appears on your public /portfolio page.'));
       return;
     }
 
@@ -13714,25 +13773,61 @@ async function viewPortfolio() {
 
       // 2. PUT the file directly to Mux with progress reporting
       statusText.textContent = 'Uploading… don\'t close this window.';
-      const putOk = await new Promise((resolve) => {
+      // The PUT goes straight from the phone to Mux's signed upload URL.
+      // Previously every failure mode collapsed into one message about a
+      // "stable connection", which is misleading: a CORS rejection, an
+      // expired URL and a dropped connection all look identical to the
+      // operator, and only one of them is actually about the network.
+      // That's why "works on iPhone, fails on Android" was unactionable.
+      // Capture what really happened.
+      const putResult = await new Promise((resolve) => {
         const xhr = new XMLHttpRequest();
         xhr.open('PUT', uploadUrl, true);
+        // Large phone video over mobile data needs a generous ceiling;
+        // the default (no timeout) can also hang forever on a dead link.
+        xhr.timeout = 30 * 60 * 1000;
+        let sawProgress = false;
         xhr.upload.onprogress = (ev) => {
           if (!ev.lengthComputable) return;
+          sawProgress = true;
           const pct = Math.round((ev.loaded / ev.total) * 100);
           progressBar.firstChild.style.width = pct + '%';
           progressText.textContent = pct + '% · ' +
             (ev.loaded / 1024 / 1024).toFixed(1) + ' of ' +
             (ev.total  / 1024 / 1024).toFixed(1) + ' MB';
         };
-        xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
-        xhr.onerror = () => resolve(false);
-        xhr.ontimeout = () => resolve(false);
+        xhr.onload = () => resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          kind: 'response', status: xhr.status,
+          body: String(xhr.responseText || '').slice(0, 300), sawProgress
+        });
+        // onerror with zero bytes sent is the signature of a blocked
+        // preflight, not a flaky connection — the browser never got to
+        // send the body.
+        xhr.onerror   = () => resolve({ ok: false, kind: 'network', status: xhr.status, sawProgress });
+        xhr.ontimeout = () => resolve({ ok: false, kind: 'timeout', status: 0, sawProgress });
+        xhr.onabort   = () => resolve({ ok: false, kind: 'abort',   status: 0, sawProgress });
         xhr.send(file);
       });
-      if (!putOk) {
-        errBox.textContent = 'Upload to Mux failed. Try again on a stable connection.';
+      if (!putResult.ok) {
+        let why;
+        if (putResult.kind === 'response') {
+          why = `Mux rejected the upload (HTTP ${putResult.status})`
+              + (putResult.body ? ' — ' + putResult.body : '');
+        } else if (putResult.kind === 'timeout') {
+          why = 'The upload timed out. A large video on mobile data can take a while — try Wi-Fi.';
+        } else if (!putResult.sawProgress) {
+          // No bytes ever left the device.
+          why = 'The browser blocked the upload before any data was sent. '
+              + 'This is usually a CORS/origin mismatch on the upload URL rather than your connection. '
+              + `Origin: ${window.location.origin}`;
+        } else {
+          why = 'The connection dropped part-way through. Try again on a stable network.';
+        }
+        errBox.textContent = 'Upload to Mux failed — ' + why;
         errBox.style.display = 'block';
+        console.error('[portfolio] mux PUT failed:', putResult,
+          'file:', file?.name, file?.type, file?.size);
         uploadBtn.disabled = false; cancelBtn.disabled = false;
         fileIn.disabled = false; titleIn.disabled = false; descIn.disabled = false;
         return;
