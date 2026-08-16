@@ -1,0 +1,21 @@
+-- Remove the 5-active-video cap on client_portfolio_videos.
+--
+-- 0036 added it as a BEFORE INSERT/UPDATE trigger back when the portfolio
+-- was a short highlight reel on a tenant's public page — five slots, drag
+-- to reorder, top plays first. The feature has since become a repository:
+-- a library/collection an operator keeps adding to over time, where the
+-- whole point is that nothing gets evicted to make room.
+--
+-- The cap lived in three places and all three have to go, or the symptom
+-- just moves:
+--   1. this trigger (the real enforcement — a hard EXCEPTION on insert)
+--   2. api/portal/portfolio.js — the 409 translation and `cap: 5`
+--   3. app.js — the "n / 5 active" header and the disabled Upload button
+--
+-- Dropping the trigger alone would leave the UI refusing to open the
+-- upload form at five, which would look identical to the operator.
+--
+-- Nothing else references enforce_portfolio_5_video_cap(), so the
+-- function goes with the trigger rather than lingering as dead code.
+drop trigger if exists client_portfolio_videos_cap on public.client_portfolio_videos;
+drop function if exists public.enforce_portfolio_5_video_cap();
