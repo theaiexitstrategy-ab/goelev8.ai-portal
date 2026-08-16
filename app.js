@@ -6631,6 +6631,15 @@ function openContactImportModal(contactsBody) {
   }
 
   function parseInput(text) {
+    // Fail loudly if the parser didn't load. This used to throw a bare
+    // ReferenceError from inside a FileReader onload handler, where
+    // nothing catches it — the screen stayed on "Reading <file>..."
+    // forever and the operator had no way to tell that a script hadn't
+    // loaded. PapaParse is vendored now, so this should be unreachable;
+    // it stays as a guard because silent is the worst failure mode here.
+    if (typeof Papa === 'undefined') {
+      throw new Error('The CSV parser failed to load. Hard-refresh the page (Ctrl+Shift+R / pull down to refresh) and try again.');
+    }
     lastInputText = text;
     const config = { skipEmptyLines: true, dynamicTyping: false };
     if (delimiterOverride) config.delimiter = delimiterOverride;
@@ -6743,8 +6752,18 @@ function openContactImportModal(contactsBody) {
         return;
       }
       const reader = new FileReader();
+      // Anything thrown in here is otherwise swallowed by the browser —
+      // FileReader callbacks have no caller to propagate to, which is how
+      // a parse failure turned into a screen frozen on "Reading ...".
       reader.onload = (e) => {
-        parseInput(e.target.result);
+        try {
+          parseInput(e.target.result);
+        } catch (err) {
+          statusMsg.textContent = err?.message || 'Could not read that file.';
+          statusMsg.style.color = 'var(--danger,#e74c3c)';
+          console.error('[import] parse failed:', err, file?.name, file?.type, file?.size);
+          return;
+        }
         if (!headers.length || !parsedRows.length) {
           statusMsg.textContent = 'Could not detect columns. Check your file format.';
           statusMsg.style.color = 'var(--danger,#e74c3c)';
@@ -6753,6 +6772,10 @@ function openContactImportModal(contactsBody) {
         statusMsg.textContent = `Detected ${headers.length} columns, ${parsedRows.length} rows.`;
         statusMsg.style.color = 'var(--success,#27ae60)';
         step = 2; renderCurrentStep();
+      };
+      reader.onerror = () => {
+        statusMsg.textContent = 'Could not read that file from disk. Try re-downloading the export.';
+        statusMsg.style.color = 'var(--danger,#e74c3c)';
       };
       reader.readAsText(file);
     }

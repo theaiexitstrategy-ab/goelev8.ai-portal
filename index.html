@@ -65,7 +65,16 @@
   }
 })();
 </script>
-<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-<script type="module" src="/app.js?v=136"></script>
+<!-- PapaParse, served from our own origin rather than a CDN.
+     It used to load from cdn.jsdelivr.net, which made contact import fail
+     silently for anyone whose browser couldn't reach it — ad blockers,
+     data-saver modes, restrictive DNS, or the PWA running offline. When
+     the script didn't load, `Papa` was undefined, parseInput() threw
+     inside a FileReader onload handler (uncaught, so nothing surfaced),
+     and the import screen just sat on "Reading <file>..." forever.
+     Vendored locally so it can't be blocked and the service worker can
+     cache it. -->
+<script src="/vendor/papaparse.min.js"></script>
+<script type="module" src="/app.js?v=137"></script>
 </body>
 </html>
