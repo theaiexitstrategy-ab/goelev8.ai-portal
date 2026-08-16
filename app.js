@@ -13696,7 +13696,15 @@ async function viewPortfolio() {
         videoRow = r.video;
         uploadUrl = r.upload_url;
       } catch (e) {
-        errBox.textContent = 'Could not start upload: ' + (e.message || 'unknown');
+        // api() throws Error(data.error), so e.message is only the short
+        // code ('mux_upload_create_failed'). The server also sends the
+        // underlying provider message in data.message — show it, because
+        // the code alone tells the operator nothing actionable and can't
+        // distinguish "Mux keys missing" from "Mux rejected the request".
+        const detail = e.data?.message && e.data.message !== e.message
+          ? ' — ' + e.data.message
+          : '';
+        errBox.textContent = 'Could not start upload: ' + (e.message || 'unknown') + detail;
         errBox.style.display = 'block';
         uploadBtn.disabled = false; cancelBtn.disabled = false;
         fileIn.disabled = false; titleIn.disabled = false; descIn.disabled = false;
