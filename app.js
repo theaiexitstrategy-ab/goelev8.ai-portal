@@ -8186,9 +8186,13 @@ function renderGoogleCalendarPanel() {
             window.location.href = r.url;   // full-page redirect
           } catch (err) {
             e.target.disabled = false; e.target.textContent = 'Connect Google Calendar';
-            let msg = err.message || 'unknown';
-            try { const p = JSON.parse(msg); if (p?.message) msg = p.message; } catch {}
-            toast('Connect failed: ' + msg, true);
+            // gcal_config_missing carries the specific variable name from
+            // lib/gcal.js requireEnv() ("env GOOGLE_REDIRECT_URI not set").
+            // The JSON.parse below only ever matched a message that
+            // happened to be JSON, so in practice the operator saw the
+            // bare code and had no idea WHICH of the three vars was
+            // missing. apiErrText appends the endpoint's message.
+            toast('Connect failed: ' + apiErrText(err), true);
           }
         }
       }, 'Connect Google Calendar')));
