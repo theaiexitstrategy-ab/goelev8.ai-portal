@@ -266,7 +266,16 @@ async function handleStartUpload(req, res) {
     corsOrigin: req.headers.origin || undefined
   }); }
   catch (e) {
-    return res.status(500).json({ error: 'mux_upload_create_failed', message: e.message });
+    // Log server-side too. The response carries the message to the
+    // operator, but having it in the runtime logs means a failure can be
+    // diagnosed after the fact without asking them to reproduce it and
+    // read the screen back.
+    console.error('[portfolio] mux upload create failed:', e?.message, e?.body ? String(e.body).slice(0, 500) : '');
+    return res.status(500).json({
+      error: 'mux_upload_create_failed',
+      message: e.message,
+      mux_status: e.status || null
+    });
   }
 
   // Compute next sort_order (append at end).
