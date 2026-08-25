@@ -6703,6 +6703,47 @@ function openContactImportModal(contactsBody) {
     headers.forEach(h => { mappings[h] = guessMapping(h); });
   }
 
+  // Ingest an already-tabular source (a parsed .xlsx worksheet) through
+  // the same header-guess + mapping pipeline the CSV path uses, so a
+  // spreadsheet and its CSV export behave identically from step 2 on.
+  function applyRows(rows) {
+    const clean = (rows || []).filter(r => r.some(c => String(c == null ? '' : c).trim()));
+    if (!clean.length) { headers = []; parsedRows = []; return; }
+    const cell = (r, i) => String(r[i] == null ? '' : r[i]).trim();
+    const width = clean.reduce((m, r) => Math.max(m, r.length), 0);
+
+    // Guess from the ORIGINAL label, not the uniquified key. A sheet with
+    // two columns both called "Phone" becomes Phone / Phone_1, and
+    // "phone_1" doesn't resemble anything the guesser knows — so the
+    // second column would map to Skip and any contact whose number lived
+    // only there would be dropped for having no phone.
+    let labels;
+    if (hasHeaderRow) {
+      labels = Array.from({ length: width }, (_, i) => cell(clean[0], i) || ('Column ' + (i + 1)));
+      const seen = Object.create(null);
+      headers = labels.map(h => {
+        if (seen[h] == null) { seen[h] = 0; return h; }
+        seen[h] += 1;
+        return h + '_' + seen[h];
+      });
+      parsedRows = clean.slice(1).map(r => {
+        const o = {};
+        headers.forEach((h, i) => { o[h] = cell(r, i); });
+        return o;
+      });
+    } else {
+      headers = Array.from({ length: width }, (_, i) => 'Column ' + (i + 1));
+      labels = headers;
+      parsedRows = clean.map(r => {
+        const o = {};
+        headers.forEach((h, i) => { o[h] = cell(r, i); });
+        return o;
+      });
+    }
+    mappings = {};
+    headers.forEach((h, i) => { mappings[h] = guessMapping(labels[i]); });
+  }
+
   const content = el('div', {});
   const stepIndicator = el('div', { class: 'import-steps' });
   const footer = el('div', { class: 'import-footer' });
@@ -6766,27 +6807,70 @@ function openContactImportModal(contactsBody) {
       el('div', { style: 'font-size:2rem;margin-bottom:8px' }, '\uD83D\uDCC1'),
       el('div', {}, 'Drag & drop a file here'),
       el('div', { class: 'muted', style: 'font-size:0.8rem;margin:4px 0 12px' },
-        '.csv, .tsv, .txt — for Excel, copy the cells and paste below'),
+        'Excel (.xlsx), .csv, .tsv or .txt — or paste the rows below'),
       el('button', { class: 'btn sm', onclick: () => fileInput.click() }, 'Browse Files'),
       fileInput
     );
 
+    // Shared by the CSV and .xlsx paths so both report identically.
+    function afterParse() {
+      if (!headers.length || !parsedRows.length) {
+        statusMsg.textContent = 'Could not detect columns. Check your file format.';
+        statusMsg.style.color = 'var(--danger,#e74c3c)';
+        return;
+      }
+      statusMsg.textContent = `Detected ${headers.length} columns, ${parsedRows.length} rows.`;
+      statusMsg.style.color = 'var(--success,#27ae60)';
+      step = 2; renderCurrentStep();
+    }
+
     function handleFile(file) {
       statusMsg.textContent = `Reading ${file.name}...`;
-      // .xlsx is a zip archive, not text — FileReader would hand us
-      // binary garbage. Parsing it needs a spreadsheet library we don't
-      // ship, so say so precisely and point at the two routes that work
-      // right now. The fastest is the paste box: copying cells out of
-      // Excel puts TAB-SEPARATED text on the clipboard, which the parser
-      // below already handles.
-      if (/\.(xlsx|xls|numbers|ods)$/i.test(file.name)) {
+
+      // .xlsx is a ZIP of XML, not text — FileReader.readAsText would
+      // hand us binary garbage, so it gets its own reader. We used to
+      // refuse it outright and tell the operator to save as CSV, which
+      // is exactly the loop that stalled Konquered Balance: the CSV
+      // wouldn't attach from his file picker, and the Excel file he made
+      // instead was rejected for not being a CSV.
+      //
+      // .xls / .numbers / .ods are genuinely different formats, not ZIPs
+      // of the same XML, so they still get the convert-first message.
+      if (/\.xlsx$/i.test(file.name)) {
+        if (!window.XlsxLite) {
+          statusMsg.textContent = 'The spreadsheet reader failed to load. Hard-refresh the page (Ctrl+Shift+R / pull down to refresh) and try again.';
+          statusMsg.style.color = 'var(--danger,#e74c3c)';
+          return;
+        }
+        const xr = new FileReader();
+        xr.onload = async (e) => {
+          try {
+            const rows = await window.XlsxLite.parseXlsx(e.target.result);
+            applyRows(rows);
+          } catch (err) {
+            statusMsg.textContent = err?.message || 'Could not read that spreadsheet.';
+            statusMsg.style.color = 'var(--danger,#e74c3c)';
+            console.error('[import] xlsx parse failed:', err, file?.name, file?.size);
+            return;
+          }
+          afterParse();
+        };
+        xr.onerror = () => {
+          statusMsg.textContent = 'Could not read that file from disk. Try re-downloading the export.';
+          statusMsg.style.color = 'var(--danger,#e74c3c)';
+        };
+        xr.readAsArrayBuffer(file);
+        return;
+      }
+
+      if (/\.(xls|numbers|ods)$/i.test(file.name)) {
         statusMsg.innerHTML = '';
         statusMsg.append(
-          el('strong', {}, 'Spreadsheet files can’t be read directly.'),
+          el('strong', {}, 'That spreadsheet format can’t be read directly.'),
           el('div', { style: 'margin-top:4px' },
-            'Fastest: open it, select the cells, copy, and paste into the box below — that works as-is.'),
+            'Open it and re-save as .xlsx or .csv — both upload here as-is.'),
           el('div', { style: 'margin-top:2px' },
-            'Or: File → Save As → CSV, then drop the .csv here.')
+            'Or select the cells, copy, and paste into the box below.')
         );
         statusMsg.style.color = 'var(--warning,#f0ad4e)';
         return;
@@ -6804,14 +6888,7 @@ function openContactImportModal(contactsBody) {
           console.error('[import] parse failed:', err, file?.name, file?.type, file?.size);
           return;
         }
-        if (!headers.length || !parsedRows.length) {
-          statusMsg.textContent = 'Could not detect columns. Check your file format.';
-          statusMsg.style.color = 'var(--danger,#e74c3c)';
-          return;
-        }
-        statusMsg.textContent = `Detected ${headers.length} columns, ${parsedRows.length} rows.`;
-        statusMsg.style.color = 'var(--success,#27ae60)';
-        step = 2; renderCurrentStep();
+        afterParse();
       };
       reader.onerror = () => {
         statusMsg.textContent = 'Could not read that file from disk. Try re-downloading the export.';
