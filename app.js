@@ -13538,9 +13538,11 @@ async function viewKbAdminHub() {
 }
 
 // ─── Portfolio — Mux video reel editor (multi-tenant) ─────────────
-// Any tenant with 'portfolio' in portal_tabs sees this view. Cap of
-// 5 active videos is enforced by the DB trigger; the UI mirrors it
-// (Add button disabled at 5) but the server is authoritative.
+// Any tenant with 'portfolio' in portal_tabs sees this view. There is
+// no cap on how many videos a tenant keeps — the portfolio is a
+// repository they add to over time. The old 5-active limit (0036's
+// enforce_portfolio_5_video_cap trigger) was dropped in migration 0045
+// along with the endpoint's 409 and the disabled Upload button.
 async function viewPortfolio() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
@@ -13553,8 +13555,9 @@ async function viewPortfolio() {
   const info = el('div', { class: 'panel', style: 'padding:12px 14px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2)' },
     el('div', { style: 'font-size:0.82rem;line-height:1.5' },
       '🎬 ', el('strong', {}, 'How this works: '),
-      'Upload a video from your phone or laptop — record with your camera or pick from the roll. We handle encoding and posting to your public /portfolio page automatically. Cap: ',
-      el('strong', {}, '5 active videos'), '.'));
+      'Upload a video from your phone or laptop — record with your camera or pick from the roll. We handle encoding and posting to your public /portfolio page automatically. Upload ',
+      el('strong', {}, 'as many videos as you like'),
+      ' — there is no limit. Every active video appears on your public page, in the order below; switch one to inactive to hide it without deleting it.'));
   wrap.appendChild(info);
 
   const listHost = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading videos…'));
