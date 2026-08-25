@@ -14339,17 +14339,74 @@ async function viewAnalytics() {
 
   if (ga.configured === false) {
     cards.innerHTML = '';
+    const sub0 = wrap.querySelector('#ga-subtitle');
+    if (sub0) sub0.textContent = (ga.property_label || 'Platform-wide') + ' · not connected';
+
     const setupPanel = el('div', { class: 'panel' });
-    setupPanel.appendChild(el('h2', {}, '⚠️ Google Analytics Not Configured'));
-    setupPanel.appendChild(el('p', { class: 'muted' }, 'To pull live data into this dashboard, set the following environment variables in Vercel:'));
-    setupPanel.appendChild(el('div', { style: 'background:#0d1117;padding:14px;border-radius:8px;margin:12px 0;font-family:monospace;font-size:0.8rem;color:#94a3b8' },
-      el('div', {}, 'GA4_PROPERTY_ID=123456789'),
-      el('div', { style: 'margin-top:6px' }, 'GA4_SERVICE_ACCOUNT_JSON={"type":"service_account",...}')
-    ));
-    setupPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem' },
-      el('strong', {}, 'Setup steps: '),
-      '1) Google Cloud Console → enable Google Analytics Data API · 2) Create a service account & download JSON key · 3) GA4 Admin → Property Access Management → add the service account email as a Viewer · 4) Paste credentials into Vercel env vars · 5) Redeploy'
-    ));
+    setupPanel.appendChild(el('h2', {}, '⚠️ Google Analytics Not Connected'));
+
+    const codeBlock = (...lines) => el('div', { style: 'background:#0d1117;padding:14px;border-radius:8px;margin:12px 0;font-family:monospace;font-size:0.8rem;color:#94a3b8;word-break:break-all' },
+      ...lines.map((l, i) => el('div', i ? { style: 'margin-top:6px' } : {}, l)));
+
+    // A tenant's property ID lives in clients.ga4_property_id, NOT in
+    // the environment — so never show a tenant the GA4_PROPERTY_ID env
+    // var as the fix. Setting it changes nothing for them, which is
+    // exactly the dead end this branch exists to avoid.
+    if (ga.missing_property && ga.scope === 'tenant') {
+      setupPanel.appendChild(el('p', { class: 'muted', style: 'line-height:1.55' },
+        'No GA4 property is saved for ', el('strong', {}, ga.property_label || 'this tenant'), '. ',
+        'Find the numeric ', el('strong', {}, 'Property ID'),
+        ' in Google Analytics → ⚙ Admin → Property Settings (all digits, e.g. 536786842 — not the ',
+        el('code', {}, 'G-XXXXXXX'), ' Measurement ID).'));
+      setupPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;line-height:1.5' },
+        'This is saved per tenant in the portal. The ', el('code', {}, 'GA4_PROPERTY_ID'),
+        ' Vercel env var only backs the platform-wide (non-impersonated) admin view — setting it does not connect a tenant.'));
+
+      const clientId = ga.client_id || state.client?.id || state.impersonating;
+      if (state.isAdmin && clientId) {
+        const idIn = el('input', { type: 'text', placeholder: 'GA4 Property ID (numeric)', style: 'flex:1;min-width:200px' });
+        const saveBtn = el('button', { class: 'btn' }, 'Save & connect');
+        const saveMsg = el('div', { style: 'min-height:1.2em;font-size:0.8rem;margin-top:8px' });
+        saveBtn.onclick = async () => {
+          const val = idIn.value.trim();
+          if (!val) { saveMsg.textContent = 'Enter the numeric Property ID first.'; return; }
+          saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+          try {
+            await api('/api/admin?action=set-ga4', { method: 'POST', body: { client_id: clientId, ga4_property_id: val } });
+            toast('GA4 property saved');
+            render();
+          } catch (e) {
+            saveMsg.innerHTML = '';
+            saveMsg.appendChild(el('span', { class: 'err' }, apiErrText(e)));
+            saveBtn.disabled = false; saveBtn.textContent = 'Save & connect';
+          }
+        };
+        setupPanel.appendChild(el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px' }, idIn, saveBtn));
+        setupPanel.appendChild(saveMsg);
+      } else {
+        setupPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem;margin-top:10px' },
+          'Send that Property ID to your GoElev8 admin to finish connecting it.'));
+      }
+    }
+
+    if (ga.missing_property && ga.scope === 'platform') {
+      setupPanel.appendChild(el('p', { class: 'muted' },
+        'No platform-wide GA4 property is set. Add this env var in Vercel and redeploy:'));
+      setupPanel.appendChild(codeBlock('GA4_PROPERTY_ID=123456789'));
+    }
+
+    // Credentials ARE platform-wide, so the env-var instructions are
+    // the correct fix here — for tenants and the platform view alike.
+    if (ga.missing_credentials) {
+      setupPanel.appendChild(el('p', { class: 'muted', style: 'margin-top:14px' },
+        'The portal has no Google service account credentials yet. Add this env var in Vercel and redeploy:'));
+      setupPanel.appendChild(codeBlock('GA4_SERVICE_ACCOUNT_JSON={"type":"service_account",...}'));
+      setupPanel.appendChild(el('p', { class: 'muted', style: 'font-size:0.8rem' },
+        el('strong', {}, 'Setup steps: '),
+        '1) Google Cloud Console → enable Google Analytics Data API · 2) Create a service account & download JSON key · 3) GA4 Admin → Property Access Management → add the service account email as a Viewer · 4) Paste the whole JSON into GA4_SERVICE_ACCOUNT_JSON · 5) Redeploy'
+      ));
+    }
+
     wrap.appendChild(setupPanel);
     return wrap;
   }
@@ -14382,11 +14439,33 @@ async function viewAnalytics() {
     // tenant just needs the same permission grant.
     if (/403[^0-9]|PERMISSION_DENIED|sufficient permissions/i.test(msg)) {
       const svc = ga.service_account_email;
+      // GA4 answers 403 identically for "no access" and "no such
+      // property" — it won't confirm a property exists to someone who
+      // can't see it. So a 403 on a malformed ID sends the operator off
+      // to grant Viewer on a property that was never real. Every
+      // working property in the fleet is 9–10 digits; anything else is
+      // almost certainly a Measurement ID, a Google Ads customer ID, or
+      // a stream ID pasted into the wrong field.
+      const pid = String(ga.property_id || '');
+      const oddShape = pid && !/^\d{9,10}$/.test(pid);
+      if (oddShape) {
+        cards.appendChild(el('div', { class: 'card' },
+          el('div', { class: 'err', style: 'font-weight:600;margin-bottom:8px' },
+            '⚠ Check this Property ID before anything else'),
+          el('div', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5' },
+            'Saved value is ',
+            el('code', { style: 'background:rgba(0,0,0,0.35);padding:1px 6px;border-radius:4px' }, pid),
+            ' — ' + pid.length + ' digits. GA4 Property IDs are 9–10 digits, so this is most likely a Measurement ID, a Google Ads customer ID, or a data-stream ID pasted into the wrong field.'),
+          el('div', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5;margin-top:8px' },
+            'Google returns the same 403 whether the service account lacks access ',
+            el('strong', {}, 'or'),
+            ' the property does not exist, so confirm the ID at Google Analytics → ⚙ Admin → Property Settings → Property ID first. Granting access below cannot fix a property that was never real.')));
+      }
       cards.appendChild(el('div', { class: 'card' },
         el('div', { class: 'err', style: 'font-weight:600;margin-bottom:8px' },
           '⚠ Service account not authorized on this GA4 property'),
         el('div', { class: 'muted', style: 'font-size:0.82rem;line-height:1.5' },
-          'The Property ID is saved correctly, but the portal\'s Google service account isn\'t a Viewer on this tenant\'s GA4 property yet. One-time fix per tenant.'),
+          'If the Property ID is correct, the portal\'s Google service account just isn\'t a Viewer on this tenant\'s GA4 property yet. One-time fix per tenant.'),
         el('div', { style: 'margin-top:10px;padding:10px 12px;background:rgba(0,0,0,0.3);border-radius:6px;font-size:0.8rem' },
           el('div', { class: 'muted', style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px' }, 'Service account email to add'),
           svc
