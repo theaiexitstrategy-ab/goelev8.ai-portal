@@ -42,12 +42,39 @@ variables in Vercel.
    - Add `GA4_SERVICE_ACCOUNT_JSON` = paste the entire JSON file content as a single line
    - Redeploy the project
 
+## 6. Connect each tenant (this step is NOT an env var)
+
+The two env vars above are **platform-wide**. `GA4_PROPERTY_ID` only backs
+the admin's non-impersonated, platform-wide Analytics view.
+
+Every tenant resolves its own property from `clients.ga4_property_id`
+in Supabase — it **never** falls back to `GA4_PROPERTY_ID`. That's
+deliberate: without it, a tenant with no property of their own would be
+shown whatever the platform env points at and told it was their data.
+
+So for each tenant:
+
+1. Master Admin → the tenant → ⚙ Settings → **GA4 Property ID** → paste
+   the numeric Property ID → Save. (The Analytics tab also offers an
+   inline "Save & connect" box when the ID is missing.)
+2. Add the service account email as a **Viewer** on *that tenant's* GA4
+   property (step 3 above, repeated per property).
+
 ## Verifying
 
 After redeploy, log in as `ab@goelev8.ai` and click the **Analytics** tab.
 You should see live sessions, page views, top sources, top pages, and
 custom event totals from your GA4 property.
 
-If you see "GA4 Not Configured", the env vars weren't picked up — check
-the Vercel deployment logs and confirm the variables are set for the
-production environment.
+The Analytics tab names whichever piece is missing:
+
+| What it says | Where to fix it |
+|---|---|
+| No GA4 property is saved for *&lt;tenant&gt;* | `clients.ga4_property_id` — step 6 above. Env vars will not fix this. |
+| No platform-wide GA4 property is set | `GA4_PROPERTY_ID` env var, then redeploy |
+| The portal has no Google service account credentials | `GA4_SERVICE_ACCOUNT_JSON` env var, then redeploy |
+| Service account not authorized on this GA4 property | Add the named service account as a Viewer on that property |
+| That's a Measurement ID, not the Property ID | You saved `G-XXXXXXX`; use the all-digits Property ID |
+
+If an env-var message persists after a redeploy, confirm the variable is
+set for the **Production** environment and check the deployment logs.

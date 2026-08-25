@@ -126,14 +126,36 @@ export default async function handler(req, res) {
     propertyId = process.env.GA4_PROPERTY_ID || null;
   }
 
-  if (!propertyId || !process.env.GA4_SERVICE_ACCOUNT_JSON) {
+  // Two INDEPENDENT things can be missing, and they are fixed in two
+  // different places:
+  //   credentials → GA4_SERVICE_ACCOUNT_JSON, a platform-wide env var
+  //   property ID → clients.ga4_property_id for a tenant, or the
+  //                 GA4_PROPERTY_ID env var for the platform-wide view
+  // Report them separately. Collapsing both into one "set the env vars"
+  // message is what makes "I followed the instructions and it still says
+  // Not Configured" possible: a tenant's property ID never comes from
+  // the environment, so setting GA4_PROPERTY_ID can never fix a tenant.
+  const missingCredentials = !process.env.GA4_SERVICE_ACCOUNT_JSON;
+  const missingProperty = !propertyId;
+
+  if (missingProperty || missingCredentials) {
+    const fixes = [];
+    if (tenantMissingPropertyId) {
+      fixes.push(`No GA4 property is set for ${propertyLabel}. Copy the numeric Property ID from Google Analytics → Admin → Property Settings and save it on this tenant — the GA4_PROPERTY_ID env var does not apply to a tenant.`);
+    } else if (missingProperty) {
+      fixes.push('No platform-wide GA4 property is set. Set the GA4_PROPERTY_ID env var to the numeric Property ID from Google Analytics → Admin → Property Settings.');
+    }
+    if (missingCredentials) {
+      fixes.push('The portal has no Google service account credentials. Set the GA4_SERVICE_ACCOUNT_JSON env var to the full service account key JSON, then redeploy.');
+    }
     return res.status(200).json({
       configured: false,
-      error: tenantMissingPropertyId
-        ? `Google Analytics isn't connected for ${propertyLabel} yet. Find your numeric GA4 Property ID at Google Analytics → Admin → Property Settings, then have your portal admin set it on this tenant.`
-        : ctx.clientId
-          ? `No GA4 property configured for ${propertyLabel}. Set clients.ga4_property_id.`
-          : 'GA4 not configured. Set GA4_PROPERTY_ID and GA4_SERVICE_ACCOUNT_JSON env vars.',
+      scope: ctx.clientId ? 'tenant' : 'platform',
+      missing_property: missingProperty,
+      missing_credentials: missingCredentials,
+      client_id: ctx.clientId || null,
+      property_label: propertyLabel,
+      error: fixes.join(' '),
       sessions: 0,
       page_views: 0,
       users: 0,
@@ -275,6 +297,12 @@ export default async function handler(req, res) {
       configured: true,
       error: e.message,
       service_account_email: serviceAccountEmail,
+      // Echo the property we actually queried. GA4 answers 403 the same
+      // way whether the service account lacks access or the property
+      // does not exist, so the SPA needs the ID itself to tell the
+      // operator which of the two to go fix.
+      property_id: propertyId,
+      property_label: propertyLabel,
       sessions: 0,
       page_views: 0,
       users: 0,
