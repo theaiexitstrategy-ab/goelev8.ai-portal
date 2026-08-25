@@ -75,6 +75,12 @@
      Vendored locally so it can't be blocked and the service worker can
      cache it. -->
 <script src="/vendor/papaparse.min.js"></script>
-<script type="module" src="/app.js?v=137"></script>
+<!-- Minimal .xlsx reader, same own-origin reasoning as PapaParse above.
+     The importer used to refuse spreadsheets and tell the operator to go
+     save as CSV — which is half of the loop Stephen hit at Konquered
+     Balance: the CSV wouldn't attach, and the Excel file he made instead
+     was rejected for not being a CSV. Now both open. -->
+<script src="/vendor/xlsx-lite.js"></script>
+<script type="module" src="/app.js?v=138"></script>
 </body>
 </html>
