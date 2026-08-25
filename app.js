@@ -6582,11 +6582,51 @@ function openContactImportModal(contactsBody) {
     'display name': 'name', 'display_name': 'name',
     email: 'email', 'e-mail': 'email', email_address: 'email', 'email address': 'email', 'e mail': 'email',
     tag: 'tag', tags: 'tag', group: 'tag', category: 'tag', segment: 'tag',
-    notes: 'notes', note: 'notes', comment: 'notes', comments: 'notes', description: 'notes'
+    // Wix/Google/Outlook all name the tag column something different.
+    labels: 'tag', label: 'tag', 'group membership': 'tag', categories: 'tag',
+    notes: 'notes', note: 'notes', comment: 'notes', comments: 'notes', description: 'notes',
+    // Outlook-style qualified columns. Wix can export in Outlook CSV or
+    // Google CSV format, not just its own field names, and neither was
+    // recognized here — see normalizeHeader() below for the numbered
+    // Google variants ("E-mail 1 - Value").
+    'e-mail address': 'email', 'email address 1': 'email', 'primary email': 'email',
+    'home phone': 'phone', 'business phone': 'phone', 'work phone': 'phone',
+    'other phone': 'phone', 'main phone': 'phone', 'primary phone': 'phone',
+    'home phone 2': 'phone', 'business phone 2': 'phone'
   };
 
+  // Exporters decorate repeated fields in two different ways:
+  //   Google  — "E-mail 1 - Value", "Phone 2 - Value" (indexed + suffixed)
+  //   Outlook — "E-mail 2 Address", "Home Phone 2"    (indexed inline)
+  // Strip the decoration so the base name can hit GUESS_MAP. The
+  // "- Type" sibling column is deliberately NOT unwrapped: it holds
+  // "Home"/"Work" labels, not an address, and mapping it to email would
+  // import junk.
+  function normalizeHeader(raw) {
+    if (/\s-\s*type$/.test(raw)) return null;
+    return raw
+      .replace(/\s*-\s*value$/, '')
+      .replace(/\s*\d+\s*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // Qualified phone/email columns, matched only when the header is JUST
+  // that label. Anchored on purpose: Wix's own export has "Email
+  // Subscription Status", which contains "email" but is a yes/no flag —
+  // a loose match would import "subscribed" as an address.
+  const PHONE_RE = /^(mobile|cell|home|work|business|main|primary|secondary|other|direct|company)?\s*(phone|telephone|tel|mobile|cell)(\s*number)?$/;
+  const EMAIL_RE = /^(e-?mail)(\s*address)?$/;
+
   function guessMapping(header) {
-    return GUESS_MAP[header.toLowerCase().trim()] || 'skip';
+    const raw = header.toLowerCase().trim();
+    if (GUESS_MAP[raw]) return GUESS_MAP[raw];
+    const norm = normalizeHeader(raw);
+    if (!norm) return 'skip';
+    if (GUESS_MAP[norm]) return GUESS_MAP[norm];
+    if (PHONE_RE.test(norm)) return 'phone';
+    if (EMAIL_RE.test(norm)) return 'email';
+    return 'skip';
   }
 
   // When all data ends up in one column (no recognizable delimiter, or
@@ -6878,7 +6918,14 @@ function openContactImportModal(contactsBody) {
       const out = { _idx: idx };
       for (const h of headers) {
         const field = mappings[h];
-        if (field && field !== 'skip') out[field] = (row[h] || '').trim();
+        if (!field || field === 'skip') continue;
+        // Several columns legitimately map to one field — Outlook exports
+        // Home Phone, Business Phone and Mobile Phone side by side, and
+        // most contacts fill only one. Keep the first non-empty value
+        // instead of letting a later blank column overwrite it, which
+        // would drop the row at the .filter(r => r.phone) below.
+        if (out[field]) continue;
+        out[field] = (row[h] || '').trim();
       }
       return out;
     }).filter(r => r.phone);
