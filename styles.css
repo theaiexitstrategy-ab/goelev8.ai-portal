@@ -918,6 +918,13 @@ tbody tr:last-child td { border-bottom: none; }
   -webkit-backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
+  /* Safety net behind the .modal height cap below. If a modal ever does
+     outgrow the viewport, plain `center` would push its top edge off
+     the top of the screen with no way to scroll back to it. `safe
+     center` degrades to flex-start exactly in that case, and the
+     backdrop scrolls, so the top of the window stays reachable. */
+  align-items: safe center;
+  overflow-y: auto;
   justify-content: center;
   z-index: 50;
   padding: 20px;
@@ -935,6 +942,21 @@ tbody tr:last-child td { border-bottom: none; }
   max-width: 480px;
   box-shadow: var(--shadow-lg);
   animation: modal-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  /* Without a height cap, content taller than the screen overflows a
+     CENTERED flex item — which spills equally off the top AND bottom of
+     .modal-bg and is unreachable in both directions, while the fixed
+     backdrop blocks the page behind from scrolling either. The window
+     just sits there with its controls off-screen.
+     That is how the contact importer froze on a Wix export: step 2
+     renders one mapping row per file column, ~30-40 of them, so the
+     modal outgrew the viewport and the Upload/Next buttons were gone.
+     100% resolves against .modal-bg's content box (viewport minus its
+     padding), so the modal can never exceed the screen and scrolls its
+     own content instead. */
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 @keyframes modal-in {
   from { opacity: 0; transform: scale(0.96) translateY(8px); }
@@ -997,6 +1019,13 @@ tbody tr:last-child td { border-bottom: none; }
 
 .import-footer {
   display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;
+  /* Pin Back/Next/Import to the bottom of the now-scrollable modal so a
+     long mapping table can't push them out of reach — reaching those
+     buttons is the whole point of the step. */
+  position: sticky;
+  bottom: 0;
+  padding-top: 12px;
+  background: var(--bg-elevated, #141c2e);
 }
 
 /* ============================================================
