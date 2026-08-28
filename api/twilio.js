@@ -422,21 +422,80 @@ export default async function handler(req, res) {
     if (!contact?.opted_out) {
       const normalized = body.trim().toLowerCase();
       if (normalized) {
+        // A keyword can belong to the number's owner OR to a tenant
+        // that borrows the number through parent_client_id. Konquered
+        // Balance sends and receives on GoElev8's +1888… while its own
+        // number waits on carrier approval, so an inbound KONQUER
+        // resolves to GoElev8 above and would never match a keyword
+        // filed under Konquered Balance. Search both, then attribute
+        // the reply and the lead to whichever tenant owns the keyword
+        // so it lands in THEIR portal, not the number owner's.
+        const { data: childRows } = await supabaseAdmin
+          .from('clients').select('id, name').eq('parent_client_id', client.id);
+        const children = childRows || [];
         const { data: kwRows } = await supabaseAdmin
           .from('artist_sms_keywords')
-          .select('artist_name, role, booking_url, welcome_message, booking_type, keywords')
-          .eq('client_id', client.id)
+          .select('client_id, artist_name, role, booking_url, welcome_message, booking_type, keywords')
+          .in('client_id', [client.id, ...children.map(c => c.id)])
           .eq('active', true);
         const match = (kwRows || []).find(row =>
           Array.isArray(row.keywords) &&
           row.keywords.some(k => String(k || '').trim().toLowerCase() === normalized)
         );
         if (match) {
+          // Resolve the owning tenant. When the keyword belongs to a
+          // borrowing tenant, the contact/lead resolved earlier point at
+          // the number owner's rows, so this tenant needs its own — a
+          // message carrying another tenant's contact_id would be a
+          // cross-tenant reference the portal can't render.
+          const ownerId = match.client_id || client.id;
+          const isBorrowed = ownerId !== client.id;
+          const owner = isBorrowed
+            ? (children.find(c => c.id === ownerId) || client)
+            : client;
+          let ownerContactId = contact?.id || null;
+          let ownerLeadId = leadId;
+          if (isBorrowed) {
+            // Best-effort: the customer must get their booking link even
+            // if CRM bookkeeping fails, so nothing here may throw.
+            ownerContactId = null;
+            ownerLeadId = null;
+            try {
+              let { data: oc } = await supabaseAdmin
+                .from('contacts').select('id')
+                .eq('client_id', ownerId).eq('phone', from).maybeSingle();
+              if (!oc) {
+                const { data: madeContact } = await supabaseAdmin.from('contacts').insert({
+                  client_id: ownerId, name: from, phone: from, source: 'inbound_sms'
+                }).select('id').single();
+                oc = madeContact;
+              }
+              ownerContactId = oc?.id || null;
+              // Mirror the inbound under the borrowing tenant so the
+              // keyword text and its reply read as one thread in their
+              // Messages tab. The owner's copy stays where it landed.
+              // twilio_sid is deliberately omitted — it carries a UNIQUE
+              // index (messages_twilio_sid_key), so copying it here
+              // would collide with the owner's row and lose the mirror.
+              await supabaseAdmin.from('messages').insert({
+                client_id: ownerId,
+                contact_id: ownerContactId,
+                direction: 'inbound',
+                body,
+                segments: estimateSegments(body),
+                status: 'received',
+                to_number: to,
+                from_number: from
+              });
+            } catch (e) {
+              console.error('[twilio/inbound] borrowed-tenant contact mirror failed:', e.message);
+            }
+          }
           const actionPhrase = match.booking_type === 'message'
             ? 'Message us here to book'
             : 'Grab your spot here';
           const rolePart = match.role ? `, our ${match.role}` : '';
-          const businessName = client.name || 'the studio';
+          const businessName = owner?.name || client.name || 'the studio';
           const kwReply = match.welcome_message
             || `Hey! You've reached ${businessName} 👑 You're all set to book with ${match.artist_name}${rolePart}. ${actionPhrase}:\n${match.booking_url}\n\nReply STOP to opt out.`;
 
@@ -445,9 +504,9 @@ export default async function handler(req, res) {
           // the booking URL has to survive intact even if that means
           // Twilio bills an extra segment.
           await supabaseAdmin.from('messages').insert({
-            client_id: client.id,
-            contact_id: contact?.id || null,
-            lead_id: leadId,
+            client_id: ownerId,
+            contact_id: ownerContactId,
+            lead_id: ownerLeadId,
             direction: 'outbound',
             body: kwReply,
             segments: estimateSegments(kwReply),
@@ -461,7 +520,7 @@ export default async function handler(req, res) {
           // getting their reply.
           try {
             await supabaseAdmin.from('leads').insert({
-              client_id:       client.id,
+              client_id:       ownerId,
               phone:           from,
               name:            (contact?.name && contact.name !== from) ? contact.name : null,
               artist_selected: match.artist_name,
