@@ -519,18 +519,31 @@ export default async function handler(req, res) {
           // a failed insert here shouldn't prevent the customer from
           // getting their reply.
           try {
-            await supabaseAdmin.from('leads').insert({
+            // leads.name is NOT NULL. A first-time texter's contact row is
+            // created with name = their phone number, so passing null
+            // "unless we already know a real name" violated the constraint
+            // on precisely the leads worth capturing — a brand new one.
+            // Fall back to the phone number, which is what contacts do.
+            const { error: leadErr } = await supabaseAdmin.from('leads').insert({
               client_id:       ownerId,
               phone:           from,
-              name:            (contact?.name && contact.name !== from) ? contact.name : null,
+              name:            (contact?.name && contact.name !== from) ? contact.name : from,
               artist_selected: match.artist_name,
               booking_url:     match.booking_url,
               source:          'sms_keyword',
               lead_source:     'sms_keyword',
               lead_status:     'New'
             });
+            // supabase-js RESOLVES with { error } rather than throwing, so
+            // the catch below never fired for a rejected insert. Every
+            // failed keyword lead vanished without a log line — which is
+            // why one such lead exists platform-wide despite the feature
+            // being live since July.
+            if (leadErr) {
+              console.error('[twilio/inbound] sms_keyword lead insert failed:', leadErr.message);
+            }
           } catch (e) {
-            console.error('[twilio/inbound] sms_keyword lead insert failed:', e.message);
+            console.error('[twilio/inbound] sms_keyword lead insert threw:', e.message);
           }
 
           const encodeXml = (s) => String(s)
