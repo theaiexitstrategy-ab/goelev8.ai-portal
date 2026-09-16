@@ -1599,16 +1599,184 @@ function normalizeTags(v) {
   return [];
 }
 
+
+// ============================================================
+// TAES lead vocabulary (theaiexitstrategy.com)
+// ============================================================
+//
+// theaiexitstrategy.com mirrors every homepage submission into the CRM
+// through /api/external/lead under two funnels:
+//
+//   taes_join      individuals starting the course
+//   taes_partners  schools, nonprofits, workforce boards, libraries
+//
+// The facts a partner tells us (org type, group size, timeline) arrive
+// three ways, in descending order of how nice they are to read:
+//   1. lead.payload — structured keys, added Sept 2026
+//   2. lead.tags    — the same facts as filterable atoms (org:k12, …)
+//   3. lead.notes   — a labelled plain-text block, the original channel
+// The renderer below prefers 1, falls back to 3, and the tag filters
+// work off 2 regardless, so rows from before the payload existed still
+// read correctly.
+
+const TAES_FUNNEL_LABELS = {
+  taes_join: 'Course Signups',
+  taes_partners: 'Partner Enquiries'
+};
+
+// Value → label maps mirroring lib/leads/schema.ts in the TAES repo.
+// An unknown value falls through to itself rather than to '—', so a new
+// option added on the sending side degrades to a readable slug instead
+// of vanishing from the CRM.
+const TAES_VOCAB = {
+  org_type: {
+    k12: 'K–12 school or district', higher_ed: 'College or university',
+    nonprofit: 'Nonprofit or community group', workforce: 'Workforce board or job center',
+    library: 'Library', faith: 'Church or faith group', other: 'Something else'
+  },
+  group_size: {
+    under_15: 'Under 15 people', '15_40': '15–40 people', '40_100': '40–100 people',
+    over_100: 'More than 100', unsure: 'Not sure yet'
+  },
+  timeline: {
+    asap: 'As soon as possible', this_quarter: 'This quarter',
+    six_months: 'Within six months', exploring: 'Just exploring for now'
+  },
+  how_heard: {
+    search: 'Search', social: 'Social media', referral: 'Someone told me about it',
+    event: 'An event or workshop', other: 'Somewhere else'
+  },
+  goal: {
+    job_search: 'Find a job or change careers', business_income: 'Grow a business or side income',
+    keep_up: 'Keep up at the job I have', curious: 'Just curious about AI'
+  }
+};
+
+function taesLabel(kind, value) {
+  if (value == null || value === '') return null;
+  return TAES_VOCAB[kind]?.[value] || String(value);
+}
+
+// Urgency ranking. Deliberately not a lead score — it is one ordered
+// field surfaced as a badge and a sort, so "as soon as possible" cannot
+// sit below "just exploring" purely because it arrived an hour earlier.
+const TAES_TIMELINE_RANK = { asap: 0, this_quarter: 1, six_months: 2, exploring: 3 };
+
+// Pull the timeline out of whichever channel this row has it in.
+function leadTimeline(lead) {
+  const fromPayload = lead?.payload?.timeline;
+  if (fromPayload) return String(fromPayload);
+  const tag = normalizeTags(lead?.tags).find(t => t.startsWith('timeline:'));
+  return tag ? tag.slice('timeline:'.length) : null;
+}
+
+function leadUrgencyRank(lead) {
+  const t = leadTimeline(lead);
+  const rank = t == null ? undefined : TAES_TIMELINE_RANK[t];
+  return rank === undefined ? 99 : rank;
+}
+
+// Badge for the leads table + profile header. Only the two timelines
+// that ask something of the operator get a colour — badging all four
+// would make the column noise instead of signal.
+function urgencyBadge(lead) {
+  const t = leadTimeline(lead);
+  if (!t) return null;
+  if (t === 'asap') return el('span', { class: 'badge red', title: 'Timeline: as soon as possible' }, 'ASAP');
+  if (t === 'this_quarter') return el('span', { class: 'badge warn', title: 'Timeline: this quarter' }, 'This quarter');
+  return el('span', { class: 'badge', title: 'Timeline: ' + taesLabel('timeline', t) },
+    t === 'six_months' ? '6 months' : 'Exploring');
+}
+
+function isTaesLead(lead) {
+  if (!lead) return false;
+  if (String(lead.funnel || '').startsWith('taes_')) return true;
+  if (String(lead.source || '') === 'taes_website') return true;
+  return normalizeTags(lead.tags).includes('taes');
+}
+
+// Fallback reader for rows written before /api/external/lead accepted a
+// metadata object. The sending side builds notes as "Label: value" lines
+// followed by an optional "What they wrote:" free-text block; this turns
+// that back into the same [label, value] pairs the payload path yields.
+// Gated to TAES leads by the caller so another tenant's notes are never
+// second-guessed.
+function parseTaesNotes(notes) {
+  if (!notes || typeof notes !== 'string' || !notes.includes('\n')) return null;
+  const [head, ...rest] = notes.split(/\n\s*What they wrote:\s*\n/);
+  const message = rest.length ? rest.join('\nWhat they wrote:\n').trim() : null;
+  const rows = head.split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+    .map(l => {
+      const i = l.indexOf(': ');
+      return i > 0 ? [l.slice(0, i), l.slice(i + 2)] : null;
+    })
+    .filter(Boolean);
+  if (!rows.length && !message) return null;
+  return { rows, message };
+}
+
+// The structured view for a TAES submission: [label, value] pairs plus
+// the enquirer's own words, drawn from payload when present and parsed
+// out of notes when not. Returns null when there is nothing to show, so
+// the caller can skip the whole section.
+const TAES_PAYLOAD_FIELDS = [
+  ['org_name',          'Organization',   (v) => String(v)],
+  ['org_type',          'Type',           (v) => taesLabel('org_type', v)],
+  ['role',              'Their role',     (v) => String(v)],
+  ['group_size',        'Group size',     (v) => taesLabel('group_size', v)],
+  ['timeline',          'Timeline',       (v) => taesLabel('timeline', v)],
+  ['how_heard',         'Heard via',      (v) => taesLabel('how_heard', v)],
+  ['goal',              'Goal',           (v) => taesLabel('goal', v)],
+  ['newsletter_opt_in', 'Newsletter',     (v) => (v ? 'opted in' : 'no')],
+  ['sms_consent',       'Texts OK',       (v) => (v ? 'yes — consented' : 'not given')],
+  ['source_path',       'Submitted from', (v) => String(v)]
+];
+
+function taesEnquiryDetails(lead) {
+  const p = (lead && typeof lead.payload === 'object' && !Array.isArray(lead.payload))
+    ? lead.payload : null;
+  if (p) {
+    const rows = [];
+    for (const [key, label, fmt] of TAES_PAYLOAD_FIELDS) {
+      const v = p[key];
+      if (v === undefined || v === null || v === '') continue;
+      const out = fmt(v);
+      if (out) rows.push([label, out]);
+    }
+    const message = p.message ? String(p.message) : null;
+    if (rows.length || message) return { rows, message, from: 'payload' };
+  }
+  const parsed = parseTaesNotes(lead?.notes);
+  return parsed ? { ...parsed, from: 'notes' } : null;
+}
+
 // Renders an inline tag chip row + add-tag UI for a single record.
 // `getTags`/`saveTags` keep the source of truth on the row. saveTags is
 // async and returns when persisted; on success the chip row is rebuilt.
-function tagChips({ getTags, saveTags, readonly = false }) {
+// `onTagClick` (optional) turns the chip body into a filter control —
+// the leads table passes it so clicking `timeline:asap` narrows the
+// list. The remove "x" keeps its own handler and stops propagation, so
+// filtering and deleting never get confused for each other.
+function tagChips({ getTags, saveTags, readonly = false, onTagClick = null }) {
   const host = el('div', { class: 'tag-chips' });
   const draw = () => {
     host.innerHTML = '';
     const tags = normalizeTags(getTags());
     for (const t of tags) {
-      const chip = el('span', { class: 'tag-chip' }, t);
+      const chip = onTagClick
+        ? el('span', {
+            class: 'tag-chip tag-chip-filterable',
+            role: 'button',
+            tabindex: '0',
+            title: 'Filter leads by "' + t + '"',
+            onclick: (ev) => { ev.stopPropagation(); onTagClick(t); },
+            onkeydown: (ev) => {
+              if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onTagClick(t); }
+            }
+          }, t)
+        : el('span', { class: 'tag-chip' }, t);
       if (!readonly) {
         chip.appendChild(el('button', {
           class: 'tag-chip-x',
@@ -1805,8 +1973,12 @@ async function openCustomerProfile(leadId) {
     ),
     el('div', { class: 'profile-meta' },
       lead.source ? el('span', { class: 'badge' }, 'Source: ' + lead.source) : null,
-      lead.funnel ? el('span', { class: 'badge info' }, 'Funnel: ' + lead.funnel) : null,
+      lead.funnel
+        ? el('span', { class: 'badge info', title: 'funnel = ' + lead.funnel },
+            'Funnel: ' + (TAES_FUNNEL_LABELS[lead.funnel] || lead.funnel))
+        : null,
       lead.intent ? el('span', { class: 'badge' }, 'Intent: ' + lead.intent) : null,
+      urgencyBadge(lead),
       lead.paid_at ? el('span', { class: 'badge green' }, 'Paid · ' + fmtAgo(lead.paid_at)) : null
     )
   );
@@ -1906,10 +2078,53 @@ async function openCustomerProfile(leadId) {
   if (lead.intent)        infoSection.appendChild(infoRow('Intent', lead.intent));
   if (lead.lead_status)   infoSection.appendChild(infoRow('Status', lead.lead_status));
   if (lead.artist_selected) infoSection.appendChild(infoRow('Artist', lead.artist_selected));
-  if (lead.notes)         infoSection.appendChild(infoRow('Notes', lead.notes));
-  if (lead.payload?.goal) infoSection.appendChild(infoRow('Goal', lead.payload.goal));
+  // A partner enquiry carries a dozen facts the leads table has no
+  // column for. Rendering them as one `notes` blob buries the group
+  // size and the timeline in the middle of a paragraph, so TAES leads
+  // get a definition list instead and keep the raw notes one click
+  // away. Every other tenant's Notes row is untouched.
+  const enquiry = isTaesLead(lead) ? taesEnquiryDetails(lead) : null;
+  if (lead.notes && !enquiry) infoSection.appendChild(infoRow('Notes', lead.notes));
+  if (lead.payload?.goal && !enquiry) infoSection.appendChild(infoRow('Goal', lead.payload.goal));
   if (lead.created_at)    infoSection.appendChild(infoRow('First contact', fmt(lead.created_at) + ' · ' + fmtAgo(lead.created_at)));
   if (lead.last_contacted_at) infoSection.appendChild(infoRow('Last contact', fmt(lead.last_contacted_at) + ' · ' + fmtAgo(lead.last_contacted_at)));
+
+  // The enquiry section proper. `from: 'notes'` means this row predates
+  // the structured payload and we reconstructed the pairs by parsing —
+  // shown identically, because the operator shouldn't have to care.
+  let enquirySection = null;
+  if (enquiry) {
+    enquirySection = el('div', { class: 'profile-section' });
+    enquirySection.appendChild(el('h3', {},
+      lead.funnel === 'taes_partners' ? 'Partner Enquiry' : 'Submission Details'));
+    for (const [label, value] of enquiry.rows) {
+      enquirySection.appendChild(infoRow(label, value));
+    }
+    if (enquiry.message) {
+      enquirySection.appendChild(el('div', { style: 'padding:12px 0 4px' },
+        el('div', {
+          style: 'font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted,#888);font-weight:600;margin-bottom:6px'
+        }, 'What they wrote'),
+        el('blockquote', {
+          style: 'margin:0;padding:10px 12px;border-left:3px solid rgba(99,179,237,0.5);background:rgba(255,255,255,0.03);border-radius:0 6px 6px 0;white-space:pre-wrap;word-break:break-word;font-size:0.9rem'
+        }, enquiry.message)
+      ));
+    }
+    // Fallback stays reachable: the notes field is the system of record
+    // for rows the sending side wrote before `metadata` existed, and it
+    // can carry lines the structured view doesn't know about yet.
+    if (lead.notes) {
+      const details = el('details', { style: 'margin-top:10px' },
+        el('summary', {
+          style: 'cursor:pointer;font-size:0.75rem;color:var(--muted,#888)'
+        }, 'Raw submission notes'),
+        el('pre', {
+          style: 'white-space:pre-wrap;word-break:break-word;font-size:0.8rem;margin:8px 0 0;padding:10px;background:rgba(0,0,0,0.25);border-radius:6px'
+        }, lead.notes)
+      );
+      enquirySection.appendChild(details);
+    }
+  }
 
   // Metric strip
   const metrics = el('div', { class: 'leads-metrics-strip', style: 'margin:14px 0' },
@@ -2027,7 +2242,12 @@ async function openCustomerProfile(leadId) {
     }, 'Done')
   );
 
-  sheet.append(header, tagsRow, actionBar, infoSection, metrics, bookingsSection, callsSection, messagesSection, nudgesSection, doneBar);
+  // enquirySection sits directly under Customer Info — it is the
+  // reason an operator opened a partner lead, so it goes above the
+  // bookings/calls/messages timelines. `.append` skips null.
+  sheet.append(header, tagsRow, actionBar, infoSection);
+  if (enquirySection) sheet.append(enquirySection);
+  sheet.append(metrics, bookingsSection, callsSection, messagesSection, nudgesSection, doneBar);
 }
 
 // Trash view — slide-over panel listing soft-deleted records from the
@@ -3462,14 +3682,222 @@ async function viewLeads() {
   wrap.appendChild(metricsPanel);
   loadLeadMetrics(metricsPanel);
 
+  // Filter + sort state lives on `state` so switching tabs and coming
+  // back puts the operator on the same segment, matching how the
+  // Applications tab remembers its status filter.
+  state._leadsFunnel = state._leadsFunnel || 'all';
+  state._leadsTags = Array.isArray(state._leadsTags) ? state._leadsTags : [];
+  state._leadsSort = state._leadsSort || 'recent';
+
+  const funnelBar = el('div', { class: 'filter-bar' });
+  const tagBar = el('div', { class: 'filter-bar' });
   const panel = el('div', { class: 'panel' }, el('p', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(funnelBar);
+  wrap.appendChild(tagBar);
   wrap.appendChild(panel);
-  try {
-    const r = await api('/api/portal/crm?action=leads');
+
+  let allLeads = [];
+
+  // Funnel is the CRM's own grouping field, so the segment chips are
+  // built from whatever funnels this tenant's leads actually carry
+  // rather than from a hardcoded list. TAES's two funnels get friendly
+  // labels; everyone else's show the raw value they already know.
+  function funnelSegments() {
+    const counts = new Map();
+    for (const l of allLeads) {
+      const f = l.funnel || '';
+      if (!f) continue;
+      counts.set(f, (counts.get(f) || 0) + 1);
+    }
+    const segs = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([id, n]) => ({ id, label: TAES_FUNNEL_LABELS[id] || id, count: n }));
+    const noFunnel = allLeads.filter(l => !l.funnel).length;
+    if (noFunnel && segs.length) segs.push({ id: '__none', label: 'No funnel', count: noFunnel });
+    return segs;
+  }
+
+  function matches(l) {
+    const f = state._leadsFunnel;
+    if (f === '__none') { if (l.funnel) return false; }
+    else if (f !== 'all' && l.funnel !== f) return false;
+    if (state._leadsTags.length) {
+      const tags = normalizeTags(l.tags);
+      // AND across selected tags: picking org:k12 then timeline:asap
+      // should narrow to K-12 schools that need it now, not widen.
+      if (!state._leadsTags.every(t => tags.includes(t))) return false;
+    }
+    return true;
+  }
+
+  function visibleLeads() {
+    const rows = allLeads.filter(matches);
+    if (state._leadsSort === 'urgent') {
+      return rows.slice().sort((a, b) =>
+        leadUrgencyRank(a) - leadUrgencyRank(b) ||
+        new Date(b.created_at) - new Date(a.created_at));
+    }
+    return rows;
+  }
+
+  function addTagFilter(tag) {
+    if (state._leadsTags.includes(tag)) return;
+    state._leadsTags = [...state._leadsTags, tag];
+    redraw();
+  }
+
+  function renderFunnelBar() {
+    const segs = funnelSegments();
+    // One funnel (or none) means the chips would say nothing the Source
+    // column doesn't already — skip the row entirely.
+    if (segs.length < 2) { funnelBar.replaceChildren(); return; }
+    const all = { id: 'all', label: 'All', count: allLeads.length };
+    const chips = [all, ...segs].map(sg => el('button', {
+      class: 'chip' + (state._leadsFunnel === sg.id ? ' active' : ''),
+      onclick: () => {
+        if (state._leadsFunnel === sg.id) return;
+        state._leadsFunnel = sg.id;
+        redraw();
+      }
+    }, sg.label, el('span', { class: 'chip-count' }, ' ' + sg.count)));
+
+    // Sort control sits with the segments — urgency only means anything
+    // once a timeline is present, so it is offered, not imposed.
+    const sortSel = el('select', {
+      style: 'margin-left:auto;max-width:190px;padding:6px 10px;font-size:0.8rem',
+      title: 'Sort order',
+      onchange: (e) => { state._leadsSort = e.target.value; redraw(); }
+    },
+      el('option', { value: 'recent' }, 'Sort: Newest first'),
+      el('option', { value: 'urgent' }, 'Sort: Most urgent first')
+    );
+    sortSel.value = state._leadsSort;
+    funnelBar.replaceChildren(...chips, sortSel);
+  }
+
+  function renderTagBar() {
+    if (!state._leadsTags.length) { tagBar.replaceChildren(); return; }
+    tagBar.replaceChildren(
+      el('span', { class: 'muted', style: 'font-size:0.75rem;align-self:center' }, 'Filtering by'),
+      ...state._leadsTags.map(t => el('button', {
+        class: 'chip active',
+        title: 'Remove this tag filter',
+        onclick: () => {
+          state._leadsTags = state._leadsTags.filter(x => x !== t);
+          redraw();
+        }
+      }, t, el('span', { class: 'chip-count' }, ' ×'))),
+      el('button', {
+        class: 'chip',
+        onclick: () => { state._leadsTags = []; redraw(); }
+      }, 'Clear')
+    );
+  }
+
+  function leadRow(l) {
+    let currentTags = normalizeTags(l.tags);
+    const tagsCell = tagChips({
+      getTags: () => currentTags,
+      saveTags: async (next) => {
+        await api('/api/portal/crm?action=leads', {
+          method: 'PATCH', body: { id: l.id, tags: next }
+        });
+        currentTags = next;
+        l.tags = next;
+      },
+      onTagClick: addTagFilter
+    });
+
+    const paidBtn = l.paid_at
+      ? el('button', {
+          class: 'btn sm ghost',
+          title: 'Marked paid on ' + new Date(l.paid_at).toLocaleDateString(),
+          onclick: async () => {
+            try {
+              await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_unpaid: true } });
+              toast('Removed paid status'); render();
+            } catch (e) { toast(e.message, true); }
+          }
+        }, '✓ Paid (undo)')
+      : el('button', {
+          class: 'btn sm primary',
+          onclick: async () => {
+            try {
+              const r = await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_paid: true, tags: [...new Set([...normalizeTags(l.tags).filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] } });
+              const extra = r?.cancelled_nudges
+                ? ` · cancelled ${r.cancelled_nudges} pending nudge${r.cancelled_nudges === 1 ? '' : 's'}`
+                : '';
+              toast('Marked as paid · Paid + Current Client tags' + extra);
+              render();
+            } catch (e) { toast(e.message, true); }
+          }
+        }, 'Mark Paid');
+
+    // Single-click "Stop Nudges": tags Do Not Contact + cancels queued
+    // drips on the same request. Useful when a customer signs up via
+    // a different channel (in-person, partner referral) so Mark Paid
+    // doesn't apply, but you still need to stop bothering them.
+    const tagsHasDNC = normalizeTags(l.tags).includes('Do Not Contact');
+    const stopBtn = tagsHasDNC
+      ? null
+      : el('button', {
+          class: 'btn sm',
+          title: 'Tag as Do Not Contact + cancel any pending nudges',
+          onclick: async () => {
+            try {
+              const r = await api('/api/portal/crm?action=leads', {
+                method: 'PATCH',
+                body: { id: l.id, tags: [...new Set([...normalizeTags(l.tags), 'Do Not Contact'])] }
+              });
+              const extra = r?.cancelled_nudges
+                ? ` · cancelled ${r.cancelled_nudges} pending nudge${r.cancelled_nudges === 1 ? '' : 's'}`
+                : '';
+              toast('Stopped nudges for this lead' + extra);
+              render();
+            } catch (e) { toast(e.message, true); }
+          }
+        }, 'Stop Nudges');
+
+    return el('tr', {},
+      el('td', {}, new Date(l.created_at).toLocaleString()),
+      el('td', {}, el('div', { class: 'lead-name-cell' },
+        renderAvatar({ name: l.name, avatarUrl: l.avatar_url, size: 'sm' }),
+        el('button', {
+          class: 'link-btn',
+          title: 'Open customer profile',
+          onclick: () => openCustomerProfile(l.id)
+        }, l.name || '—'),
+        urgencyBadge(l)
+      )),
+      el('td', {}, l.phone || '—'),
+      el('td', {}, l.email || '—'),
+      el('td', {}, el('span', { class: 'badge' }, l.source || 'manual')),
+      el('td', {}, el('span', { class: 'badge' + (l.paid_at ? ' green' : '') }, l.paid_at ? 'paid' : (l.status || 'new'))),
+      el('td', {}, tagsCell),
+      el('td', {}, el('div', { class: 'row', style: 'gap:4px;flex-wrap:wrap;justify-content:flex-end' },
+        paidBtn,
+        stopBtn,
+        el('button', { class: 'btn sm danger', onclick: async () => {
+          if (!confirm('Delete lead?')) return;
+          try {
+            await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: l.id } });
+            toast('Lead deleted');
+            render();
+          } catch (e) { toast('Delete failed: ' + e.message, true); }
+        }}, 'Delete')
+      ))
+    );
+  }
+
+  function renderTable() {
+    const rows = visibleLeads();
     panel.innerHTML = '';
-    if (!r.leads.length) {
-      panel.appendChild(el('p', { class: 'muted' }, 'No leads yet. They will appear here once a Vapi call ends or a form is submitted.'));
-      return wrap;
+    if (!rows.length) {
+      const filtered = state._leadsFunnel !== 'all' || state._leadsTags.length;
+      panel.appendChild(el('p', { class: 'muted' }, filtered
+        ? 'No leads match this filter. Clear it to see the rest.'
+        : 'No leads yet. They will appear here once a Vapi call ends or a form is submitted.'));
+      return;
     }
     panel.appendChild(el('table', {},
       el('thead', {}, el('tr', {},
@@ -3477,98 +3905,32 @@ async function viewLeads() {
         el('th', {}, 'Email'), el('th', {}, 'Source'),
         el('th', {}, 'Status'), el('th', {}, 'Tags'), el('th', {}, '')
       )),
-      el('tbody', {}, ...r.leads.map(l => {
-        let currentTags = normalizeTags(l.tags);
-        const tagsCell = tagChips({
-          getTags: () => currentTags,
-          saveTags: async (next) => {
-            await api('/api/portal/crm?action=leads', {
-              method: 'PATCH', body: { id: l.id, tags: next }
-            });
-            currentTags = next;
-          }
-        });
-
-        const paidBtn = l.paid_at
-          ? el('button', {
-              class: 'btn sm ghost',
-              title: 'Marked paid on ' + new Date(l.paid_at).toLocaleDateString(),
-              onclick: async () => {
-                try {
-                  await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_unpaid: true } });
-                  toast('Removed paid status'); render();
-                } catch (e) { toast(e.message, true); }
-              }
-            }, '✓ Paid (undo)')
-          : el('button', {
-              class: 'btn sm primary',
-              onclick: async () => {
-                try {
-                  const r = await api('/api/portal/crm?action=leads', { method: 'PATCH', body: { id: l.id, mark_paid: true, tags: [...new Set([...normalizeTags(l.tags).filter(t => t !== 'Free Trial'), 'Paid', 'Current Client'])] } });
-                  const extra = r?.cancelled_nudges
-                    ? ` · cancelled ${r.cancelled_nudges} pending nudge${r.cancelled_nudges === 1 ? '' : 's'}`
-                    : '';
-                  toast('Marked as paid · Paid + Current Client tags' + extra);
-                  render();
-                } catch (e) { toast(e.message, true); }
-              }
-            }, 'Mark Paid');
-
-        // Single-click "Stop Nudges": tags Do Not Contact + cancels queued
-        // drips on the same request. Useful when a customer signs up via
-        // a different channel (in-person, partner referral) so Mark Paid
-        // doesn't apply, but you still need to stop bothering them.
-        const tagsHasDNC = normalizeTags(l.tags).includes('Do Not Contact');
-        const stopBtn = tagsHasDNC
-          ? null
-          : el('button', {
-              class: 'btn sm',
-              title: 'Tag as Do Not Contact + cancel any pending nudges',
-              onclick: async () => {
-                try {
-                  const r = await api('/api/portal/crm?action=leads', {
-                    method: 'PATCH',
-                    body: { id: l.id, tags: [...new Set([...normalizeTags(l.tags), 'Do Not Contact'])] }
-                  });
-                  const extra = r?.cancelled_nudges
-                    ? ` · cancelled ${r.cancelled_nudges} pending nudge${r.cancelled_nudges === 1 ? '' : 's'}`
-                    : '';
-                  toast('Stopped nudges for this lead' + extra);
-                  render();
-                } catch (e) { toast(e.message, true); }
-              }
-            }, 'Stop Nudges');
-
-        return el('tr', {},
-          el('td', {}, new Date(l.created_at).toLocaleString()),
-          el('td', {}, el('div', { class: 'lead-name-cell' },
-            renderAvatar({ name: l.name, avatarUrl: l.avatar_url, size: 'sm' }),
-            el('button', {
-              class: 'link-btn',
-              title: 'Open customer profile',
-              onclick: () => openCustomerProfile(l.id)
-            }, l.name || '—')
-          )),
-          el('td', {}, l.phone || '—'),
-          el('td', {}, l.email || '—'),
-          el('td', {}, el('span', { class: 'badge' }, l.source || 'manual')),
-          el('td', {}, el('span', { class: 'badge' + (l.paid_at ? ' green' : '') }, l.paid_at ? 'paid' : (l.status || 'new'))),
-          el('td', {}, tagsCell),
-          el('td', {}, el('div', { class: 'row', style: 'gap:4px;flex-wrap:wrap;justify-content:flex-end' },
-            paidBtn,
-            stopBtn,
-            el('button', { class: 'btn sm danger', onclick: async () => {
-              if (!confirm('Delete lead?')) return;
-              try {
-                await api('/api/portal/crm?action=leads', { method: 'DELETE', body: { id: l.id } });
-                toast('Lead deleted');
-                render();
-              } catch (e) { toast('Delete failed: ' + e.message, true); }
-            }}, 'Delete')
-          ))
-        );
-      }))
+      el('tbody', {}, ...rows.map(leadRow))
     ));
+  }
+
+  function redraw() {
+    renderFunnelBar();
+    renderTagBar();
+    renderTable();
+  }
+
+  try {
+    const r = await api('/api/portal/crm?action=leads');
+    allLeads = r.leads || [];
+    // A remembered filter from a different tenant (admins impersonate, so
+    // this happens) or from a lead that has since been deleted would
+    // otherwise show an empty table with no obvious cause. Drop any
+    // segment or tag no current lead carries.
+    if (state._leadsFunnel !== 'all' && state._leadsFunnel !== '__none' &&
+        !allLeads.some(l => l.funnel === state._leadsFunnel)) {
+      state._leadsFunnel = 'all';
+    }
+    if (state._leadsTags.length) {
+      const live = new Set(allLeads.flatMap(l => normalizeTags(l.tags)));
+      state._leadsTags = state._leadsTags.filter(t => live.has(t));
+    }
+    redraw();
   } catch (e) { panel.innerHTML = `<p class="err">${e.message}</p>`; }
   return wrap;
 }
