@@ -7,10 +7,13 @@
 // double-write. The newer booking_appointments table from migration 0017
 // is currently unused; this endpoint deliberately ignores it.
 //
-// GET   ?filter=all|upcoming|past|cancelled  (default: upcoming)
-// PATCH body: { id, status }  where status ∈ {confirmed, cancelled, no_show}
+// GET    ?filter=all|upcoming|past|cancelled  (default: upcoming)
+// PATCH  body: { id, status }  where status ∈ {confirmed, cancelled, no_show}
+// DELETE body: { id }  — soft-delete (deleted_at), tenant-scoped.
 //
-// No DELETE: status transitions only.
+// Note: this serves the booking-CALENDAR tenants (Flex et al) off
+// public.bookings. Experience tenants (Konquered Balance) use a
+// different tab entirely — see api/portal/experience-bookings.js.
 
 import { requireUser, methodGuard, readJson } from '../../../lib/auth.js';
 import { supabaseAdmin } from '../../../lib/supabase.js';

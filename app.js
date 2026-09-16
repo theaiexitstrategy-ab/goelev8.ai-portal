@@ -12858,6 +12858,89 @@ async function kbFetch(qs = '') {
   const url = '/api/portal/experience-bookings' + (qs ? ('?' + qs) : '');
   return await api(url);
 }
+// Delete control for a KB booking row. Soft-delete via
+// DELETE /api/portal/experience-bookings — the row leaves every list and
+// every count but stays recoverable in the DB.
+//
+// Two different confirmations on purpose. A `lead` row with no deposit is
+// junk an operator should be able to clear without ceremony. A row where
+// money actually moved also moves "Deposits collected" and the lifetime
+// fee total when it goes, so that prompt names the amount and says so —
+// an operator should never discover that from a dashboard later.
+// An event whose date has passed and that nobody has filed away yet.
+// Drives the "ready to archive" nudge — the auto-suggest half of
+// archiving, without anything moving on its own.
+function kbIsStale(row) {
+  if (row.archived_at) return false;
+  if (!row.event_starts_at) return false;
+  if (!['confirmed', 'refunded'].includes(row.status)) return false;
+  return new Date(row.event_starts_at).getTime() < Date.now();
+}
+
+// Archive / Unarchive. Unlike Delete this changes no totals — an
+// archived event still earned its deposit and still counts toward the
+// lifetime fees — so it needs no confirmation and is one click to undo.
+function kbArchiveBtn(row, reload) {
+  const archived = !!row.archived_at;
+  return el('button', {
+    class: 'btn sm' + (kbIsStale(row) ? ' primary' : ''),
+    title: archived
+      ? 'Put this back in the active list'
+      : 'File this away. It stays in your deposit and fee totals.',
+    onclick: async (ev) => {
+      const btn = ev.target;
+      btn.disabled = true;
+      try {
+        await api('/api/portal/experience-bookings', {
+          method: 'PATCH',
+          body: archived ? { id: row.id, unarchive: true } : { id: row.id, archive: true }
+        });
+        toast(archived ? 'Moved back to active' : 'Archived');
+        reload();
+      } catch (e) {
+        btn.disabled = false;
+        toast((archived ? 'Unarchive' : 'Archive') + ' failed: ' + (e.message || 'unknown'), true);
+      }
+    }
+  }, archived ? 'Unarchive' : 'Archive');
+}
+
+function kbDeleteBtn(row, reload) {
+  return el('button', {
+    class: 'btn sm danger',
+    title: 'Remove this booking from the list',
+    onclick: async () => {
+      const paid = (row.deposit_cents || 0) > 0 &&
+        ['confirmed', 'refunded'].includes(row.status);
+      const who = row.guest_name || 'this guest';
+      const msg = paid
+        ? [
+            `Delete the ${kbMoney(row.deposit_cents)} booking for ${who}?`,
+            '',
+            'A deposit was collected on this one, so deleting it also removes it',
+            'from "Deposits collected" and your lifetime fee total. The Stripe',
+            'payment itself is untouched — this only affects the portal.',
+            '',
+            'To record that the event was called off without changing those',
+            'numbers, set the status to Cancelled instead.'
+          ].join('\n')
+        : [
+            `Delete the booking for ${who}?`,
+            '',
+            'It disappears from this list and from your counts.'
+          ].join('\n');
+      if (!confirm(msg)) return;
+      try {
+        await api('/api/portal/experience-bookings', { method: 'DELETE', body: { id: row.id } });
+        toast('Booking deleted');
+        reload();
+      } catch (e) {
+        toast('Delete failed: ' + (e.message || 'unknown'), true);
+      }
+    }
+  }, 'Delete');
+}
+
 function kbMoney(cents) {
   if (cents == null) return '—';
   return '$' + ((cents || 0) / 100).toFixed(2).replace(/\.00$/, '');
@@ -12945,9 +13028,13 @@ async function viewKbBookings() {
   wrap.appendChild(el('div', { class: 'topbar' },
     el('h1', {}, 'Bookings'),
     el('div', { class: 'muted' }, 'Every submission — filter by status')));
-  const filters = { status: '' };
+  // `view` is the archived axis, `status` the lifecycle one. They are
+  // independent: you can look at cancelled bookings inside the archive.
+  const filters = { status: '', view: 'active' };
+  const viewBar = el('div', { class: 'filter-bar' });
   const filterHost = el('div', { class: 'panel', style: 'padding:10px 14px;margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center' });
   const tableHost = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(viewBar);
   wrap.appendChild(filterHost);
   wrap.appendChild(tableHost);
 
@@ -12955,7 +13042,30 @@ async function viewKbBookings() {
     const parts = [];
     if (state.isAdmin) parts.push('client=konquered-balance');
     if (filters.status) parts.push('status=' + encodeURIComponent(filters.status));
+    parts.push('view=' + filters.view);
     return parts.join('&');
+  };
+
+  // Counts come from the server over ALL non-deleted rows, so the
+  // Archived chip shows a real number even while you're looking at the
+  // active list.
+  const renderViewBar = (counts) => {
+    const n = counts || {};
+    const total = n.total || 0;
+    const archived = n.archived || 0;
+    const VIEWS = [
+      { id: 'active',   label: 'Active',   count: Math.max(total - archived, 0) },
+      { id: 'archived', label: 'Archived', count: archived },
+      { id: 'all',      label: 'All',      count: total }
+    ];
+    viewBar.replaceChildren(...VIEWS.map(v => el('button', {
+      class: 'chip' + (filters.view === v.id ? ' active' : ''),
+      onclick: () => {
+        if (filters.view === v.id) return;
+        filters.view = v.id;
+        load();
+      }
+    }, v.label, el('span', { class: 'chip-count' }, ' ' + v.count))));
   };
   const load = async () => {
     tableHost.replaceChildren(el('div', { class: 'muted' }, 'Loading…'));
@@ -12966,14 +13076,27 @@ async function viewKbBookings() {
       return;
     }
     const rows = payload?.rows || [];
+    renderViewBar(payload?.counts);
     tableHost.innerHTML = '';
     tableHost.appendChild(el('div', { class: 'muted', style: 'font-size:0.78rem;margin-bottom:10px' },
       rows.length + ' row' + (rows.length === 1 ? '' : 's')
       + (payload?.count && payload.count > rows.length ? ' of ' + payload.count : '')));
     if (!rows.length) {
-      tableHost.appendChild(el('p', { class: 'muted' },
-        'No bookings yet. Guests who submit the funnel land here as leads; once they pay the deposit, they promote to confirmed.'));
+      const filtered = filters.view !== 'active' || filters.status;
+      tableHost.appendChild(el('p', { class: 'muted' }, filtered
+        ? 'Nothing here. Try the All view, or clear the status filter.'
+        : 'No bookings yet. Guests who submit the funnel land here as leads; once they pay the deposit, they promote to confirmed.'));
       return;
+    }
+
+    // One nudge for the whole list rather than a badge per row — the
+    // point is "you have some tidying to do", not an alarm on each line.
+    const stale = rows.filter(kbIsStale).length;
+    if (stale) {
+      tableHost.appendChild(el('div', {
+        style: 'margin-bottom:12px;padding:9px 12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.22);border-radius:8px;font-size:0.8rem'
+      }, `📦 ${stale} event${stale === 1 ? ' has' : 's have'} already happened. `
+       + 'Archive them to clear the list — your deposit and fee totals stay exactly the same.'));
     }
     tableHost.appendChild(el('table', {},
       el('thead', {}, el('tr', {},
@@ -12984,8 +13107,12 @@ async function viewKbBookings() {
         el('th', {}, 'When'),
         el('th', { style: 'text-align:right' }, 'Guests'),
         el('th', { style: 'text-align:right' }, 'Deposit'),
-        el('th', {}, 'Status'))),
-      el('tbody', {}, ...rows.map(r => el('tr', {},
+        el('th', {}, 'Status'),
+        el('th', {}, ''))),
+      el('tbody', {}, ...rows.map(r => el('tr', {
+        // Archived rows read as filed-away rather than active work.
+        style: r.archived_at ? 'opacity:0.55' : ''
+      },
         el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' }, kbFmtWhen(r.created_at)),
         el('td', {}, r.guest_name || '—'),
         el('td', { class: 'muted', style: 'font-size:0.75rem' },
@@ -12995,7 +13122,11 @@ async function viewKbBookings() {
         el('td', { class: 'muted', style: 'font-size:0.75rem;white-space:nowrap' }, kbFmtWhen(r.event_starts_at, r.event_tz)),
         el('td', { class: 'mono', style: 'text-align:right' }, r.guest_count != null ? r.guest_count : '—'),
         el('td', { style: 'text-align:right;font-weight:600' }, kbMoney(r.deposit_cents)),
-        el('td', {}, kbStatusPill(r.status))
+        el('td', {}, kbStatusPill(r.status)),
+        el('td', { style: 'text-align:right;white-space:nowrap' },
+          el('div', { style: 'display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap' },
+            kbArchiveBtn(r, load),
+            kbDeleteBtn(r, load)))
       )))
     ));
   };
@@ -13028,7 +13159,10 @@ async function viewKbLeads() {
   const host = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading…'));
   wrap.appendChild(host);
 
-  const qs = state.isAdmin ? 'client=konquered-balance' : '';
+  // view=all on purpose. This tab is the guest history — "every guest who
+  // touched the funnel" — so archiving a booking must not erase the
+  // person from it. Only the Bookings tab hides archived rows by default.
+  const qs = (state.isAdmin ? 'client=konquered-balance&' : '') + 'view=all';
   let payload;
   try { payload = await kbFetch(qs); }
   catch (e) {
@@ -13667,6 +13801,102 @@ async function viewKbAdminHub() {
 // repository they add to over time. The old 5-active limit (0036's
 // enforce_portfolio_5_video_cap trigger) was dropped in migration 0045
 // along with the endpoint's 409 and the disabled Upload button.
+// Event-details block for the portfolio editor.
+//
+// These five columns (migration 0040) are what the tenant's public
+// /events page filters on — api/external/portfolio.js has served them
+// since August, but nothing ever wrote them, so every row was NULL and
+// the page had nothing to show. This is the missing write path.
+//
+// The booking picker is the reason this is pleasant rather than a chore:
+// an experience booking already records which experience it was, when it
+// happened and how many guests came, so picking the booking fills those
+// three in. Venue and city aren't on the booking, so they stay typed.
+//
+// Returns { node, read() } — read() yields exactly the keys to send, and
+// only includes a key the operator actually has a value for, so a blank
+// field clears rather than silently keeping a stale value.
+function portfolioEventFields(existing, bookings) {
+  const inputStyle = 'padding:6px 10px;font-size:0.85rem;width:100%';
+  const typeIn  = el('input', { type: 'text',   value: existing?.event_type || '', placeholder: 'e.g. Corporate tasting', style: inputStyle });
+  const dateIn  = el('input', { type: 'date',   value: existing?.event_date || '', style: inputStyle });
+  const venueIn = el('input', { type: 'text',   value: existing?.venue || '',      placeholder: 'e.g. The Chase Park Plaza', style: inputStyle });
+  const cityIn  = el('input', { type: 'text',   value: existing?.city || '',       placeholder: 'e.g. St. Louis, MO', style: inputStyle });
+  const guestIn = el('input', { type: 'number', value: existing?.guest_count != null ? String(existing.guest_count) : '', min: '0', placeholder: 'e.g. 50', style: inputStyle });
+
+  const linkable = (bookings || []).filter(b => b.guest_name || b.experience_display);
+  const bookingSel = el('select', { style: inputStyle },
+    el('option', { value: '' }, '— Not linked —'),
+    ...linkable.map(b => {
+      const when = b.event_starts_at ? kbFmtWhen(b.event_starts_at, b.event_tz) : 'no date set';
+      return el('option', { value: b.id },
+        `${b.guest_name || 'Unnamed'} · ${b.experience_display || b.experience_key || 'Experience'} · ${when}`);
+    }));
+  if (existing?.booking_id) bookingSel.value = existing.booking_id;
+
+  // Picking a booking fills the blanks immediately so the operator can
+  // see and correct what will be saved, rather than finding out after.
+  // Only blanks — never clobber something already typed.
+  bookingSel.onchange = () => {
+    const b = linkable.find(x => x.id === bookingSel.value);
+    if (!b) return;
+    if (!typeIn.value.trim() && (b.experience_display || b.experience_key)) {
+      typeIn.value = b.experience_display || b.experience_key;
+    }
+    if (!dateIn.value && b.event_starts_at) {
+      // Match the server's timezone handling (api/portal/portfolio.js
+      // localDateFor): the event's own zone, not the browser's.
+      try {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+          timeZone: b.event_tz || 'America/Chicago',
+          year: 'numeric', month: '2-digit', day: '2-digit'
+        }).formatToParts(new Date(b.event_starts_at));
+        const get = (t) => parts.find(x => x.type === t)?.value;
+        if (get('year')) dateIn.value = `${get('year')}-${get('month')}-${get('day')}`;
+      } catch {}
+    }
+    if (!guestIn.value && b.guest_count != null) guestIn.value = String(b.guest_count);
+  };
+
+  const row = (label, ctrl, hint) => el('div', { style: 'margin-bottom:12px' },
+    el('label', { style: 'display:block;font-size:0.75rem;color:var(--muted,#9ca3af);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.03em' }, label),
+    ctrl,
+    hint ? el('div', { class: 'muted', style: 'font-size:0.7rem;margin-top:4px' }, hint) : null);
+
+  const node = el('details', {
+    style: 'margin:4px 0 14px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px 12px',
+    open: (existing?.event_date || existing?.booking_id) ? '' : false
+  },
+    el('summary', { style: 'cursor:pointer;font-size:0.8rem;color:var(--muted,#9ca3af)' },
+      'Event details ',
+      el('span', { class: 'muted', style: 'font-size:0.7rem' }, '(powers your public /events page)')),
+    el('div', { style: 'margin-top:12px' },
+      linkable.length
+        ? row('Link to a booking', bookingSel,
+            'Fills in the type, date and guest count from that booking. Optional.')
+        : null,
+      row('Event type', typeIn),
+      row('Event date', dateIn, 'Rows without a date are skipped by the public events page.'),
+      row('Venue', venueIn),
+      row('City', cityIn),
+      row('Guest count', guestIn)
+    ));
+
+  const read = () => {
+    const num = parseInt(guestIn.value, 10);
+    return {
+      booking_id:  bookingSel.value || null,
+      event_type:  typeIn.value.trim() || null,
+      event_date:  dateIn.value || null,
+      venue:       venueIn.value.trim() || null,
+      city:        cityIn.value.trim() || null,
+      guest_count: Number.isFinite(num) && num >= 0 ? num : null
+    };
+  };
+
+  return { node, read };
+}
+
 async function viewPortfolio() {
   const wrap = el('div', {});
   wrap.appendChild(el('div', { class: 'topbar' },
@@ -13686,6 +13916,20 @@ async function viewPortfolio() {
 
   const listHost = el('div', { class: 'panel' }, el('div', { class: 'muted' }, 'Loading videos…'));
   wrap.appendChild(listHost);
+
+  // Bookings the editor can link a video to. Archived ones are included
+  // on purpose — filing an event away is exactly when you get round to
+  // uploading its video. Soft-fails to an empty list so a tenant with no
+  // experience bookings (or a project without the table) still gets the
+  // manual event fields.
+  let bookings = [];
+  async function loadBookings() {
+    try {
+      const qs = 'view=all' + (clientParam ? '&' + clientParam : '');
+      const r = await api('/api/portal/experience-bookings?' + qs);
+      bookings = r?.rows || [];
+    } catch { bookings = []; }
+  }
 
   async function load() {
     listHost.replaceChildren(el('div', { class: 'muted' }, 'Loading videos…'));
@@ -14033,8 +14277,10 @@ async function viewPortfolio() {
     setTimeout(() => titleIn.focus(), 50);
   }
 
-  // Edit modal — title / description / active only. No Mux details.
+  // Edit modal — title / description / active, plus the event details
+  // that drive the public /events page.
   function showEditForm(existing) {
+    const eventFields = portfolioEventFields(existing, bookings);
     const titleIn = el('input', { type: 'text', value: existing?.title || '',
       style: 'padding:6px 10px;font-size:0.85rem;width:100%' });
     const descIn = el('textarea', { rows: '4',
@@ -14058,6 +14304,7 @@ async function viewPortfolio() {
     modal.append(
       row('Title', titleIn),
       row('Description', descIn, 'Optional. Shown under the video on the public page.'),
+      eventFields.node,
       el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:16px' },
         activeIn,
         el('label', { style: 'font-size:0.85rem' }, 'Active (shown on public page)')),
@@ -14077,7 +14324,8 @@ async function viewPortfolio() {
               description: descIn.value.trim() || null,
               mux_playback_id: existing.mux_playback_id,
               is_active: activeIn.checked,
-              skip_live_check: true
+              skip_live_check: true,
+              ...eventFields.read()
             };
             const qs = 'action=upsert' + (clientParam ? '&' + clientParam : '');
             await api('/api/portal/portfolio?' + qs, { method: 'POST', body });
@@ -14179,6 +14427,9 @@ async function viewPortfolio() {
     setTimeout(() => titleIn.focus(), 50);
   }
 
+  // Bookings load alongside the videos; the picker only appears in the
+  // edit modal, which can't open before both settle.
+  loadBookings();
   load();
   return wrap;
 }

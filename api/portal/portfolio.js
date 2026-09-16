@@ -17,6 +17,21 @@
 // writing — HEAD-checks both stream.mux.com and image.mux.com so a
 // signed / bogus / renamed ID can't quietly reach a live page.
 //
+// ---- Event metadata + booking link -------------------------------
+// upsert also writes the event columns migration 0040 added
+// (event_type / event_date / venue / city / guest_count). Those are what
+// api/external/portfolio.js serves to the tenant's public /events page;
+// until this write path existed they were NULL on every row, so that
+// page had nothing to filter on.
+//
+// `booking_id` (migration 0047) links a video to the experience_bookings
+// row it came from. When supplied, any event field the caller did NOT
+// explicitly send is filled in from that booking — the booking already
+// knows the date, the guest count and which experience it was, so there
+// is no reason to retype them. Explicit values always win, so an
+// operator can correct a detail without the link overwriting it on the
+// next save.
+//
 // There is no cap on how many videos a tenant can keep. The portfolio is
 // a repository — a library they add to over time — so the old 5-active
 // limit (0036's enforce_portfolio_5_video_cap trigger) was dropped in
@@ -97,6 +112,61 @@ async function handleList(req, res) {
   return res.status(200).json({ videos: data || [] });
 }
 
+// A booking's event_starts_at is UTC; its event_tz is where the event
+// actually happened. A 7pm Chicago event lands at 00:00 UTC the NEXT
+// day, so taking the date off the ISO string would file half the
+// evening events under tomorrow. Format in the event's own zone.
+function localDateFor(iso, tz) {
+  if (!iso) return null;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz || 'America/Chicago',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date(iso));
+    const get = (t) => parts.find((x) => x.type === t)?.value;
+    const y = get('year'), m = get('month'), d = get('day');
+    return (y && m && d) ? `${y}-${m}-${d}` : null;
+  } catch { return null; }
+}
+
+// Normalize the five event columns off the request body. `undefined`
+// means "caller didn't mention it" (leave room for booking auto-fill);
+// an explicit null means "clear it".
+function readEventFields(body) {
+  const out = {};
+  if ('event_type' in body) out.event_type = body.event_type ? String(body.event_type).trim().slice(0, 120) : null;
+  if ('venue'      in body) out.venue      = body.venue      ? String(body.venue).trim().slice(0, 200)      : null;
+  if ('city'       in body) out.city       = body.city       ? String(body.city).trim().slice(0, 120)       : null;
+  if ('event_date' in body) {
+    const raw = body.event_date ? String(body.event_date).trim() : '';
+    // The column is a DATE; anything else would be a 500 from Postgres.
+    out.event_date = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+  }
+  if ('guest_count' in body) {
+    const n = Number(body.guest_count);
+    out.guest_count = Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  }
+  return out;
+}
+
+// Copy what the booking already knows onto any event field the caller
+// left unspecified. venue/city aren't on experience_bookings, so those
+// stay operator-entered.
+function fillFromBooking(fields, booking) {
+  if (!booking) return fields;
+  const out = { ...fields };
+  if (out.event_type === undefined) {
+    out.event_type = booking.experience_display || booking.experience_key || null;
+  }
+  if (out.event_date === undefined) {
+    out.event_date = localDateFor(booking.event_starts_at, booking.event_tz);
+  }
+  if (out.guest_count === undefined) {
+    out.guest_count = booking.guest_count != null ? booking.guest_count : null;
+  }
+  return out;
+}
+
 async function handleUpsert(req, res) {
   const ctx = await requireUser(req, res, { requireClient: false });
   if (!ctx) return;
@@ -139,6 +209,28 @@ async function handleUpsert(req, res) {
   }
   const playbackId = normalized.id;
 
+  // Booking link. Resolve it before either branch so create and edit
+  // share one ownership check: a video may only point at a booking
+  // belonging to the same tenant.
+  let linkedBooking = null;
+  let bookingIdPatch;                       // undefined = leave alone
+  if ('booking_id' in body) {
+    const bid = body.booking_id ? String(body.booking_id).trim() : '';
+    if (!bid) {
+      bookingIdPatch = null;                // explicit unlink
+    } else {
+      const { data: bk } = await supabaseAdmin
+        .from('experience_bookings')
+        .select('id, client_id, experience_key, experience_display, event_starts_at, event_tz, guest_count')
+        .eq('id', bid).maybeSingle();
+      if (!bk) return res.status(400).json({ error: 'booking_not_found' });
+      if (bk.client_id !== clientId) return res.status(403).json({ error: 'booking_not_owned' });
+      linkedBooking = bk;
+      bookingIdPatch = bk.id;
+    }
+  }
+  const eventFields = fillFromBooking(readEventFields(body || {}), linkedBooking);
+
   const isEdit = !!body?.id;
   const posterUrl = body?.poster_url ? String(body.poster_url).trim().slice(0, 500) : null;
   if (posterUrl && !/^https?:\/\//i.test(posterUrl)) {
@@ -164,6 +256,8 @@ async function handleUpsert(req, res) {
       is_active: active
     };
     if (sortOrder != null) patch.sort_order = sortOrder;
+    Object.assign(patch, eventFields);
+    if (bookingIdPatch !== undefined) patch.booking_id = bookingIdPatch;
     // Only touch video_key if explicitly supplied — usually stable.
     const newKey = body?.video_key ? slugifyKey(body.video_key) : null;
     if (newKey && newKey !== existing.video_key) patch.video_key = newKey;
@@ -193,8 +287,10 @@ async function handleUpsert(req, res) {
     mux_playback_id: playbackId,
     poster_url: posterUrl,
     is_active: active,
-    sort_order: effectiveSort
+    sort_order: effectiveSort,
+    ...eventFields
   };
+  if (bookingIdPatch !== undefined) row.booking_id = bookingIdPatch;
   const { data, error } = await supabaseAdmin.from('client_portfolio_videos')
     .insert(row).select().single();
   if (error) {
