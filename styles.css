@@ -1586,6 +1586,20 @@ tbody tr:last-child td { border-bottom: none; }
   font-size: 0.72rem; font-weight: 600;
   white-space: nowrap;
 }
+/* A chip the leads table made clickable: clicking the label narrows the
+   list to that tag. Only the hover affordance changes — the chip must
+   still read as the same object it does everywhere else, or operators
+   start expecting tags to be clickable in views where they aren't. */
+.tag-chip-filterable { cursor: pointer; }
+.tag-chip-filterable:hover {
+  background: rgba(0, 207, 255, 0.22);
+  border-color: rgba(0, 207, 255, 0.55);
+}
+.tag-chip-filterable:focus-visible {
+  outline: 2px solid rgba(0, 207, 255, 0.7);
+  outline-offset: 1px;
+}
+
 .tag-chip-x {
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; padding: 0;
