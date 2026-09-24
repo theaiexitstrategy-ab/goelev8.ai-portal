@@ -29,10 +29,12 @@ import { requireUser } from '../../lib/auth.js';
 
 // Server-side authoritative deposit map. See TASK 2 in the source
 // prompt — private_lesson always null; body-painting inquiry-only.
+// Deposits = 50% of 2026-09-24 pricing (90 min $400, 2 hr $500, 1 hr $300).
+// Keep in sync with lib/packages.ts in the Free-Flow-Fitness repo.
 const PACKAGE_DEPOSIT_CENTS = {
-  'fab-flow':       15000,   // $150
-  'ultimate-flow':  20000,   // $200
-  'private-group':  11250,   // $112.50
+  'fab-flow':       20000,   // $200
+  'ultimate-flow':  25000,   // $250
+  'private-group':  15000,   // $150
   'body-painting':  null,    // inquiry-only
 };
 
